@@ -1,0 +1,18 @@
+services:
+  minecraft-server:
+    image: itzg/minecraft-server
+    container_name: mc-server
+    ports:
+      - "25565:25565"
+    environment:
+      EULA: "TRUE"
+      ONLINE_MODE: "FALSE" # Le réglage pour TLauncher
+      TYPE: "PAPER" # Version optimisée du serveur
+      VERSION: "1.20.4" # fige la version pour la stabilité du bot
+      MEMORY: "4G"
+    volumes:
+      - mc-data:/data
+    restart: unless-stopped
+
+volumes:
+  mc-data:
