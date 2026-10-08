@@ -1,7 +1,8 @@
+require("dotenv").config();
 module.exports = {
   BOT_CONFIG: {
-    host: 'localhost',
-    port: 25565,
+    host: process.env.MC_HOST || 'localhost',
+    port: parseInt(process.env.MC_PORT) || 25565,
     username: 'Herobrine',
     version: '1.20.4'
   },

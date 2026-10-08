@@ -6,7 +6,7 @@ logs:
 
 bot:
 	clear
-	node bot.js
+	node src/index.js
 
 stop:
 	docker compose down
