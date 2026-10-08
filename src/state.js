@@ -3,6 +3,10 @@ module.exports = {
   hasStarted: false,
   currentObjective: 'wooden_axe',
   manualObjective: false,
+  base: {
+    crafting_table: null,
+    furnace: null
+  },
   lastActionResult: {
     action: 'aucun',
     target: 'aucune',
