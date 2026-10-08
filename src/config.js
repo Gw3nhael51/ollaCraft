@@ -1,16 +1,18 @@
 require("dotenv").config();
 module.exports = {
+  OLLAMA_MODEL: process.env.OLLAMA_MODEL || 'qwen2.5:27b', // ou gemma2:27b
+  AUTH_PASSWORD: process.env.MC_PASSWORD || '',
   BOT_CONFIG: {
     host: process.env.MC_HOST || 'localhost',
-    port: parseInt(process.env.MC_PORT) || 25565,
+    port: Number.parseInt(process.env.MC_PORT) || 25565,
     username: 'Herobrine',
     version: '1.20.4'
   },
   CRAFT_2X2: new Set(['oak_planks', 'birch_planks', 'spruce_planks', 'jungle_planks', 'acacia_planks', 'dark_oak_planks', 'stick', 'crafting_table']),
   SOFT_BLOCKS: new Set(['dirt', 'grass_block', 'sand', 'gravel', 'stone', 'cobblestone', 'clay']),
   VALID_GROUND_BLOCKS: new Set(['grass_block', 'dirt', 'stone', 'sand', 'cobblestone', 'deepslate', 'gravel']),
-  VALID_ACTIONS: new Set(['mine', 'explore', 'craft', 'place', 'unstuck']),
-  QUEST_CHAIN: ['wooden_axe', 'wooden_pickaxe', 'cobblestone', 'stone_pickaxe', 'stone_axe', 'furnace'],
-  QUEST_AMOUNT: { cobblestone: 3 },
+  VALID_ACTIONS: new Set(['mine', 'explore', 'craft', 'place', 'unstuck', 'smelt', 'eat']),
+  QUEST_CHAIN: ['wooden_axe', 'wooden_pickaxe', 'cobblestone', 'stone_pickaxe', 'stone_axe', 'furnace', 'iron_ore', 'iron_ingot', 'iron_pickaxe', 'diamond_pickaxe'],
+  QUEST_AMOUNT: { cobblestone: 3, iron_ore: 3, iron_ingot: 3 },
   TOOL_SUFFIXES: ['_pickaxe', '_axe', '_shovel', '_sword', '_hoe']
 };
