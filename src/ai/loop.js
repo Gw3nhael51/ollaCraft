@@ -16,7 +16,7 @@ async function handleSurvivalRequest(bot) {
   const craftingTable = tableId ? bot.findBlock({ matching: tableId, maxDistance: 16 }) : null;
 
   const prompt = buildReactPrompt(bot, state, environment, craftingTable);
-  console.log(`\n=== CYCLE DE RÉFLEXION REACT (objectif : \${state.currentObjective}) ===`);
+  console.log(`\n=== CYCLE DE RÉFLEXION REACT (objectif : ${state.currentObjective}) ===`);
   const decision = await askOllama(prompt);
 
   if (!decision || !config.VALID_ACTIONS.has(decision.action)) {
@@ -27,12 +27,12 @@ async function handleSurvivalRequest(bot) {
   }
 
   if (decision.thought) {
-    console.log(`[PENSÉE IA] \${decision.thought}`);
+    console.log(`[PENSÉE IA] ${decision.thought}`);
   }
-  bot.chat(`Action : \${decision.action} (\${decision.target || 'aucune'})`);
+  bot.chat(`Action : ${decision.action} (${decision.target || 'aucune'})`);
 
   const executionResult = await dispatchSkill(bot, state, decision.action, decision.target, decision.qty || 1);
-  console.log(`[RÉSULTAT] \${executionResult.success ? '✅' : '❌'} \${executionResult.message}`);
+  console.log(`[RÉSULTAT] ${executionResult.success ? '✅' : '❌'} ${executionResult.message}`);
 
   state.lastActionResult = {
     action: decision.action,

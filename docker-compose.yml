@@ -10,6 +10,7 @@ services:
       TYPE: "PAPER" # Version optimisée du serveur
       VERSION: "1.20.4" # fige la version pour la stabilité du bot
       MEMORY: "4G"
+      SPIGET_RESOURCES: "60192" # Installe automatiquement le plugin LoginSecurity
     volumes:
       - mc-data:/data
     restart: unless-stopped

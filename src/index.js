@@ -8,22 +8,49 @@ const { handleSurvivalRequest } = require('./ai/loop');
 const bot = mineflayer.createBot(config.BOT_CONFIG);
 bot.loadPlugin(pathfinder);
 
-bot.on('spawn', () => {
-  console.log('✅ Le bot est connecté !');
-  const defaultMove = new Movements(bot);
-  defaultMove.allowFreeClear = true;
-  bot.pathfinder.setMovements(defaultMove);
+  bot.on('spawn', () => {
+    console.log('✅ Le bot est connecté !');
+    
+    // Authentification via AuthMe (délai augmenté pour s'assurer que le serveur est prêt)
+    const pwd = config.AUTH_PASSWORD;
+    if (pwd) {
+      setTimeout(() => {
+        bot.chat(`/register ${pwd} ${pwd}`);
+        setTimeout(() => {
+          bot.chat(`/login ${pwd}`);
+          console.log(`🔑 Tentative d'authentification envoyée.`);
+        }, 1000);
+      }, 2000);
+    }
+
+    const mcData = require("minecraft-data")(bot.version);
+    const defaultMove = new Movements(bot, mcData);
+    defaultMove.allowFreeClear = true; // Casser les herbes hautes
+    defaultMove.canDig = true; // Autoriser à creuser la terre/pierre pour se frayer un chemin
+    defaultMove.allow1by1towers = true; // Autoriser à poser des blocs sous ses pieds pour monter
+    // On lui indique quels blocs utiliser comme échafaudage s'il doit grimper :
+    const scafolding = ['dirt', 'cobblestone', 'netherrack', 'stone'].map(name => bot.registry.blocksByName[name]?.id).filter(Boolean);
+    defaultMove.scafoldingBlocks = scafolding;
+    
+    bot.pathfinder.setMovements(defaultMove);
 
   if (!state.hasStarted) {
     state.hasStarted = true;
     state.isSurviving = true;
-    bot.chat("Mode autonome ReAct prêt. Objectif : " + state.currentObjective);
-    setTimeout(() => handleSurvivalRequest(bot), 1000);
+    
+    // Attendre que l'authentification soit terminée avant de lancer la boucle IA
+    const startDelay = pwd ? 5000 : 1000;
+    setTimeout(() => {
+      bot.chat("Mode autonome ReAct prêt. Objectif : " + state.currentObjective);
+      void handleSurvivalRequest(bot);
+    }, startDelay);
   }
 });
 
 bot.on('chat', async (username, message) => {
   if (username === bot.username) return;
+  // LOG TOUTES LES MESSAGES POUR DEBUG AUTHME
+  console.log(`[CHAT SERVER] ${username ? username + ': ' : ''}${message}`);
 
   if (message === 'start') {
     if (state.isSurviving) return;
@@ -44,11 +71,11 @@ bot.on('chat', async (username, message) => {
     if (newGoal === 'auto') {
       state.manualObjective = false;
       syncObjective(bot, state);
-      bot.chat(`Progression automatique. Objectif : \${state.currentObjective}`);
+      bot.chat(`Progression automatique. Objectif : ${state.currentObjective}`);
     } else if (newGoal) {
       state.manualObjective = true;
       state.currentObjective = newGoal;
-      bot.chat(`Nouvel objectif enregistré : \${state.currentObjective}`);
+      bot.chat(`Nouvel objectif enregistré : ${state.currentObjective}`);
     }
   }
 
@@ -57,8 +84,8 @@ bot.on('chat', async (username, message) => {
     if (items.length === 0) {
       bot.chat("Mes poches sont complètement vides !");
     } else {
-      const liste = items.map(item => `\${item.count}x \${item.name}`).join(', ');
-      bot.chat(`J'ai sur moi : \${liste}`);
+      const liste = items.map(item => `${item.count}x ${item.name}`).join(', ');
+      bot.chat(`J'ai sur moi : ${liste}`);
     }
   }
 });
@@ -66,6 +93,10 @@ bot.on('chat', async (username, message) => {
 bot.on('death', () => {
   state.isSurviving = false;
   bot.chat("Je suis mort, mode autonome suspendu.");
+});
+
+bot.on('message', (jsonMsg) => {
+  console.log(`[SERVEUR] ${jsonMsg.toAnsi()}`);
 });
 
 bot.on('kicked', console.log);
