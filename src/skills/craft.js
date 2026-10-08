@@ -47,7 +47,7 @@ async function skillCraft(bot, targetName) {
     return { success: true, message: `Craft de '${targetName}' réussi.` };
   } catch (error) {
     console.warn("Erreur pendant le craft :", error.message);
-    return { success: false, message: `Erreur lors de la fabrication : \${error.message}` };
+    return { success: false, message: `Erreur lors de la fabrication : ${error.message}` };
   } finally {
     clearInterval(slotHelper);
   }

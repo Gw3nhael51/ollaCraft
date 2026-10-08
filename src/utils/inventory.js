@@ -18,17 +18,41 @@ function isQuestDone(bot, name) {
   return countItem(bot, name) >= (config.QUEST_AMOUNT[name] || 1);
 }
 
+function updateScoreboard(bot, objective) {
+  // Crée le scoreboard s'il n'existe pas (échoue silencieusement si déjà créé)
+  bot.chat('/scoreboard objectives add obj_ia dummy "Bot_IA"');
+  bot.chat('/scoreboard objectives setdisplay sidebar obj_ia');
+  
+  // Met à jour les lignes avec des noms de joueurs virtuels valides (pas d'espaces)
+  bot.chat('/scoreboard players reset * obj_ia');
+  bot.chat('/scoreboard players set Objectif: obj_ia 2');
+  bot.chat(`/scoreboard players set ${objective} obj_ia 1`);
+}
+
 function syncObjective(bot, state) {
-  if (state.manualObjective) return;
+  if (state.manualObjective) {
+    if (state._lastScoreboardObj !== state.currentObjective) {
+      updateScoreboard(bot, state.currentObjective);
+      state._lastScoreboardObj = state.currentObjective;
+    }
+    return;
+  }
+  
   const next = config.QUEST_CHAIN.find(name => !isQuestDone(bot, name)) || config.QUEST_CHAIN.at(-1);
-  if (next !== state.currentObjective) {
+  if (next !== state.currentObjective || state._lastScoreboardObj !== state.currentObjective) {
     const old = state.currentObjective;
     state.currentObjective = next;
-    bot.chat(`🚀 NOUVEAU PALIER : ${state.currentObjective}`);
-    state.lastActionResult = {
-      ...state.lastActionResult,
-      message: `${state.lastActionResult.message} | Palier '${old}' terminé. NOUVEL objectif : obtenir '${state.currentObjective}'.`
-    };
+    
+    updateScoreboard(bot, state.currentObjective);
+    state._lastScoreboardObj = state.currentObjective;
+
+    if (old && old !== next) {
+      bot.chat(`🚀 NOUVEAU PALIER : ${state.currentObjective}`);
+      state.lastActionResult = {
+        ...state.lastActionResult,
+        message: `${state.lastActionResult.message} | Palier '${old}' terminé. NOUVEL objectif : obtenir '${state.currentObjective}'.`
+      };
+    }
   }
 }
 
