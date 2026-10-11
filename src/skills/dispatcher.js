@@ -22,7 +22,7 @@ async function dispatchSkill(bot, state, action, target, qty) {
   if (action === 'explore') return skillExplore(bot);
   if (action === 'wiki') return skillWiki(bot, target);
   if (action === 'mine') return skillMine(bot, state, target, qty);
-  if (action === 'craft') return skillCraft(bot, target);
+  if (action === 'craft') return skillCraft(bot, state, target);
   if (action === 'place') return skillPlace(bot, state, target);
   if (action === 'smelt') return skillSmelt(bot, state, target, qty);
   if (action === 'eat') return skillEat(bot, target);

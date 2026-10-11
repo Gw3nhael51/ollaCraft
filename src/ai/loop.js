@@ -18,7 +18,13 @@ async function handleSurvivalRequest(bot) {
 
   const environment = scanEnvironment(bot, 20);
   const tableId = bot.registry.blocksByName['crafting_table']?.id;
-  const craftingTable = tableId ? bot.findBlock({ matching: tableId, maxDistance: 16 }) : null;
+  let craftingTable = tableId ? bot.findBlock({ matching: tableId, maxDistance: 48 }) : null;
+  if (!craftingTable && state.base.crafting_table) {
+    const baseTable = bot.blockAt(state.base.crafting_table);
+    if (baseTable && baseTable.name === 'crafting_table') {
+      craftingTable = baseTable;
+    }
+  }
 
   const prompt = buildReactPrompt(bot, state, environment, craftingTable);
   console.log(`\n=== CYCLE DE RÉFLEXION REACT (objectif : ${state.currentObjective}) ===`);
