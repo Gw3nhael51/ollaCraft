@@ -101,4 +101,80 @@ function getCurrentBiome(bot) {
   return biomeEntry?.name || 'plains';
 }
 
-module.exports = { scanEnvironment, checkTerrainSituation, scanNearbyEntities, getCurrentBiome };
+const VALUABLE_ORES = new Set([
+  'coal_ore', 'deepslate_coal_ore',
+  'iron_ore', 'deepslate_iron_ore',
+  'copper_ore', 'deepslate_copper_ore',
+  'gold_ore', 'deepslate_gold_ore',
+  'redstone_ore', 'deepslate_redstone_ore',
+  'lapis_ore', 'deepslate_lapis_ore',
+  'diamond_ore', 'deepslate_diamond_ore',
+  'emerald_ore', 'deepslate_emerald_ore'
+]);
+
+const AIR_BLOCK_NAMES = new Set(['air', 'cave_air', 'void_air']);
+
+const ADJACENT_OFFSETS = [
+  new Vec3(1, 0, 0), new Vec3(-1, 0, 0),
+  new Vec3(0, 1, 0), new Vec3(0, -1, 0),
+  new Vec3(0, 0, 1), new Vec3(0, 0, -1)
+];
+
+/**
+ * Vérifie si un bloc donné a au moins une face en contact avec l'air et sans lave
+ * @param {object} bot Instance Mineflayer du bot
+ * @param {object} block Bloc à inspecter
+ * @returns {boolean} True si le bloc est directement exposé à l'air
+ */
+function isBlockExposedToAir(bot, block) {
+  if (!block?.position) return false;
+  let touchesAir = false;
+
+  for (const offset of ADJACENT_OFFSETS) {
+    const neighbor = bot.blockAt(block.position.plus(offset));
+    if (!neighbor) continue;
+    if (neighbor.name === 'lava' || neighbor.name === 'flowing_lava') {
+      return false;
+    }
+    if (AIR_BLOCK_NAMES.has(neighbor.name)) {
+      touchesAir = true;
+    }
+  }
+
+  return touchesAir;
+}
+
+/**
+ * Scanne les minerais précieux exposés à l'air dans les cavités proches du bot
+ * @param {object} bot Instance Mineflayer du bot
+ * @param {number} radius Rayon de détection en blocs
+ * @returns {Record<string, number>} Dictionnaire des minerais exposés et leurs quantités
+ */
+function scanExposedOres(bot, radius = 16) {
+  const exposedOres = {};
+  const botPosition = bot.entity.position.floored();
+
+  for (let x = -radius; x <= radius; x++) {
+    for (let y = -radius; y <= radius; y++) {
+      for (let z = -radius; z <= radius; z++) {
+        const targetPos = botPosition.offset(x, y, z);
+        const block = bot.blockAt(targetPos);
+        if (block && VALUABLE_ORES.has(block.name) && isBlockExposedToAir(bot, block)) {
+          exposedOres[block.name] = (exposedOres[block.name] || 0) + 1;
+        }
+      }
+    }
+  }
+
+  return exposedOres;
+}
+
+module.exports = {
+  scanEnvironment,
+  checkTerrainSituation,
+  scanNearbyEntities,
+  getCurrentBiome,
+  scanExposedOres,
+  isBlockExposedToAir,
+  VALUABLE_ORES
+};

@@ -119,6 +119,8 @@ function buildReactPrompt(bot, state, environment, craftingTable) {
 
   const nearbyEntities = envUtils.scanNearbyEntities ? envUtils.scanNearbyEntities(bot, 20) : {};
   const entitiesText = Object.keys(nearbyEntities).length > 0 ? JSON.stringify(nearbyEntities) : "aucune";
+  const exposedOres = envUtils.scanExposedOres ? envUtils.scanExposedOres(bot, 16) : {};
+  const exposedOresText = Object.keys(exposedOres).length > 0 ? JSON.stringify(exposedOres) : "aucun";
 
   return `
     Tu es ${bot.username || 'Herobrine'}, un agent IA autonome dans Minecraft. Tu dois raisonner et t'adapter par toi-même.
@@ -143,12 +145,15 @@ function buildReactPrompt(bot, state, environment, craftingTable) {
 
     ENVIRONNEMENT VISIBLE (RADAR) :
     - Biome actuel : ${currentBiome}
+    - Minerais exposés à l'air libre (visibles dans les parois) : ${exposedOresText}
     - Blocs : ${envText}
     - Entités/Créatures proches : ${entitiesText}
 
     CONNAISSANCE DU JEU ET RÈGLES DE FABRICATION :
     - Objets fabricables MAINTENANT avec ton inventaire : ${availableCrafts}
     - Ne fabrique jamais un outil que tu possèdes déjà.
+    - RÈGLE MINEUR OPPORTUNISTE :
+      * Si des minerais précieux sont visibles à l'air libre (${exposedOresText}), mine-les ("mine") pour récolter fer, charbon, or ou diamants facilement !
     - RÈGLE SUR LA PIERRE :
       * La 'cobblestone' NE SE CRAFTE JAMAIS. Elle s'obtient en minant 'stone' avec l'action "mine".
       * ${getStoneHint(bot)}
