@@ -27,13 +27,19 @@ bot.loadPlugin(pathfinder);
     const mcData = require("minecraft-data")(bot.version);
     const defaultMove = new Movements(bot, mcData);
     defaultMove.allowFreeClear = true; // Casser les herbes hautes
-    defaultMove.canDig = true; // Autoriser à creuser la terre/pierre pour se frayer un chemin
-    defaultMove.allow1by1towers = true; // Autoriser à poser des blocs sous ses pieds pour monter
-    // On lui indique quels blocs utiliser comme échafaudage s'il doit grimper :
+    defaultMove.canDig = true;
+    defaultMove.allow1by1towers = true;
     const scafolding = ['dirt', 'cobblestone', 'netherrack', 'stone'].map(name => bot.registry.blocksByName[name]?.id).filter(Boolean);
     defaultMove.scafoldingBlocks = scafolding;
-    
+
     bot.pathfinder.setMovements(defaultMove);
+
+    // Réflexe vital : maintenir le bot à la surface s'il tombe dans l'eau
+    bot.on('physicsTick', () => {
+      if (bot.entity.isInWater) {
+        bot.setControlState('jump', true);
+      }
+    });
 
     if (!pwd && !state.hasStarted) {
       state.hasStarted = true;
@@ -106,6 +112,11 @@ bot.on('chat', async (username, message) => {
       const liste = items.map(item => `${item.count}x ${item.name}`).join(', ');
       bot.chat(`J'ai sur moi : ${liste}`);
     }
+  }
+
+  if (message === 'coords' || message === 'pos') {
+    const pos = bot.entity.position.floored();
+    bot.chat(`Mes coordonnées actuelles : X:${pos.x}, Y:${pos.y}, Z:${pos.z}`);
   }
 });
 
