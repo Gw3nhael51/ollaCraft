@@ -105,9 +105,24 @@ function isQuestDone(bot, questName, state) {
 function syncObjective(bot, state) {
   if (state.manualObjective) return;
 
-  const nextObjective = config.QUEST_CHAIN.find(name => !isQuestDone(bot, name, state)) || config.QUEST_CHAIN.at(-1);
+  if (state.completedQuests) {
+    for (const name of config.QUEST_CHAIN) {
+      if (isQuestDone(bot, name, state)) {
+        state.completedQuests.add(name);
+      }
+    }
+  }
+
+  const nextObjective = config.QUEST_CHAIN.find(name => {
+    if (state.completedQuests?.has(name)) return false;
+    return !isQuestDone(bot, name, state);
+  }) || config.QUEST_CHAIN.at(-1);
+
   if (nextObjective !== state.currentObjective) {
     const previousObjective = state.currentObjective;
+    if (previousObjective) {
+      state.completedQuests?.add(previousObjective);
+    }
     state.currentObjective = nextObjective;
 
     if (previousObjective && previousObjective !== nextObjective) {

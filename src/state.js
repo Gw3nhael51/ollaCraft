@@ -5,6 +5,8 @@ module.exports = {
   manualObjective: false,
   unlockedAdvancements: [],
   currentAdvancement: 'Stone Age',
+  completedQuests: new Set(),
+  lastDeathPosition: null,
   base: {
     crafting_table: null,
     furnace: null,
