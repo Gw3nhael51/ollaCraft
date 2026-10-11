@@ -40,4 +40,21 @@ function checkTerrainSituation(bot) {
   return "Terrain libre.";
 }
 
-module.exports = { scanEnvironment, checkTerrainSituation };
+// Détecter : Lister les entités visibles autour du bot
+function scanNearbyEntities(bot, radius = 20) {
+  const entities = {};
+  if (!bot.entities) return entities;
+  for (const id in bot.entities) {
+    const entity = bot.entities[id];
+    if (!entity || entity === bot.entity || !entity.name) continue;
+    if (entity.type !== 'mob' && entity.type !== 'animal' && entity.type !== 'hostile') continue;
+    const dist = bot.entity.position.distanceTo(entity.position);
+    if (dist <= radius) {
+      entities[entity.name] = (entities[entity.name] || 0) + 1;
+    }
+  }
+  return entities;
+}
+
+module.exports = { scanEnvironment, checkTerrainSituation, scanNearbyEntities };
+

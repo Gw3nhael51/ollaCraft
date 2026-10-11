@@ -56,16 +56,23 @@ async function skillUnstuck(bot) {
 }
 
 async function skillExplore(bot) {
-  const distance = crypto.randomInt(20, 35);
+  const distance = crypto.randomInt(15, 25);
   const angle = (crypto.randomInt(0, 360) * Math.PI) / 180;
   const x = Math.round(bot.entity.position.x + Math.cos(angle) * distance);
   const z = Math.round(bot.entity.position.z + Math.sin(angle) * distance);
 
   try {
-    const { GoalNear } = goals;
-    await bot.pathfinder.goto(new GoalNear(x, bot.entity.position.y, z, 3));
+    const { GoalNearXZ } = goals;
+    const gotoPromise = bot.pathfinder.goto(new GoalNearXZ(x, z, 3));
+    const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout exploration")), 20000));
+    await Promise.race([gotoPromise, timeoutPromise]);
+
+    bot.pathfinder.setGoal(null);
+    bot.clearControlStates();
     return { success: true, message: "Déplacement exploratoire effectué vers une nouvelle zone." };
   } catch (error) {
+    bot.pathfinder.setGoal(null);
+    bot.clearControlStates();
     console.warn("Exploration entravée :", error.message);
     return { success: false, message: `Déplacement bloqué (${error.message}).` };
   }

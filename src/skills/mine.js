@@ -1,93 +1,131 @@
 const { goals } = require('mineflayer-pathfinder');
 const GLOBAL_BAD_BLOCKS = new Set();
-const { getBestToolForBlock, countItem, hasToolType, getInventorySummary } = require('../utils/inventory');
+const { getBestToolForBlock, countItem, getInventorySummary } = require('../utils/inventory');
+const { getBlockDrops, canHarvestBlock, getBlockNamesForTarget } = require('../utils/wikiData');
 
-// Fonction pour avancer brièvement et ramasser les objets tombés au sol
+/**
+ * Avance brièvement vers l'emplacement d'un bloc détruit pour en ramasser le butin
+ * @param {object} bot Instance Mineflayer du bot
+ * @param {object} position Vecteur position du bloc miné
+ */
 async function collectDrops(bot, position) {
-  // Technique agressive : on regarde le bloc cassé et on marche droit dessus pendant 0.5s
   try {
     await bot.lookAt(position.offset(0.5, 0.5, 0.5));
     bot.setControlState('forward', true);
-    await bot.waitForTicks(10);
-  } catch (e) {
-    // Ignoré : le bot peut être interrompu ou bloqué, ce n'est qu'un mouvement de ramassage.
+    await bot.waitForTicks(8);
+  } catch {
+    // Mouvement d'aspiration tolérant les interruptions
   } finally {
-    // Toujours relâcher la touche d'avancement, même en cas de lag serveur
     bot.setControlState('forward', false);
   }
 }
 
-// Cherche, se déplace, et casse un seul bloc correspondant à la cible
-async function mineSingleTarget(bot, targetName, badBlocks) {
-  // Fonction interne pour vérifier la correspondance du nom du bloc
-  const matchesTarget = (blockName) => {
-    if (targetName === 'cobblestone' || targetName === 'stone') return blockName === 'stone' || blockName === 'cobblestone';
-    if (targetName.includes('log')) return blockName.includes('log');
-    return blockName === targetName;
-  };
+/**
+ * Cible, approche et extrait un unique bloc correspondant à la ressource demandée
+ * @param {object} bot Instance Mineflayer du bot
+ * @param {string} targetName Nom de la ressource ciblée
+ * @returns {Promise<{ success: boolean, empty: boolean, message: string }>}
+ */
+async function mineSingleTarget(bot, targetName) {
+  const candidateBlockNames = new Set(getBlockNamesForTarget(bot, targetName));
 
   const targetBlock = bot.findBlock({
     matching: (block) => {
-      if (!block?.position) return matchesTarget(block?.name);
-      return matchesTarget(block.name) && !GLOBAL_BAD_BLOCKS.has(block.position.toString());
+      if (!block?.position) return candidateBlockNames.has(block?.name);
+      return candidateBlockNames.has(block.name) && !GLOBAL_BAD_BLOCKS.has(block.position.toString());
     },
     maxDistance: 30
   });
 
-  if (!targetBlock) return { success: false, empty: true, message: `Aucun bloc de '${targetName}' trouvé à proximité.` };
-
-  const isStone = targetBlock.name === 'stone' || targetBlock.name === 'cobblestone';
-  if (isStone && !hasToolType(bot, '_pickaxe')) {
-    return { success: false, empty: false, message: "Impossible de récolter de la pierre sans pioche : fabrique d'abord une wooden_pickaxe." };
+  if (!targetBlock) {
+    return { success: false, empty: true, message: `Aucun bloc correspondant à '${targetName}' trouvé à proximité.` };
   }
 
-  const dropName = targetBlock.name === 'stone' ? 'cobblestone' : targetBlock.name;
-  const before = countItem(bot, dropName);
+  // Vérification de l'outil requis selon les règles du wiki pour la version active
+  const harvestCheck = canHarvestBlock(bot, targetBlock);
+  if (!harvestCheck.canHarvest) {
+    return { success: false, empty: false, message: harvestCheck.message };
+  }
+
+  const bestTool = getBestToolForBlock(bot, targetBlock);
+  if (bestTool) {
+    try {
+      await bot.equip(bestTool, 'hand');
+    } catch {
+      // Ignorer l'erreur d'équipement si l'outil est déjà en main
+    }
+  }
+
+  const expectedDrops = getBlockDrops(bot, targetBlock.name);
+  const initialCounts = new Map(expectedDrops.map(name => [name, countItem(bot, name)]));
 
   try {
     const { GoalNear } = goals;
-    
-    // Timeout de sécurité : si le bot met plus de 15 secondes à atteindre le bloc, on annule
+
     console.log(`[MINE] Je me dirige vers ${targetBlock.name}...`);
     const gotoPromise = bot.pathfinder.goto(new GoalNear(targetBlock.position.x, targetBlock.position.y, targetBlock.position.z, 2));
-    const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout de navigation")), 45000));
+    const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout de navigation")), 30000));
     await Promise.race([gotoPromise, timeoutPromise]);
-    
+
     bot.pathfinder.setGoal(null);
     bot.clearControlStates();
 
     const blockToBreak = bot.blockAt(targetBlock.position);
     await bot.lookAt(targetBlock.position.offset(0.5, 0.5, 0.5));
 
-    const bestTool = getBestToolForBlock(bot, blockToBreak);
-    if (bestTool) await bot.equip(bestTool, 'hand');
+    const finalTool = getBestToolForBlock(bot, blockToBreak);
+    if (finalTool) {
+      try {
+        await bot.equip(finalTool, 'hand');
+      } catch {
+        // Ignorer l'erreur d'équipement
+      }
+    }
 
     console.log(`[MINE] Je creuse ${targetBlock.name}...`);
     const digPromise = bot.dig(blockToBreak);
-    const digTimeout = new Promise((_, r) => setTimeout(() => r(new Error("Timeout creusage")), 10000));
+    const digTimeout = new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout creusage")), 10000));
     await Promise.race([digPromise, digTimeout]);
     console.log(`[MINE] C'est cassé, je ramasse...`);
 
-    // Se rapprocher du centre du bloc détruit pour assurer le ramassage
     try {
       await bot.pathfinder.goto(new GoalNear(targetBlock.position.x, targetBlock.position.y, targetBlock.position.z, 1));
-    } catch (e) {
-      // Ignoré : le chemin n'est peut-être plus valide après le minage
+    } catch {
+      // Poursuivre la collecte même en cas de léger décalage de trajectoire
     }
 
     await collectDrops(bot, targetBlock.position);
 
-    // Attente dynamique pour compenser la latence réseau (OVH) et synchro inventaire
-    let gained = countItem(bot, dropName) - before;
-    let attempts = 0;
-    while (gained <= 0 && attempts < 10) { // Attend jusqu'à ~2 secondes supplémentaires
-      await bot.waitForTicks(4); // NOSONAR : L'attente séquentielle est volontaire pour scruter l'inventaire
-      gained = countItem(bot, dropName) - before;
-      attempts++;
+    // Attente brève et bornée pour la réception des paquets d'inventaire
+    await bot.waitForTicks(6);
+
+    let collectedItemName = null;
+    let collectedQuantity = 0;
+
+    for (const dropName of expectedDrops) {
+      const currentCount = countItem(bot, dropName);
+      const initialCount = initialCounts.get(dropName) || 0;
+      const difference = currentCount - initialCount;
+      if (difference > 0) {
+        collectedItemName = dropName;
+        collectedQuantity = difference;
+        break;
+      }
     }
 
-    if (gained <= 0) return { success: false, empty: false, message: `Bloc '${blockToBreak.name}' cassé mais aucun '${dropName}' récupéré.` };
-    return { success: true, empty: false, message: `+${gained} '${dropName}' récupéré(s).` };
+    if (collectedQuantity <= 0) {
+      return {
+        success: false,
+        empty: false,
+        message: `Bloc '${blockToBreak.name}' cassé mais aucun '${expectedDrops.join('/')}' récupéré.`
+      };
+    }
+
+    return {
+      success: true,
+      empty: false,
+      message: `+${collectedQuantity} '${collectedItemName}' récupéré(s).`
+    };
   } catch (error) {
     console.warn("Échec physique du minage :", error.message);
     bot.pathfinder.setGoal(null);
@@ -97,27 +135,37 @@ async function mineSingleTarget(bot, targetName, badBlocks) {
   }
 }
 
-// Fonction principale du skill mine : répète l'action de minage pour un nombre donné de fois
+/**
+ * Exécute une session de minage répétée pour atteindre la quantité souhaitée
+ * @param {object} bot Instance Mineflayer du bot
+ * @param {object} state État global du bot
+ * @param {string} targetName Nom du bloc ou de l'item à miner
+ * @param {number} count Nombre de blocs à récolter
+ * @returns {Promise<{ success: boolean, message: string }>}
+ */
 async function skillMine(bot, state, targetName, count) {
-  let successCount = 0;
-  let lastMessage = '';
-  const badBlocks = [];
+  const targetQuantity = Math.max(1, count || 1);
+  let successfullyMined = 0;
+  let lastFailureMessage = '';
 
-  async function mineNext(remaining) {
-    if (remaining <= 0 || !state.isSurviving) return;
+  for (let step = 0; step < targetQuantity; step++) {
+    if (!state.isSurviving) break;
 
-    const result = await mineSingleTarget(bot, targetName, badBlocks);
-    lastMessage = result.message;
-    if (result.empty) return;
+    const result = await mineSingleTarget(bot, targetName);
+    lastFailureMessage = result.message;
 
-    if (result.success) successCount++;
-    await mineNext(remaining - 1);
+    if (result.empty) break;
+    if (result.success) successfullyMined++;
   }
 
-  await mineNext(count || 1);
+  if (successfullyMined === 0) {
+    return { success: false, message: `Échec du minage de '${targetName}' : ${lastFailureMessage}` };
+  }
 
-  if (successCount === 0) return { success: false, message: `Échec du minage de '${targetName}' : ${lastMessage}` };
-  return { success: true, message: `${successCount} bloc(s) de '${targetName}' récolté(s). Inventaire : ${getInventorySummary(bot)}` };
+  return {
+    success: true,
+    message: `${successfullyMined} bloc(s) récolté(s) pour '${targetName}'. Inventaire : ${getInventorySummary(bot)}`
+  };
 }
 
 module.exports = { skillMine };

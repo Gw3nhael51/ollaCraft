@@ -6,6 +6,7 @@ const { skillWiki } = require('./wiki');
 
 const { skillSmelt } = require('./smelt');
 const { skillEat } = require('./eat');
+const { skillHunt, skillFight } = require('./combat');
 
 async function dispatchSkill(bot, state, action, target, qty) {
   if (action === 'unstuck') return skillUnstuck(bot);
@@ -16,6 +17,8 @@ async function dispatchSkill(bot, state, action, target, qty) {
   if (action === 'place') return skillPlace(bot, state, target);
   if (action === 'smelt') return skillSmelt(bot, state, target, qty);
   if (action === 'eat') return skillEat(bot, target);
+  if (action === 'hunt') return skillHunt(bot, target);
+  if (action === 'fight') return skillFight(bot, target);
   return { success: false, message: `Action inconnue '${action}'.` };
 }
 

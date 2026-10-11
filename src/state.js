@@ -3,6 +3,8 @@ module.exports = {
   hasStarted: false,
   currentObjective: 'wooden_axe',
   manualObjective: false,
+  unlockedAdvancements: [],
+  currentAdvancement: 'Stone Age',
   base: {
     crafting_table: null,
     furnace: null

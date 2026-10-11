@@ -1,6 +1,13 @@
-const mcData = require('minecraft-data')('1.20.4');
+const { getMcData } = require('../utils/wikiData');
 
+/**
+ * Consulte la base de données du jeu pour extraire les propriétés et recettes d'un bloc ou item
+ * @param {object} bot Instance Mineflayer du bot
+ * @param {string} target Nom de l'item ou du bloc recherché
+ * @returns {{ success: boolean, message: string }}
+ */
 function skillWiki(bot, target) {
+  const mcData = getMcData(bot);
   let response = `--- WIKI: ${target} ---\n`;
   let found = false;
 
@@ -15,19 +22,19 @@ function skillWiki(bot, target) {
     found = true;
     response += `Type : Bloc\n`;
     response += `Minable : ${block.diggable ? 'Oui' : 'Non'}\n`;
-    
+
     if (block.harvestTools) {
-      const tools = Object.keys(block.harvestTools).map(id => mcData.items[id]?.name).filter(Boolean);
-      if (tools.length > 0) {
-        response += `Outils requis pour miner et récupérer : ${tools.slice(0, 5).join(', ')}${tools.length > 5 ? '...' : ''}\n`;
+      const toolNames = Object.keys(block.harvestTools).map(id => mcData.items[id]?.name).filter(Boolean);
+      if (toolNames.length > 0) {
+        response += `Outils requis pour miner et récupérer : ${toolNames.slice(0, 5).join(', ')}${toolNames.length > 5 ? '...' : ''}\n`;
       }
     } else if (block.diggable) {
       response += `Outils requis : Aucun (minable à la main)\n`;
     }
 
     if (block.drops && block.drops.length > 0) {
-      const drops = block.drops.map(id => mcData.items[id]?.name).filter(Boolean);
-      response += `Donne (drops) : ${drops.join(', ')}\n`;
+      const dropNames = block.drops.map(id => mcData.items[id]?.name).filter(Boolean);
+      response += `Donne (drops) : ${dropNames.join(', ')}\n`;
     } else {
       response += `Donne (drops) : Rien\n`;
     }
@@ -36,37 +43,35 @@ function skillWiki(bot, target) {
   if (item) {
     found = true;
     if (!block) response += `Type : Item\n`;
-    
+
     const recipes = mcData.recipes[item.id];
     if (recipes && recipes.length > 0) {
       response += `Fabrication (Craft) :\n`;
-      // Take the first recipe to simplify
-      const r = recipes[0];
-      const needsTable = r.inShape && (r.inShape.length > 2 || r.inShape[0].length > 2);
-      
-      let ingredientsList = [];
-      if (r.inShape) {
-        r.inShape.forEach(row => {
+      const primaryRecipe = recipes[0];
+      const requiresCraftingTable = primaryRecipe.inShape && (primaryRecipe.inShape.length > 2 || primaryRecipe.inShape[0].length > 2);
+
+      const ingredientsList = [];
+      if (primaryRecipe.inShape) {
+        primaryRecipe.inShape.forEach(row => {
           row.forEach(id => {
             if (id) ingredientsList.push(mcData.items[id]?.name);
           });
         });
-      } else if (r.ingredients) {
-        r.ingredients.forEach(id => {
+      } else if (primaryRecipe.ingredients) {
+        primaryRecipe.ingredients.forEach(id => {
           if (id) ingredientsList.push(mcData.items[id]?.name);
         });
       }
-      
-      // Count duplicates
-      const counts = {};
+
+      const ingredientCounts = {};
       ingredientsList.forEach(name => {
-        counts[name] = (counts[name] || 0) + 1;
+        ingredientCounts[name] = (ingredientCounts[name] || 0) + 1;
       });
-      const reqs = Object.entries(counts).map(([name, count]) => `${count}x ${name}`).join(', ');
-      
-      response += `- Recette : ${reqs}\n`;
-      response += `- Quantité produite : ${r.result.count}\n`;
-      response += `- Nécessite un établi (crafting_table) : ${needsTable ? 'Oui' : 'Non'}\n`;
+      const recipeSummary = Object.entries(ingredientCounts).map(([name, count]) => `${count}x ${name}`).join(', ');
+
+      response += `- Recette : ${recipeSummary}\n`;
+      response += `- Quantité produite : ${primaryRecipe.result.count}\n`;
+      response += `- Nécessite un établi (crafting_table) : ${requiresCraftingTable ? 'Oui' : 'Non'}\n`;
     } else {
       response += `Fabrication (Craft) : Non craftable (ou recette spéciale).\n`;
     }

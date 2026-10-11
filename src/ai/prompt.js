@@ -1,5 +1,6 @@
 const invUtils = require('../utils/inventory');
 const envUtils = require('../utils/environment');
+const { getCurrentAdvancementInfo } = require('../utils/advancements');
 
 function getStoneHint(bot) {
   if (invUtils.hasToolType(bot, '_pickaxe')) {
@@ -13,6 +14,8 @@ function buildReactPrompt(bot, state, environment, craftingTable) {
   const inventoryText = invUtils.getInventorySummary(bot);
   const terrainStatus = envUtils.checkTerrainSituation(bot);
   const availableCrafts = JSON.stringify(invUtils.getAvailableCrafts(bot, craftingTable));
+  const advancementInfo = getCurrentAdvancementInfo(state);
+  const unlockedText = state.unlockedAdvancements?.length > 0 ? state.unlockedAdvancements.map(a => `[${a}]`).join(', ') : 'aucun';
   let tableStatus = "Non (absent ou non posé)";
   if (craftingTable) {
     tableStatus = "Oui (à proximité)";
@@ -30,10 +33,16 @@ function buildReactPrompt(bot, state, environment, craftingTable) {
     baseInfo += `  -> Utilise ces informations pour y retourner si besoin.`;
   }
 
+  const nearbyEntities = envUtils.scanNearbyEntities ? envUtils.scanNearbyEntities(bot, 20) : {};
+  const entitiesText = Object.keys(nearbyEntities).length > 0 ? JSON.stringify(nearbyEntities) : "aucune";
+
   return `
-    Tu es Herobrine, un agent IA autonome dans Minecraft. Tu dois raisonner et t'adapter par toi-même.
+    Tu es ${bot.username || 'Herobrine'}, un agent IA autonome dans Minecraft. Tu dois raisonner et t'adapter par toi-même.
 
     OBJECTIF GLOBAL : Obtenir '${state.currentObjective}'.
+    - Statut de l'objectif : ${invUtils.countItem(bot, state.currentObjective) > 0 ? "Déjà possédé dans l'inventaire" : "NON POSSÉDÉ (tu dois le fabriquer ou le récolter)"}
+    - JALON / SUCCÈS OFFICIEL EN COURS : ${advancementInfo}
+    - Succès déjà validés : ${unlockedText}
 
     ÉTAT PHYSIQUE :
     - Santé : ${Math.round(bot.health)}/20 | Faim : ${Math.round(bot.food)}/20
@@ -44,7 +53,8 @@ function buildReactPrompt(bot, state, environment, craftingTable) {
     ${baseInfo}
 
     ENVIRONNEMENT VISIBLE (RADAR) :
-    ${envText}
+    - Blocs : ${envText}
+    - Entités/Créatures proches : ${entitiesText}
 
     CONNAISSANCE DU JEU ET RÈGLES DE FABRICATION :
     - Objets fabricables MAINTENANT avec ton inventaire : ${availableCrafts}
@@ -69,7 +79,7 @@ function buildReactPrompt(bot, state, environment, craftingTable) {
     - Si tu es coincé ("bloqué dans un trou", "terrain impraticable") ou si ton action "mine"/"explore" échoue à cause du terrain, utilise ABSOLUMENT l'action "unstuck".
     - Si ton objectif nécessite un établi, vérifie si tu en as un posé à proximité avant de crafter l'outil.
     - Sois intelligent dans la gestion de tes ressources. Si tu as déjà les composants, ne retourne pas miner inutilement.
-    - Si ta faim descend sous 15, mange ('eat').
+    - Si ta faim descend sous 15, mange ('eat') ou chasse des animaux ('hunt').
     - Ne pose pas un établi ou un four si tu en as déjà un dans ta base et que tu peux y retourner.
 
     RÉSULTAT DE TA DERNIÈRE ACTION (MÉMOIRE / FEEDBACK) :
@@ -84,13 +94,15 @@ function buildReactPrompt(bot, state, environment, craftingTable) {
     - "place" : Pour poser un objet de tes poches au sol (ex: {"target": "crafting_table"}).
     - "smelt" : Pour faire fondre un minerai dans un four (ex: {"target": "raw_iron", "qty": 3}).
     - "eat" : Pour consommer de la nourriture de ton inventaire.
+    - "hunt" : Pour chasser un animal proche (ex: {"target": "cow"} ou {"target": "pig"}).
+    - "fight" : Pour combattre un monstre hostile proche pour te défendre ou récolter du butin (ex: {"target": "zombie"}).
     - "explore" : Pour marcher et trouver de nouvelles ressources si rien d'utile n'est visible.
 
     CONSIGNE : Analyse le résultat précédent, tes ressources et tes recettes. Déduis la prochaine action logique.
     Réponds UNIQUEMENT en JSON :
     {
       "thought": "Explication courte de ton raisonnement",
-      "action": "mine" | "craft" | "place" | "explore" | "unstuck" | "wiki" | "smelt" | "eat",
+      "action": "mine" | "craft" | "place" | "explore" | "unstuck" | "wiki" | "smelt" | "eat" | "hunt" | "fight",
       "target": "nom_cible_si_applicable",
       "qty": 1
     }

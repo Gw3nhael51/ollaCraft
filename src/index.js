@@ -4,6 +4,7 @@ const config = require('./config');
 const state = require('./state');
 const { syncObjective } = require('./utils/inventory');
 const { handleSurvivalRequest } = require('./ai/loop');
+const { checkAdvancementMessage } = require('./utils/advancements');
 
 const bot = mineflayer.createBot(config.BOT_CONFIG);
 bot.loadPlugin(pathfinder);
@@ -20,7 +21,7 @@ bot.loadPlugin(pathfinder);
           bot.chat(`/login ${pwd}`);
           console.log(`🔑 Tentative d'authentification envoyée.`);
         }, 1000);
-      }, 2000);
+      }, 1500);
     }
 
     const mcData = require("minecraft-data")(bot.version);
@@ -34,22 +35,40 @@ bot.loadPlugin(pathfinder);
     
     bot.pathfinder.setMovements(defaultMove);
 
-  if (!state.hasStarted) {
-    state.hasStarted = true;
-    state.isSurviving = true;
-    
-    // Attendre que l'authentification soit terminée avant de lancer la boucle IA
-    const startDelay = pwd ? 5000 : 1000;
-    setTimeout(() => {
+    if (!pwd && !state.hasStarted) {
+      state.hasStarted = true;
+      state.isSurviving = true;
       bot.chat("Mode autonome ReAct prêt. Objectif : " + state.currentObjective);
       void handleSurvivalRequest(bot);
-    }, startDelay);
-  }
-});
+    }
+  });
+
+  bot.on('messagestr', (message) => {
+    const text = message.toLowerCase();
+    const pwd = config.AUTH_PASSWORD;
+
+    if (text.includes('/register') && pwd) {
+      bot.chat(`/register ${pwd} ${pwd}`);
+    } else if (text.includes('/login') && pwd) {
+      bot.chat(`/login ${pwd}`);
+    }
+
+    if (text.includes('successful') || text.includes('succès') || text.includes('logged in') || text.includes('registered')) {
+      if (!state.hasStarted) {
+        state.hasStarted = true;
+        state.isSurviving = true;
+        console.log("🚀 Connexion confirmée par le serveur ! Lancement du mode autonome.");
+        bot.chat("Mode autonome ReAct prêt. Objectif : " + state.currentObjective);
+        void handleSurvivalRequest(bot);
+      }
+    }
+
+    checkAdvancementMessage(bot, state, message);
+  });
 
 bot.on('chat', async (username, message) => {
   if (username === bot.username) return;
-  // LOG TOUTES LES MESSAGES POUR DEBUG AUTHME
+  // LOG TOUTs LES MESSAGES POUR DEBUG AUTHME
   console.log(`[CHAT SERVER] ${username ? username + ': ' : ''}${message}`);
 
   if (message === 'start') {
