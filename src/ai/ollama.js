@@ -1,5 +1,10 @@
 const config = require('../config');
 
+/**
+ * Interroge le modèle local Ollama pour obtenir une décision structurée au format JSON
+ * @param {string} promptText Prompt complet envoyé au modèle
+ * @returns {Promise<object|null>} Décision JSON parsée ou null en cas d'erreur
+ */
 async function askOllama(promptText) {
   try {
     const response = await fetch('http://localhost:11434/api/generate', {
@@ -12,19 +17,18 @@ async function askOllama(promptText) {
         format: 'json',
         think: false,
         options: {
-          temperature: 0.1 // Température très basse pour un agent plus logique
+          temperature: 0.1
         }
       })
     });
 
     const data = await response.json();
-    
+
     if (data.error) {
       console.error("Erreur de l'API Ollama :", data.error);
       return null;
     }
 
-    // Récupérer : Lire la réponse ou le champ thinking des modèles qui raisonnent
     const raw = (data.response || data.thinking || '').trim();
     const start = raw.indexOf('{');
     const end = raw.lastIndexOf('}');

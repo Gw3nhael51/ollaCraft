@@ -1,18 +1,21 @@
-// Fonction pour consommer de la nourriture depuis l'inventaire
+/**
+ * Consomme un aliment présent dans l'inventaire du bot
+ * @param {object} bot Instance Mineflayer du bot
+ * @param {string} targetName Nom de la nourriture à consommer
+ * @returns {Promise<{ success: boolean, message: string }>} Résultat de l'action
+ */
 async function skillEat(bot, targetName) {
   if (!targetName) {
     return { success: false, message: "Précise la nourriture à manger dans 'target'." };
   }
 
-  // Recherche la nourriture ciblée dans l'inventaire du bot
-  const item = bot.inventory.items().find(i => i.name === targetName);
-  if (!item) {
+  const foodItem = bot.inventory.items().find(item => item.name === targetName);
+  if (!foodItem) {
     return { success: false, message: `Tu ne possèdes pas de '${targetName}' dans ton inventaire.` };
   }
 
   try {
-    // Equipe la nourriture dans la main principale et la consomme
-    await bot.equip(item, 'hand');
+    await bot.equip(foodItem, 'hand');
     await bot.consume();
     return { success: true, message: `Tu as mangé '${targetName}'.` };
   } catch (error) {

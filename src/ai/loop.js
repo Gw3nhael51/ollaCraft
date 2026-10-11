@@ -6,6 +6,11 @@ const { buildReactPrompt } = require('./prompt');
 const { askOllama } = require('./ollama');
 const { dispatchSkill } = require('../skills/dispatcher');
 
+/**
+ * Exécute un cycle complet de réflexion et d'action ReAct pour la survie autonome
+ * @param {object} bot Instance Mineflayer du bot
+ * @returns {Promise<void>}
+ */
 async function handleSurvivalRequest(bot) {
   if (!state.isSurviving) return;
 
