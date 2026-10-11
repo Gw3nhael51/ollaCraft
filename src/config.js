@@ -12,8 +12,40 @@ module.exports = {
 
   SOFT_BLOCKS: new Set(['dirt', 'grass_block', 'sand', 'gravel', 'stone', 'cobblestone', 'clay']),
   VALID_GROUND_BLOCKS: new Set(['grass_block', 'dirt', 'stone', 'sand', 'cobblestone', 'deepslate', 'gravel']),
-  VALID_ACTIONS: new Set(['mine', 'explore', 'craft', 'place', 'unstuck', 'smelt', 'eat', 'wiki', 'hunt', 'fight']),
-  QUEST_CHAIN: ['wooden_axe', 'wooden_pickaxe', 'cobblestone', 'stone_pickaxe', 'stone_axe', 'furnace', 'raw_iron', 'iron_ingot', 'iron_pickaxe', 'diamond_pickaxe'],
-  QUEST_AMOUNT: { cobblestone: 3, raw_iron: 3, iron_ore: 3, iron_ingot: 3 },
-  TOOL_SUFFIXES: ['_pickaxe', '_axe', '_shovel', '_sword', '_hoe']
+  VALID_ACTIONS: new Set(['mine', 'explore', 'craft', 'place', 'unstuck', 'smelt', 'eat', 'wiki', 'hunt', 'fight', 'chest']),
+  QUEST_CHAIN: [
+    'wooden_axe',
+    'wooden_pickaxe',
+    'cobblestone',
+    'stone_pickaxe',
+    'stone_axe',
+    'furnace',
+    'raw_iron',
+    'iron_ingot',
+    'iron_pickaxe',
+    'iron_sword',
+    'shield',
+    'iron_chestplate',
+    'diamond',
+    'diamond_pickaxe',
+    'diamond_sword',
+    'diamond_chestplate',
+    'obsidian',
+    'flint_and_steel',
+    'blaze_rod',
+    'ender_pearl',
+    'ender_eye'
+  ],
+  QUEST_AMOUNT: {
+    cobblestone: 3,
+    raw_iron: 3,
+    iron_ore: 3,
+    iron_ingot: 3,
+    diamond: 3,
+    obsidian: 10,
+    blaze_rod: 7,
+    ender_pearl: 12,
+    ender_eye: 12
+  },
+  TOOL_SUFFIXES: ['_pickaxe', '_axe', '_shovel', '_sword', '_hoe', '_helmet', '_chestplate', '_leggings', '_boots', '_shield']
 };

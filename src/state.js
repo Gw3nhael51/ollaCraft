@@ -7,7 +7,8 @@ module.exports = {
   currentAdvancement: 'Stone Age',
   base: {
     crafting_table: null,
-    furnace: null
+    furnace: null,
+    chest: null
   },
   lastActionResult: {
     action: 'aucun',
