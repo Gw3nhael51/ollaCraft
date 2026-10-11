@@ -20,7 +20,8 @@ async function skillPlace(bot, state, targetName) {
       const botPos = bot.entity.position.floored();
       const placePos = block.position.offset(0, 1, 0);
       const collides = botPos.equals(placePos) || botPos.offset(0, 1, 0).equals(placePos);
-      return above?.name === 'air' && !collides;
+      const isAir = above?.name === 'air' || above?.name === 'cave_air' || above?.name === 'void_air';
+      return isAir && !collides;
     },
     maxDistance: 3
   });
