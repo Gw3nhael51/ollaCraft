@@ -38,10 +38,25 @@ function getOwnedTools(bot) {
  * @param {string} questName Nom de l'objectif à vérifier
  * @returns {boolean} True si l'objectif est complété
  */
-function isQuestDone(bot, questName) {
+function isQuestDone(bot, questName, state) {
   if (questName === 'cobblestone') {
     const requiredAmount = config.QUEST_AMOUNT.cobblestone || 3;
-    return countItem(bot, 'cobblestone') >= requiredAmount || countItem(bot, 'stone_pickaxe') > 0;
+    return countItem(bot, 'cobblestone') >= requiredAmount || countItem(bot, 'stone_pickaxe') > 0 || countItem(bot, 'iron_pickaxe') > 0;
+  }
+
+  if (questName === 'furnace') {
+    const hasFurnaceInInventory = countItem(bot, 'furnace') > 0;
+    const hasPlacedFurnace = Boolean(state?.base?.furnace);
+    const hasAdvancedIronItems = countItem(bot, 'iron_ingot') > 0 || countItem(bot, 'iron_pickaxe') > 0 || countItem(bot, 'iron_sword') > 0;
+    const nearbyFurnace = bot.findBlock({ matching: bot.registry.blocksByName.furnace?.id, maxDistance: 32 });
+    return hasFurnaceInInventory || hasPlacedFurnace || Boolean(nearbyFurnace) || hasAdvancedIronItems;
+  }
+
+  if (questName === 'crafting_table') {
+    const hasTableInInventory = countItem(bot, 'crafting_table') > 0;
+    const hasPlacedTable = Boolean(state?.base?.crafting_table);
+    const nearbyTable = bot.findBlock({ matching: bot.registry.blocksByName.crafting_table?.id, maxDistance: 32 });
+    return hasTableInInventory || hasPlacedTable || Boolean(nearbyTable);
   }
 
   if (questName === 'raw_iron' || questName === 'iron_ore') {
@@ -49,12 +64,34 @@ function isQuestDone(bot, questName) {
     const hasRawIron = countItem(bot, 'raw_iron') >= requiredAmount;
     const hasIronOre = countItem(bot, 'iron_ore') >= requiredAmount;
     const hasIronIngot = countItem(bot, 'iron_ingot') > 0;
-    return hasRawIron || hasIronOre || hasIronIngot;
+    const hasIronGear = countItem(bot, 'iron_pickaxe') > 0 || countItem(bot, 'iron_sword') > 0 || countItem(bot, 'iron_chestplate') > 0;
+    return hasRawIron || hasIronOre || hasIronIngot || hasIronGear;
   }
 
   if (questName === 'iron_ingot') {
     const requiredAmount = config.QUEST_AMOUNT.iron_ingot || 3;
-    return countItem(bot, 'iron_ingot') >= requiredAmount || countItem(bot, 'iron_pickaxe') > 0;
+    const hasIronGear = countItem(bot, 'iron_pickaxe') > 0 || countItem(bot, 'iron_sword') > 0 || countItem(bot, 'iron_chestplate') > 0;
+    return countItem(bot, 'iron_ingot') >= requiredAmount || hasIronGear;
+  }
+
+  if (questName === 'wooden_axe') {
+    return countItem(bot, 'wooden_axe') > 0 || countItem(bot, 'stone_axe') > 0 || countItem(bot, 'iron_axe') > 0;
+  }
+
+  if (questName === 'wooden_pickaxe') {
+    return countItem(bot, 'wooden_pickaxe') > 0 || countItem(bot, 'stone_pickaxe') > 0 || countItem(bot, 'iron_pickaxe') > 0;
+  }
+
+  if (questName === 'stone_pickaxe') {
+    return countItem(bot, 'stone_pickaxe') > 0 || countItem(bot, 'iron_pickaxe') > 0 || countItem(bot, 'diamond_pickaxe') > 0;
+  }
+
+  if (questName === 'stone_axe') {
+    return countItem(bot, 'stone_axe') > 0 || countItem(bot, 'iron_axe') > 0 || countItem(bot, 'diamond_axe') > 0;
+  }
+
+  if (questName === 'iron_pickaxe') {
+    return countItem(bot, 'iron_pickaxe') > 0 || countItem(bot, 'diamond_pickaxe') > 0;
   }
 
   return countItem(bot, questName) >= (config.QUEST_AMOUNT[questName] || 1);
@@ -68,7 +105,7 @@ function isQuestDone(bot, questName) {
 function syncObjective(bot, state) {
   if (state.manualObjective) return;
 
-  const nextObjective = config.QUEST_CHAIN.find(name => !isQuestDone(bot, name)) || config.QUEST_CHAIN.at(-1);
+  const nextObjective = config.QUEST_CHAIN.find(name => !isQuestDone(bot, name, state)) || config.QUEST_CHAIN.at(-1);
   if (nextObjective !== state.currentObjective) {
     const previousObjective = state.currentObjective;
     state.currentObjective = nextObjective;
