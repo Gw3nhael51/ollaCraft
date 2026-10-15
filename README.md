@@ -56,6 +56,7 @@ flowchart TD
 │   ├── state.js               # Central runtime state (inventory, health, memory, base coordinates)
 │   ├── ai/
 │   │   ├── loop.js            # Main ReAct loop, action execution cycle, and fallback triggers
+│   │   ├── manager.js         # Strategic supervisor loop, loop detection, and anti-hallucination
 │   │   ├── ollama.js          # Ollama REST client, payload formatting, and JSON extraction
 │   │   └── prompt.js          # Dynamic system and user prompt constructor
 │   ├── skills/
@@ -134,8 +135,10 @@ Before starting, ensure you have:
    MC_USERNAME=Herobrine
    MC_PASSWORD=YourBotPasswordIfRequired
 
-   # Ollama settings
-   OLLAMA_MODEL=qwen2.5:27b
+   # Ollama settings (Dual-Model Architecture)
+   OLLAMA_MODEL=qwen3.5:9B
+   OLLAMA_MODEL_PLAYER=qwen3.5:9B
+   OLLAMA_MODEL_MANAGER=qwen3.5:9B
    ```
 
 4. **Launch the agent:**
@@ -172,7 +175,9 @@ Players can interact with and command the bot directly using in-game chat:
 | `MC_PORT` | `25565` | Minecraft server port. |
 | `MC_USERNAME` | `Herobrine` | In-game player name for the bot. |
 | `MC_PASSWORD` | *(Empty)* | Password used for server `/register` or `/login` commands. |
-| `OLLAMA_MODEL` | `qwen2.5:27b` | Ollama model tag (`qwen2.5:27b`, `llama3.1:8b`, `mistral`, etc.). |
+| `OLLAMA_MODEL` | `qwen3.5:9B` | Fallback Ollama model tag. |
+| `OLLAMA_MODEL_PLAYER` | `qwen3.5:9B` | Dedicated model for tactical ReAct decisions. |
+| `OLLAMA_MODEL_MANAGER` | `qwen3.5:9B` | Dedicated model for strategic supervision and loop recovery. |
 | `PORT` | `127.0.0.1:25565:25565` | Optional Docker port mapping. |
 
 ### Bot Rules & Parameters (`src/config.js`)
