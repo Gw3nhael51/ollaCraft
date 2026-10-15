@@ -20,5 +20,9 @@ module.exports = {
     target: 'none',
     success: true,
     message: 'Bot initialized and ready.'
-  }
+  },
+  actionHistory: [],
+  managerDirective: "Récolter du bois pour fabriquer les premiers outils.",
+  managerSubGoal: null,
+  isManagerThinking: false
 };

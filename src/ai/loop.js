@@ -53,6 +53,16 @@ async function handleSurvivalRequest(bot) {
       message: executionResult.message
     };
 
+    state.actionHistory.push({
+      action: decision.action,
+      target: decision.target || 'none',
+      success: executionResult.success,
+      message: executionResult.message
+    });
+    if (state.actionHistory.length > 8) {
+      state.actionHistory.shift();
+    }
+
     syncObjective(bot, state);
 
     if (state.isSurviving) {

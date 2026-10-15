@@ -3,16 +3,17 @@ const config = require('../config');
 /**
  * Query local Ollama model to obtain a structured JSON decision
  * @param {string} promptText Full prompt sent to the model
+ * @param {string} [modelName] Name of target Ollama model
  * @returns {Promise<object|null>} Parsed JSON decision or null on failure
  */
-async function askOllama(promptText) {
+async function askOllama(promptText, modelName = config.OLLAMA_MODEL_PLAYER) {
   try {
     const response = await fetch('http://localhost:11434/api/generate', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       signal: AbortSignal.timeout(30000),
       body: JSON.stringify({
-        model: config.OLLAMA_MODEL || 'llama3.1',
+        model: modelName,
         prompt: promptText,
         stream: false,
         format: 'json',

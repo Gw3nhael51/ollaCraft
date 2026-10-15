@@ -4,7 +4,9 @@
 require("dotenv").config();
 
 module.exports = {
-  OLLAMA_MODEL: process.env.OLLAMA_MODEL || 'qwen2.5:27b',
+  OLLAMA_MODEL: process.env.OLLAMA_MODEL || 'qwen3.5:9B',
+  OLLAMA_MODEL_PLAYER: process.env.OLLAMA_MODEL_PLAYER || process.env.OLLAMA_MODEL || 'qwen3.5:9B',
+  OLLAMA_MODEL_MANAGER: process.env.OLLAMA_MODEL_MANAGER || process.env.OLLAMA_MODEL || 'qwen3.5:9B',
   AUTH_PASSWORD: process.env.MC_PASSWORD || '',
   BOT_CONFIG: {
     host: process.env.MC_HOST || 'localhost',

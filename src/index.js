@@ -4,6 +4,7 @@ const config = require('./config');
 const state = require('./state');
 const { syncObjective } = require('./utils/inventory');
 const { handleSurvivalRequest } = require('./ai/loop');
+const { startManagerLoop } = require('./ai/manager');
 const { checkAdvancementMessage } = require('./utils/advancements');
 
 const bot = mineflayer.createBot(config.BOT_CONFIG);
@@ -46,6 +47,7 @@ bot.on('spawn', () => {
     state.hasStarted = true;
     state.isSurviving = true;
     bot.chat("Autonomous ReAct mode ready. Objective : " + state.currentObjective);
+    startManagerLoop(bot);
     void handleSurvivalRequest(bot);
   }
 });
@@ -67,6 +69,7 @@ bot.on('messagestr', (message) => {
       state.isSurviving = true;
       console.log("🚀 Connection confirmed by server! Launching autonomous mode.");
       bot.chat("Autonomous ReAct mode ready. Objective : " + state.currentObjective);
+      startManagerLoop(bot);
       void handleSurvivalRequest(bot);
     }
   }
@@ -84,6 +87,7 @@ bot.on('chat', async (username, message) => {
     if (state.isSurviving) return;
     state.isSurviving = true;
     bot.chat("Starting autonomous mode.");
+    startManagerLoop(bot);
     await handleSurvivalRequest(bot);
   }
 
