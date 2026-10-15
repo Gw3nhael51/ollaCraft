@@ -6,9 +6,9 @@ const { getBlockDrops, canHarvestBlock, getBlockNamesForTarget } = require('../u
 const { isBlockExposedToAir, VALUABLE_ORES } = require('../utils/environment');
 
 /**
- * Avance brièvement vers l'emplacement d'un bloc détruit pour en ramasser le butin
- * @param {object} bot Instance Mineflayer du bot
- * @param {object} position Vecteur position du bloc miné
+ * Move briefly towards destroyed block position to vacuum item drops
+ * @param {object} bot Mineflayer bot instance
+ * @param {object} position Mined block position vector
  */
 async function collectDrops(bot, position) {
   try {
@@ -16,16 +16,16 @@ async function collectDrops(bot, position) {
     bot.setControlState('forward', true);
     await bot.waitForTicks(8);
   } catch {
-    // Mouvement d'aspiration tolérant les interruptions
+    // Tolerate movement interruptions during pickup
   } finally {
     bot.setControlState('forward', false);
   }
 }
 
 /**
- * Cible, approche et extrait un unique bloc correspondant à la ressource demandée
- * @param {object} bot Instance Mineflayer du bot
- * @param {string} targetName Nom de la ressource ciblée
+ * Target, approach, and mine a single block matching requested resource
+ * @param {object} bot Mineflayer bot instance
+ * @param {string} targetName Targeted resource name
  * @returns {Promise<{ success: boolean, empty: boolean, message: string }>}
  */
 async function mineSingleTarget(bot, targetName) {
@@ -35,7 +35,7 @@ async function mineSingleTarget(bot, targetName) {
   const targetBlock = bot.findBlock({
     matching: (block) => {
       if (!block?.position) return candidateBlockNames.has(block?.name);
-      if (!candidateBlockNames.has(block.name) || GLOBAL_BAD_BLOCKS.has(block.position.toString())) return false;
+      if (!candidateBlockNames.has(block.name) || GLOBAL_BAD_BLOCKS.has(getPosKey(block.position))) return false;
       if (isOpportunistic) {
         return isBlockExposedToAir(bot, block) && canHarvestBlock(bot, block).canHarvest;
       }
@@ -45,11 +45,11 @@ async function mineSingleTarget(bot, targetName) {
   });
 
   if (!targetBlock) {
-    const errorTarget = isOpportunistic ? 'minerai exposé' : targetName;
-    return { success: false, empty: true, message: `Aucun bloc correspondant à '${errorTarget}' trouvé à proximité.` };
+    const errorTarget = isOpportunistic ? 'exposed ore' : targetName;
+    return { success: false, empty: true, message: `No block matching '${errorTarget}' found nearby.` };
   }
 
-  // Vérification de l'outil requis selon les règles du wiki pour la version active
+  // Verify required tool according to wiki harvest rules
   const harvestCheck = canHarvestBlock(bot, targetBlock);
   if (!harvestCheck.canHarvest) {
     return { success: false, empty: false, message: harvestCheck.message };
@@ -60,7 +60,7 @@ async function mineSingleTarget(bot, targetName) {
     try {
       await bot.equip(bestTool, 'hand');
     } catch {
-      // Ignorer l'erreur d'équipement si l'outil est déjà en main
+      // Ignore tool equipping error if already held in hand
     }
   }
 
@@ -70,9 +70,9 @@ async function mineSingleTarget(bot, targetName) {
   try {
     const { GoalNear } = goals;
 
-    console.log(`[MINE] Je me dirige vers ${targetBlock.name}...`);
+    console.log(`[MINE] Moving towards ${targetBlock.name}...`);
     const gotoPromise = bot.pathfinder.goto(new GoalNear(targetBlock.position.x, targetBlock.position.y, targetBlock.position.z, 2));
-    const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout de navigation")), 30000));
+    const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error("Navigation timeout")), 30000));
     await Promise.race([gotoPromise, timeoutPromise]);
 
     bot.pathfinder.setGoal(null);
@@ -86,25 +86,25 @@ async function mineSingleTarget(bot, targetName) {
       try {
         await bot.equip(finalTool, 'hand');
       } catch {
-        // Ignorer l'erreur d'équipement
+        // Ignore equipping error
       }
     }
 
-    console.log(`[MINE] Je creuse ${targetBlock.name}...`);
+    console.log(`[MINE] Digging ${targetBlock.name}...`);
     const digPromise = bot.dig(blockToBreak);
-    const digTimeout = new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout creusage")), 10000));
+    const digTimeout = new Promise((_, reject) => setTimeout(() => reject(new Error("Digging timeout")), 10000));
     await Promise.race([digPromise, digTimeout]);
-    console.log(`[MINE] C'est cassé, je ramasse...`);
+    console.log(`[MINE] Block broken, collecting loot...`);
 
     try {
       await bot.pathfinder.goto(new GoalNear(targetBlock.position.x, targetBlock.position.y, targetBlock.position.z, 1));
     } catch {
-      // Poursuivre la collecte même en cas de léger décalage de trajectoire
+      // Continue item collection despite slight navigation offset
     }
 
     await collectDrops(bot, targetBlock.position);
 
-    // Attente brève et bornée pour la réception des paquets d'inventaire
+    // Wait for inventory update packets
     await bot.waitForTicks(6);
 
     let collectedItemName = null;
@@ -125,30 +125,30 @@ async function mineSingleTarget(bot, targetName) {
       return {
         success: false,
         empty: false,
-        message: `Bloc '${blockToBreak.name}' cassé mais aucun '${expectedDrops.join('/')}' récupéré.`
+        message: `Block '${blockToBreak.name}' broken but no '${expectedDrops.join('/')}' collected.`
       };
     }
 
-    // Vidage de filon : vérifier et extraire immédiatement les blocs adjacents du même filon
+    // Extract immediately adjacent blocks from the same vein
     let veinExtraCount = 0;
     if (VALUABLE_ORES.has(blockToBreak.name)) {
       veinExtraCount = await harvestConnectedVein(bot, targetBlock.position, blockToBreak.name);
     }
 
     const totalCollected = collectedQuantity + veinExtraCount;
-    const veinMsg = veinExtraCount > 0 ? ` (+${veinExtraCount} bloc(s) du filon)` : '';
+    const veinMsg = veinExtraCount > 0 ? ` (+${veinExtraCount} vein block(s))` : '';
 
     return {
       success: true,
       empty: false,
-      message: `+${totalCollected} '${collectedItemName}' récupéré(s)${veinMsg}.`
+      message: `+${totalCollected} '${collectedItemName}' collected${veinMsg}.`
     };
   } catch (error) {
-    console.warn("Échec physique du minage :", error.message);
+    console.warn("Mining failure :", error.message);
     bot.pathfinder.setGoal(null);
     bot.clearControlStates();
-    GLOBAL_BAD_BLOCKS.add(targetBlock.position.toString());
-    return { success: false, empty: false, message: `Bloc inaccessible (${error.message}).` };
+    GLOBAL_BAD_BLOCKS.add(getPosKey(targetBlock.position));
+    return { success: false, empty: false, message: `Block unreachable (${error.message}).` };
   }
 }
 
@@ -158,11 +158,10 @@ const VEIN_DIRECTIONS = [
   new Vec3(0, 0, 1), new Vec3(0, 0, -1)
 ];
 
-
 /**
- * Formate une position en clé textuelle unique
- * @param {object} pos Position Vec3 ou bloc
- * @returns {string} Clé textuelle x,y,z
+ * Format position into a unique coordinate key
+ * @param {object} pos Vec3 position or block
+ * @returns {string} Coordinate key x,y,z
  */
 function getPosKey(pos) {
   if (!pos) return '';
@@ -170,86 +169,97 @@ function getPosKey(pos) {
 }
 
 /**
- * Tente d'extraire un bloc spécifique du filon s'il est valide et sécurisé
- * @param {object} bot Instance Mineflayer du bot
- * @param {object} neighborPos Position du bloc à miner
- * @param {object} neighborBlock Bloc à miner
- * @returns {Promise<boolean>} True si le bloc a été extrait avec succès
+ * Attempt to mine a specific vein block if valid and safe
+ * @param {object} bot Mineflayer bot instance
+ * @param {object} neighborPos Target block position to mine
+ * @param {object} neighborBlock Target block object
+ * @returns {Promise<boolean>} True if block was successfully extracted
  */
 async function mineVeinBlock(bot, neighborPos, neighborBlock) {
   try {
     const tool = getBestToolForBlock(bot, neighborBlock);
     if (tool) await bot.equip(tool, 'hand').catch(() => {});
 
-    console.log(`[FILON] Extraction d'un bloc supplémentaire du filon (${neighborBlock.name}) en ${neighborPos}...`);
+    console.log(`[VEIN] Extracting additional vein block (${neighborBlock.name}) at (${getPosKey(neighborPos)})...`);
     await bot.lookAt(neighborPos.offset(0.5, 0.5, 0.5));
     await bot.dig(neighborBlock);
     await collectDrops(bot, neighborPos);
     return true;
   } catch (err) {
-    console.warn(`[FILON] Impossible de miner le bloc adjacent : ${err.message}`);
+    console.warn(`[VEIN] Unable to mine adjacent block : ${err.message}`);
     GLOBAL_BAD_BLOCKS.add(getPosKey(neighborPos));
     return false;
   }
 }
 
 /**
- * Parcourt récursivement les branches du filon sans boucle while-await
- * @param {object} bot Instance Mineflayer du bot
- * @param {Array<object>} queue File d'attente des positions à explorer
- * @param {Set<string>} visited Positions déjà inspectées
- * @param {Set<string>} targetTypes Types de blocs acceptés pour ce filon
- * @param {number} harvested Nombre actuel de blocs récoltés
- * @param {number} maxVeinBlocks Limite maximale
- * @returns {Promise<number>} Total récolté
+ * Explore directions sequentially around a vein block
+ * @param {object} bot Mineflayer bot instance
+ * @param {object} current Center block position
+ * @param {number} dirIndex Current direction index
+ * @param {object} state Vein exploration state
+ * @returns {Promise<number>} Total blocks harvested
  */
-async function processVeinQueue(bot, queue, visited, targetTypes, harvested, maxVeinBlocks) {
-  if (queue.length === 0 || harvested >= maxVeinBlocks) {
-    return harvested;
+async function exploreVeinDirections(bot, current, dirIndex, state) {
+  if (dirIndex >= VEIN_DIRECTIONS.length || state.harvested >= state.maxVeinBlocks) {
+    return state.harvested;
   }
 
-  const current = queue.shift();
-  let currentHarvested = harvested;
+  const dir = VEIN_DIRECTIONS[dirIndex];
+  const neighborPos = current.plus(dir);
+  const key = getPosKey(neighborPos);
 
-  for (const dir of VEIN_DIRECTIONS) {
-    if (currentHarvested >= maxVeinBlocks) break;
-
-    const neighborPos = current.plus(dir);
-    const key = getPosKey(neighborPos);
-
-    if (visited.has(key)) continue;
-    visited.add(key);
+  if (!state.visited.has(key)) {
+    state.visited.add(key);
 
     const neighborBlock = bot.blockAt(neighborPos);
-    if (!neighborBlock || !targetTypes.has(neighborBlock.name)) continue;
-    if (GLOBAL_BAD_BLOCKS.has(key)) continue;
+    if (neighborBlock && state.targetTypes.has(neighborBlock.name) && !GLOBAL_BAD_BLOCKS.has(key)) {
+      const harvestCheck = canHarvestBlock(bot, neighborBlock);
+      if (harvestCheck.canHarvest) {
+        const touchesLava = VEIN_DIRECTIONS.some(d => {
+          const checkBlock = bot.blockAt(neighborPos.plus(d));
+          return checkBlock && (checkBlock.name === 'lava' || checkBlock.name === 'flowing_lava');
+        });
 
-    const harvestCheck = canHarvestBlock(bot, neighborBlock);
-    if (!harvestCheck.canHarvest) continue;
-
-    const touchesLava = VEIN_DIRECTIONS.some(d => {
-      const checkBlock = bot.blockAt(neighborPos.plus(d));
-      return checkBlock && (checkBlock.name === 'lava' || checkBlock.name === 'flowing_lava');
-    });
-    if (touchesLava) continue;
-
-    const success = await mineVeinBlock(bot, neighborPos, neighborBlock);
-    if (success) {
-      currentHarvested++;
-      queue.push(neighborPos);
+        if (!touchesLava) {
+          const success = await mineVeinBlock(bot, neighborPos, neighborBlock);
+          if (success) {
+            state.queue.push(neighborPos);
+            state.harvested++;
+            return exploreVeinDirections(bot, current, dirIndex + 1, state);
+          }
+        }
+      }
     }
   }
 
-  return processVeinQueue(bot, queue, visited, targetTypes, currentHarvested, maxVeinBlocks);
+  return exploreVeinDirections(bot, current, dirIndex + 1, state);
 }
 
 /**
- * Extrait les blocs adjacents connectés du même filon pour ne laisser aucun minerai derrière
- * @param {object} bot Instance Mineflayer du bot
- * @param {object} originPos Position initiale du minerai cassé
- * @param {string} oreType Nom du bloc de minerai
- * @param {number} maxVeinBlocks Nombre maximal de blocs de filon à récolter
- * @returns {Promise<number>} Nombre de blocs de filon supplémentaires récoltés
+ * Traverse vein branches recursively without while-await loop
+ * @param {object} bot Mineflayer bot instance
+ * @param {object} state Vein exploration state
+ * @returns {Promise<number>} Total harvested
+ */
+async function processVeinQueue(bot, state) {
+  if (state.queue.length === 0 || state.harvested >= state.maxVeinBlocks) {
+    return state.harvested;
+  }
+
+  const current = state.queue.shift();
+  await exploreVeinDirections(bot, current, 0, state);
+
+  return processVeinQueue(bot, state);
+}
+
+/**
+ * Extract connected adjacent blocks from the same vein to collect all ores
+ * @param {object} bot Mineflayer bot instance
+ * @param {object} originPos Initial broken ore position
+ * @param {string} oreType Name of ore block
+ * @param {number} maxVeinBlocks Maximum vein blocks to harvest
+ * @returns {Promise<number>} Extra vein blocks harvested
  */
 async function harvestConnectedVein(bot, originPos, oreType, maxVeinBlocks = 8) {
   const originKey = getPosKey(originPos);
@@ -263,15 +273,15 @@ async function harvestConnectedVein(bot, originPos, oreType, maxVeinBlocks = 8) 
     targetTypes.add(`deepslate_${oreType}`);
   }
 
-  return processVeinQueue(bot, queue, visited, targetTypes, 0, maxVeinBlocks);
+  return processVeinQueue(bot, { queue, visited, targetTypes, harvested: 0, maxVeinBlocks });
 }
 
 /**
- * Recherche et récolte un minerai opportuniste exposé à l'air de manière récursive
- * @param {object} bot Instance Mineflayer du bot
- * @param {number} currentCount Nombre de minerais récoltés
- * @param {number} maxCount Nombre maximal souhaité
- * @returns {Promise<number>} Nombre récolté
+ * Search and mine exposed opportunistic ore recursively
+ * @param {object} bot Mineflayer bot instance
+ * @param {number} currentCount Current count of harvested ores
+ * @param {number} maxCount Maximum count desired
+ * @returns {Promise<number>} Total count harvested
  */
 async function harvestNearbyExposedOresStep(bot, currentCount, maxCount) {
   if (currentCount >= maxCount) return currentCount;
@@ -289,7 +299,7 @@ async function harvestNearbyExposedOresStep(bot, currentCount, maxCount) {
 
   if (!oreBlock) return currentCount;
 
-  console.log(`[MINEUR OPPORTUNISTE] Découverte de '${oreBlock.name}' exposé à l'air ! Récolte immédiate...`);
+  console.log(`[OPPORTUNISTIC MINER] Found '${oreBlock.name}' exposed to air! Mining immediately...`);
   const singleResult = await mineSingleTarget(bot, oreBlock.name);
   if (!singleResult.success) return currentCount;
 
@@ -297,53 +307,68 @@ async function harvestNearbyExposedOresStep(bot, currentCount, maxCount) {
 }
 
 /**
- * Recherche et récolte de manière opportuniste les minerais précieux exposés à l'air autour du bot
- * @param {object} bot Instance Mineflayer du bot
- * @param {number} maxCount Nombre maximal de minerais opportunistes à récolter par passe
- * @returns {Promise<number>} Nombre de minerais récoltés
+ * Search and opportunistically mine exposed valuable ores around bot
+ * @param {object} bot Mineflayer bot instance
+ * @param {number} maxCount Maximum opportunistic ores to harvest per pass
+ * @returns {Promise<number>} Total ores harvested
  */
 async function harvestNearbyExposedOres(bot, maxCount = 2) {
   return harvestNearbyExposedOresStep(bot, 0, maxCount);
 }
 
 /**
- * Exécute une session de minage répétée pour atteindre la quantité souhaitée
- * @param {object} bot Instance Mineflayer du bot
- * @param {object} state État global du bot
- * @param {string} targetName Nom du bloc ou de l'item à miner
- * @param {number} count Nombre de blocs à récolter
+ * Execute a repeated mining pass step
+ * @param {object} bot Mineflayer bot instance
+ * @param {object} state Global bot state
+ * @param {string} targetName Name of target item or block
+ * @param {number} remaining Number of remaining blocks to harvest
+ * @param {number} successfullyMined Number of blocks already harvested
+ * @param {string} lastFailureMessage Last failure message
+ * @returns {Promise<{ successfullyMined: number, lastFailureMessage: string }>}
+ */
+async function runMiningSteps(bot, state, targetName, remaining, successfullyMined, lastFailureMessage) {
+  if (remaining <= 0 || !state.isSurviving) {
+    return { successfullyMined, lastFailureMessage };
+  }
+
+  const result = await mineSingleTarget(bot, targetName);
+  const nextFailure = result.message;
+
+  if (result.empty) {
+    return { successfullyMined, lastFailureMessage: nextFailure };
+  }
+
+  const nextSuccess = result.success ? successfullyMined + 1 : successfullyMined;
+  return runMiningSteps(bot, state, targetName, remaining - 1, nextSuccess, nextFailure);
+}
+
+/**
+ * Execute repeated mining session to fulfill target quantity
+ * @param {object} bot Mineflayer bot instance
+ * @param {object} state Global bot state
+ * @param {string} targetName Block or item name to mine
+ * @param {number} count Number of blocks to harvest
  * @returns {Promise<{ success: boolean, message: string }>}
  */
 async function skillMine(bot, state, targetName, count) {
   const targetQuantity = Math.max(1, count || 1);
-  let successfullyMined = 0;
-  let lastFailureMessage = '';
-
-  for (let step = 0; step < targetQuantity; step++) {
-    if (!state.isSurviving) break;
-
-    const result = await mineSingleTarget(bot, targetName);
-    lastFailureMessage = result.message;
-
-    if (result.empty) break;
-    if (result.success) successfullyMined++;
-  }
+  const { successfullyMined, lastFailureMessage } = await runMiningSteps(bot, state, targetName, targetQuantity, 0, '');
 
   if (successfullyMined === 0) {
-    return { success: false, message: `Échec du minage de '${targetName}' : ${lastFailureMessage}` };
+    return { success: false, message: `Mining failed for '${targetName}' : ${lastFailureMessage}` };
   }
 
   let opportunisticMessage = '';
   if (state.isSurviving && targetName !== 'dirt') {
     const extraOresCount = await harvestNearbyExposedOres(bot, 2);
     if (extraOresCount > 0) {
-      opportunisticMessage = ` + ${extraOresCount} minerai(s) opportuniste(s) exposé(s)`;
+      opportunisticMessage = ` + ${extraOresCount} opportunistic exposed ore(s)`;
     }
   }
 
   return {
     success: true,
-    message: `${successfullyMined} bloc(s) récolté(s) pour '${targetName}'${opportunisticMessage}. Inventaire : ${getInventorySummary(bot)}`
+    message: `${successfullyMined} block(s) harvested for '${targetName}'${opportunisticMessage}. Inventory : ${getInventorySummary(bot)}`
   };
 }
 
