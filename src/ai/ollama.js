@@ -1,15 +1,16 @@
 const config = require('../config');
 
 /**
- * Interroge le modèle local Ollama pour obtenir une décision structurée au format JSON
- * @param {string} promptText Prompt complet envoyé au modèle
- * @returns {Promise<object|null>} Décision JSON parsée ou null en cas d'erreur
+ * Query local Ollama model to obtain a structured JSON decision
+ * @param {string} promptText Full prompt sent to the model
+ * @returns {Promise<object|null>} Parsed JSON decision or null on failure
  */
 async function askOllama(promptText) {
   try {
     const response = await fetch('http://localhost:11434/api/generate', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      signal: AbortSignal.timeout(30000),
       body: JSON.stringify({
         model: config.OLLAMA_MODEL || 'llama3.1',
         prompt: promptText,
@@ -25,7 +26,7 @@ async function askOllama(promptText) {
     const data = await response.json();
 
     if (data.error) {
-      console.error("Erreur de l'API Ollama :", data.error);
+      console.error("Ollama API error :", data.error);
       return null;
     }
 
@@ -33,12 +34,12 @@ async function askOllama(promptText) {
     const start = raw.indexOf('{');
     const end = raw.lastIndexOf('}');
     if (start === -1 || end === -1) {
-      console.warn("Réponse Ollama sans JSON :", raw.slice(0, 200));
+      console.warn("Ollama response without valid JSON :", raw.slice(0, 200));
       return null;
     }
     return JSON.parse(raw.slice(start, end + 1));
   } catch (error) {
-    console.warn("Erreur avec Ollama :", error.message);
+    console.warn("Error communicating with Ollama :", error.message);
     return null;
   }
 }

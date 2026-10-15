@@ -7,55 +7,62 @@ const { askOllama } = require('./ollama');
 const { dispatchSkill } = require('../skills/dispatcher');
 
 /**
- * Exécute un cycle complet de réflexion et d'action ReAct pour la survie autonome
- * @param {object} bot Instance Mineflayer du bot
+ * Execute a complete ReAct thought and action cycle for autonomous survival
+ * @param {object} bot Mineflayer bot instance
  * @returns {Promise<void>}
  */
 async function handleSurvivalRequest(bot) {
   if (!state.isSurviving) return;
 
-  syncObjective(bot, state);
+  try {
+    syncObjective(bot, state);
 
-  const environment = scanEnvironment(bot, 20);
-  const tableId = bot.registry.blocksByName['crafting_table']?.id;
-  let craftingTable = tableId ? bot.findBlock({ matching: tableId, maxDistance: 48 }) : null;
-  if (!craftingTable && state.base.crafting_table) {
-    const baseTable = bot.blockAt(state.base.crafting_table);
-    if (baseTable && baseTable.name === 'crafting_table') {
-      craftingTable = baseTable;
+    const environment = scanEnvironment(bot, 20);
+    const tableId = bot.registry.blocksByName['crafting_table']?.id;
+    let craftingTable = tableId ? bot.findBlock({ matching: tableId, maxDistance: 48 }) : null;
+    if (!craftingTable && state.base.crafting_table) {
+      const baseTable = bot.blockAt(state.base.crafting_table);
+      if (baseTable?.name === 'crafting_table') {
+        craftingTable = baseTable;
+      }
     }
-  }
 
-  const prompt = buildReactPrompt(bot, state, environment, craftingTable);
-  console.log(`\n=== CYCLE DE RÉFLEXION REACT (objectif : ${state.currentObjective}) ===`);
-  const decision = await askOllama(prompt);
+    const prompt = buildReactPrompt(bot, state, environment, craftingTable);
+    console.log(`\n=== REACT THINKING CYCLE (objective : ${state.currentObjective}) ===`);
+    const decision = await askOllama(prompt);
 
-  if (!decision || !config.VALID_ACTIONS.has(decision.action)) {
-    console.log("Décision invalide reçue d'Ollama, pause de 2s...");
-    state.lastActionResult = { action: 'erreur', target: 'aucune', success: false, message: "Format de décision JSON invalide." };
-    setTimeout(() => handleSurvivalRequest(bot), 2000);
-    return;
-  }
+    if (!decision || !config.VALID_ACTIONS.has(decision.action)) {
+      console.log("Invalid decision received from Ollama, pausing for 2s...");
+      state.lastActionResult = { action: 'error', target: 'none', success: false, message: "Invalid JSON decision format." };
+      setTimeout(() => handleSurvivalRequest(bot), 2000);
+      return;
+    }
 
-  if (decision.thought) {
-    console.log(`[PENSÉE IA] ${decision.thought}`);
-  }
-  bot.chat(`Action : ${decision.action} (${decision.target || 'aucune'})`);
+    if (decision.thought) {
+      console.log(`[AI THOUGHT] ${decision.thought}`);
+    }
+    bot.chat(`Action : ${decision.action} (${decision.target || 'none'})`);
 
-  const executionResult = await dispatchSkill(bot, state, decision.action, decision.target, decision.qty || 1);
-  console.log(`[RÉSULTAT] ${executionResult.success ? '✅' : '❌'} ${executionResult.message}`);
+    const executionResult = await dispatchSkill(bot, state, decision.action, decision.target, decision.qty || 1);
+    console.log(`[RESULT] ${executionResult.success ? '✅' : '❌'} ${executionResult.message}`);
 
-  state.lastActionResult = {
-    action: decision.action,
-    target: decision.target || 'aucune',
-    success: executionResult.success,
-    message: executionResult.message
-  };
+    state.lastActionResult = {
+      action: decision.action,
+      target: decision.target || 'none',
+      success: executionResult.success,
+      message: executionResult.message
+    };
 
-  syncObjective(bot, state);
+    syncObjective(bot, state);
 
-  if (state.isSurviving) {
-    setTimeout(() => handleSurvivalRequest(bot), 1500);
+    if (state.isSurviving) {
+      setTimeout(() => handleSurvivalRequest(bot), 1500);
+    }
+  } catch (error) {
+    console.error("Unexpected error in survival cycle :", error);
+    if (state.isSurviving) {
+      setTimeout(() => handleSurvivalRequest(bot), 2500);
+    }
   }
 }
 

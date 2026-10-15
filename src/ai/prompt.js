@@ -5,9 +5,9 @@ const { getMcData } = require('../utils/wikiData');
 const { getCurrentAdvancementInfo } = require('../utils/advancements');
 
 /**
- * Génère le conseil spécifique au minage de la pierre selon les outils possédés
- * @param {object} bot Instance Mineflayer du bot
- * @returns {string} Indication textuelle sur la pierre
+ * Generate stone mining advice based on currently owned tools
+ * @param {object} bot Mineflayer bot instance
+ * @returns {string} Textual guidance for stone mining
  */
 function getStoneHint(bot) {
   if (invUtils.hasToolType(bot, '_pickaxe')) {
@@ -18,10 +18,10 @@ function getStoneHint(bot) {
 }
 
 /**
- * Calcule la jauge de progression chiffrée de l'objectif en cours
- * @param {object} bot Instance Mineflayer du bot
- * @param {string} objectiveName Nom de l'item ou du palier ciblé
- * @returns {string} Jauge de complétion lisible
+ * Compute progress gauge string for current target objective
+ * @param {object} bot Mineflayer bot instance
+ * @param {string} objectiveName Name of target item or advancement milestone
+ * @returns {string} Readable progress description
  */
 function getObjectiveProgressText(bot, objectiveName) {
   const currentCount = invUtils.countItem(bot, objectiveName);
@@ -36,10 +36,10 @@ function getObjectiveProgressText(bot, objectiveName) {
 }
 
 /**
- * Extrait la fiche technique synthétique issue du WikiCraft pour l'objectif ciblé
- * @param {object} bot Instance Mineflayer du bot
- * @param {string} targetName Nom de l'item ou du bloc à inspecter
- * @returns {string} Fiche synthétique d'obtention
+ * Extract concise technical knowledge summary from WikiCraft for target item
+ * @param {object} bot Mineflayer bot instance
+ * @param {string} targetName Name of target item or block
+ * @returns {string} Summary craft/harvest information
  */
 function getWikiKnowledgeSummary(bot, targetName) {
   const mcData = getMcData(bot);
@@ -80,12 +80,12 @@ function getWikiKnowledgeSummary(bot, targetName) {
 }
 
 /**
- * Construit le prompt complet ReAct destiné au modèle de raisonnement Ollama
- * @param {object} bot Instance Mineflayer du bot
- * @param {object} state État global du bot
- * @param {object} environment Scan des blocs environnants
- * @param {object|null} craftingTable Établi posé à proximité
- * @returns {string} Texte complet du prompt
+ * Build complete ReAct prompt for Ollama reasoning model
+ * @param {object} bot Mineflayer bot instance
+ * @param {object} state Global bot state
+ * @param {object} environment Surrounding scanned blocks
+ * @param {object|null} craftingTable Nearby placed crafting table if available
+ * @returns {string} Full prompt text
  */
 function buildReactPrompt(bot, state, environment, craftingTable) {
   const envText = JSON.stringify(environment);
