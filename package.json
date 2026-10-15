@@ -1,7 +1,7 @@
 {
-  "name": "gir",
+  "name": "ollacraft",
   "version": "1.0.0",
-  "description": "",
+  "description": "Autonomous Minecraft AI Agent powered by ReAct and local Ollama LLMs",
   "main": "src/index.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"

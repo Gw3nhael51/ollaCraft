@@ -1,4 +1,4 @@
-# Autonomous Minecraft AI Agent (ReAct + Ollama)
+# ollaCraft - Autonomous Minecraft AI Agent (ReAct + Ollama)
 
 An autonomous Minecraft survival agent powered by local Large Language Models (LLMs) via **Ollama** and built on **Mineflayer**. The bot continuously perceives its surrounding 3D environment, reasons about survival goals, and executes complex in-game skills through a closed-loop **ReAct (Reasoning + Acting)** architecture.
 
