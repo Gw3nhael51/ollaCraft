@@ -1,40 +1,44 @@
 const config = require('../config');
+const { syncAdvancementsWithInventory } = require('./advancements');
 
 /**
- * Compte la quantité totale d'un objet donné dans l'inventaire
- * @param {object} bot Instance Mineflayer du bot
+ * Count total quantity of a given item in the inventory
+ * @param {object} bot Mineflayer bot instance
  * @param {string} name Nom de l'item recherché
  * @returns {number} Quantité cumulée de l'item
  */
 function countItem(bot, name) {
-  return bot.inventory.items().filter(item => item.name === name).reduce((sum, item) => sum + item.count, 0);
+  const allSlots = (bot.inventory?.slots || []).filter(Boolean);
+  return allSlots.filter(item => item.name === name).reduce((sum, item) => sum + item.count, 0);
 }
 
 /**
- * Vérifie si le bot possède au moins un outil d'un type spécifique
- * @param {object} bot Instance Mineflayer du bot
+ * Check whether the bot possesses at least one tool of a specific type
+ * @param {object} bot Mineflayer bot instance
  * @param {string} suffix Suffixe du type d'outil (ex: '_pickaxe', '_axe')
  * @returns {boolean} True si un outil correspondant est possédé
  */
 function hasToolType(bot, suffix) {
-  return bot.inventory.items().some(item => item.name.endsWith(suffix));
+  const allSlots = (bot.inventory?.slots || []).filter(Boolean);
+  return allSlots.some(item => item.name.endsWith(suffix));
 }
 
 /**
- * Retourne la liste dédoublée des outils présents dans l'inventaire
- * @param {object} bot Instance Mineflayer du bot
+ * Return deduplicated list of tools present in the inventory
+ * @param {object} bot Mineflayer bot instance
  * @returns {string[]} Liste des noms d'outils possédés
  */
 function getOwnedTools(bot) {
-  const tools = bot.inventory.items()
+  const allSlots = (bot.inventory?.slots || []).filter(Boolean);
+  const tools = allSlots
     .filter(item => config.TOOL_SUFFIXES.some(suffix => item.name.endsWith(suffix)))
     .map(item => item.name);
   return [...new Set(tools)];
 }
 
 /**
- * Détermine si un objectif de quête est atteint selon l'inventaire actuel
- * @param {object} bot Instance Mineflayer du bot
+ * Determine whether a quest objective is achieved according to current inventory
+ * @param {object} bot Mineflayer bot instance
  * @param {string} questName Nom de l'objectif à vérifier
  * @returns {boolean} True si l'objectif est complété
  */
@@ -64,13 +68,13 @@ function isQuestDone(bot, questName, state) {
     const hasRawIron = countItem(bot, 'raw_iron') >= requiredAmount;
     const hasIronOre = countItem(bot, 'iron_ore') >= requiredAmount;
     const hasIronIngot = countItem(bot, 'iron_ingot') > 0;
-    const hasIronGear = countItem(bot, 'iron_pickaxe') > 0 || countItem(bot, 'iron_sword') > 0 || countItem(bot, 'iron_chestplate') > 0;
+    const hasIronGear = countItem(bot, 'iron_pickaxe') > 0 || countItem(bot, 'iron_sword') > 0 || countItem(bot, 'iron_chestplate') > 0 || countItem(bot, 'shield') > 0;
     return hasRawIron || hasIronOre || hasIronIngot || hasIronGear;
   }
 
   if (questName === 'iron_ingot') {
     const requiredAmount = config.QUEST_AMOUNT.iron_ingot || 3;
-    const hasIronGear = countItem(bot, 'iron_pickaxe') > 0 || countItem(bot, 'iron_sword') > 0 || countItem(bot, 'iron_chestplate') > 0;
+    const hasIronGear = countItem(bot, 'iron_pickaxe') > 0 || countItem(bot, 'iron_sword') > 0 || countItem(bot, 'iron_chestplate') > 0 || countItem(bot, 'shield') > 0;
     return countItem(bot, 'iron_ingot') >= requiredAmount || hasIronGear;
   }
 
@@ -98,11 +102,13 @@ function isQuestDone(bot, questName, state) {
 }
 
 /**
- * Met à jour l'objectif courant du bot selon la chaîne de progression
- * @param {object} bot Instance Mineflayer du bot
- * @param {object} state État global du bot
+ * Update the bot's current objective following the progression chain
+ * @param {object} bot Mineflayer bot instance
+ * @param {object} state Global bot state
  */
 function syncObjective(bot, state) {
+  syncAdvancementsWithInventory(bot, state);
+
   if (state.manualObjective) return;
 
   if (state.completedQuests) {
@@ -136,12 +142,12 @@ function syncObjective(bot, state) {
 }
 
 /**
- * Génère un résumé JSON compact du contenu de l'inventaire
- * @param {object} bot Instance Mineflayer du bot
- * @returns {string} Représentation textuelle de l'inventaire
+ * Generate a compact JSON summary of inventory contents
+ * @param {object} bot Mineflayer bot instance
+ * @returns {string} Textual representation of inventory
  */
 function getInventorySummary(bot) {
-  const inventoryItems = bot.inventory.items();
+  const inventoryItems = (bot.inventory?.slots || []).filter(Boolean);
   if (inventoryItems.length === 0) return "Inventaire vide";
 
   const summary = {};
@@ -152,15 +158,20 @@ function getInventorySummary(bot) {
 }
 
 /**
- * Retourne la liste des crafts réalisables immédiatement avec l'inventaire
- * @param {object} bot Instance Mineflayer du bot
- * @param {object|null} craftingTable Bloc établi posé à proximité si disponible
- * @returns {string[]} Liste des objets fabricables et conditions
+ * Return list of crafts immediately craftable with current inventory
+ * @param {object} bot Mineflayer bot instance
+ * @param {object|null} craftingTable Placed crafting table block nearby if available
+ * @returns {string[]} List of craftable item names and requirements
  */
 function getAvailableCrafts(bot, craftingTable) {
   const targetItemsToCheck = [
-    'oak_planks', 'birch_planks', 'spruce_planks', 'stick', 'crafting_table',
-    'wooden_axe', 'wooden_pickaxe', 'stone_pickaxe', 'stone_axe', 'furnace', 'wooden_sword'
+    'oak_planks', 'birch_planks', 'spruce_planks', 'jungle_planks', 'acacia_planks', 'dark_oak_planks', 'mangrove_planks', 'cherry_planks', 'bamboo_planks',
+    'stick', 'crafting_table', 'chest', 'furnace', 'torch', 'bucket',
+    'wooden_axe', 'wooden_pickaxe', 'wooden_sword',
+    'stone_pickaxe', 'stone_axe', 'stone_sword',
+    'iron_pickaxe', 'iron_axe', 'iron_sword', 'shield', 'iron_helmet', 'iron_chestplate', 'iron_leggings', 'iron_boots',
+    'diamond_pickaxe', 'diamond_axe', 'diamond_sword', 'diamond_helmet', 'diamond_chestplate', 'diamond_leggings', 'diamond_boots',
+    'flint_and_steel', 'ender_eye'
   ];
   const availableCrafts = [];
   const hasCraftingTableInInventory = countItem(bot, 'crafting_table') > 0;
@@ -196,10 +207,10 @@ const AXE_ORDER = ['netherite_axe', 'diamond_axe', 'iron_axe', 'golden_axe', 'st
 const SHOVEL_ORDER = ['netherite_shovel', 'diamond_shovel', 'iron_shovel', 'golden_shovel', 'stone_shovel', 'wooden_shovel'];
 
 /**
- * Sélectionne le meilleur outil dans l'inventaire pour casser un bloc donné
- * @param {object} bot Instance Mineflayer du bot
- * @param {object} block Bloc ciblé
- * @returns {object|null} Meilleur outil trouvé ou null
+ * Select the best tool in inventory to mine a specific block
+ * @param {object} bot Mineflayer bot instance
+ * @param {object} block Target block
+ * @returns {object|null} Best matching tool item or null
  */
 function getBestToolForBlock(bot, block) {
   const inventoryItems = bot.inventory.items();

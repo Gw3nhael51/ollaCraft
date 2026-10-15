@@ -1,8 +1,8 @@
 const config = require('../config');
 
 /**
- * Retourne le registre minecraft-data correspondant à la version du serveur
- * @param {object} bot Instance Mineflayer du bot
+ * Return minecraft-data registry corresponding to current server version
+ * @param {object} bot Mineflayer bot instance
  * @returns {object} Registre de données Minecraft
  */
 function getMcData(bot) {
@@ -12,9 +12,9 @@ function getMcData(bot) {
 }
 
 /**
- * Retourne la liste des objets obtenus lors de la destruction d'un bloc
- * @param {object} bot Instance Mineflayer du bot
- * @param {string} blockName Nom du bloc dans Minecraft
+ * Return list of items dropped upon breaking a block
+ * @param {object} bot Mineflayer bot instance
+ * @param {string} blockName Minecraft block name
  * @returns {string[]} Noms des items récoltés
  */
 function getBlockDrops(bot, blockName) {
@@ -29,9 +29,9 @@ function getBlockDrops(bot, blockName) {
 }
 
 /**
- * Vérifie si le bot possède l'outil requis pour récolter un bloc
- * @param {object} bot Instance Mineflayer du bot
- * @param {object|string} block Bloc ou nom de bloc à récolter
+ * Check whether the bot possesses the required tool to harvest a block
+ * @param {object} bot Mineflayer bot instance
+ * @param {object|string} block Block object or block name to harvest
  * @returns {{ canHarvest: boolean, requiredTools: string[], message?: string }}
  */
 function canHarvestBlock(bot, block) {
@@ -66,9 +66,9 @@ function canHarvestBlock(bot, block) {
 }
 
 /**
- * Retourne les noms des blocs du monde produisant l'objet ciblé
- * @param {object} bot Instance Mineflayer du bot
- * @param {string} targetItemName Nom de l'item recherché
+ * Return names of world blocks yielding the targeted item
+ * @param {object} bot Mineflayer bot instance
+ * @param {string} targetItemName Name of desired item
  * @returns {string[]} Liste des blocs minables correspondants
  */
 function getBlockNamesForTarget(bot, targetItemName) {

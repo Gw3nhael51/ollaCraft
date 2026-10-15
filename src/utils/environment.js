@@ -1,19 +1,22 @@
 const { Vec3 } = require('vec3');
 
 /**
- * Scanne les blocs cubiques dans un rayon donné autour de la position actuelle du bot
- * @param {object} bot Instance Mineflayer du bot
- * @param {number} radius Rayon de balayage en blocs
- * @returns {Record<string, number>} Dictionnaire des types de blocs et de leurs occurrences
+ * Scan cubic blocks in a given radius around the bot's current position
+ * @param {object} bot Mineflayer bot instance
+ * @param {number} radius Scanning radius in blocks
+ * @returns {Record<string, number>} Dictionary of block types and occurrence counts
  */
 function scanEnvironment(bot, radius) {
   const blocks = {};
   const botPosition = bot.entity.position.floored();
+  const targetPos = new Vec3(0, 0, 0);
+  const yMin = Math.max(-8, -radius);
+  const yMax = Math.min(8, radius);
 
   for (let x = -radius; x <= radius; x++) {
-    for (let y = -radius; y <= radius; y++) {
+    for (let y = yMin; y <= yMax; y++) {
       for (let z = -radius; z <= radius; z++) {
-        const targetPos = botPosition.offset(x, y, z);
+        targetPos.set(botPosition.x + x, botPosition.y + y, botPosition.z + z);
         const block = bot.blockAt(targetPos);
         if (block && block.name !== 'air' && block.name !== 'cave_air') {
           blocks[block.name] = (blocks[block.name] || 0) + 1;
@@ -25,20 +28,20 @@ function scanEnvironment(bot, radius) {
 }
 
 /**
- * Analyse les obstacles immédiats autour du bot pour détecter s'il est bloqué dans un trou
- * @param {object} bot Instance Mineflayer du bot
+ * Analyze immediate obstacles around the bot to detect whether it is trapped in a hole
+ * @param {object} bot Mineflayer bot instance
  * @returns {string} Description textuelle de la situation du terrain
  */
 function checkTerrainSituation(bot) {
   const pos = bot.entity.position.floored();
 
-  // Détection prioritaire : immersion dans l'eau
+  // Check water immersion first
   const eyeBlock = bot.blockAt(pos.offset(0, 1, 0));
   if (eyeBlock && (eyeBlock.name === 'water' || eyeBlock.name === 'flowing_water')) {
     return "Sous l'eau ! Risque de noyade imminent. Action recommandée : unstuck.";
   }
 
-  // Vérifier si la tête et le dessus sont dégagés
+  // Verify whether overhead clearance is obstructed
   const headAboveBlock = bot.blockAt(pos.offset(0, 2, 0));
   const isCeilingBlocked = headAboveBlock?.boundingBox === 'block';
 
@@ -56,7 +59,7 @@ function checkTerrainSituation(bot) {
     }
   }
 
-  // N'est considéré bloqué que si les 4 côtés sont fermés ET le dessus est fermé, ou 4 côtés fermés avec impossibilité de sauter
+  // Consider bot trapped if surrounded and ceiling is blocked
   if (solidSides >= 4 && isCeilingBlocked) {
     return "Enfermé sous terre avec plafond bloqué. Action recommandée : unstuck.";
   }
@@ -69,9 +72,9 @@ function checkTerrainSituation(bot) {
 }
 
 /**
- * Dénombre les entités vivantes (mobs passifs et hostiles) proches du bot
- * @param {object} bot Instance Mineflayer du bot
- * @param {number} radius Rayon de détection en blocs
+ * Count living entities (passive and hostile mobs) close to the bot
+ * @param {object} bot Mineflayer bot instance
+ * @param {number} radius Detection radius in blocks
  * @returns {Record<string, number>} Dictionnaire des noms d'entités et quantités
  */
 function scanNearbyEntities(bot, radius = 20) {
@@ -90,8 +93,8 @@ function scanNearbyEntities(bot, radius = 20) {
 }
 
 /**
- * Retourne le nom du biome actuel du bot
- * @param {object} bot Instance Mineflayer du bot
+ * Return current biome name of the bot position
+ * @param {object} bot Mineflayer bot instance
  * @returns {string} Nom du biome ou 'plains' par défaut
  */
 function getCurrentBiome(bot) {
@@ -121,8 +124,8 @@ const ADJACENT_OFFSETS = [
 ];
 
 /**
- * Vérifie si un bloc donné a au moins une face en contact avec l'air et sans lave
- * @param {object} bot Instance Mineflayer du bot
+ * Verify if a given block has at least one face exposed to air and free of lava
+ * @param {object} bot Mineflayer bot instance
  * @param {object} block Bloc à inspecter
  * @returns {boolean} True si le bloc est directement exposé à l'air
  */
@@ -145,19 +148,22 @@ function isBlockExposedToAir(bot, block) {
 }
 
 /**
- * Scanne les minerais précieux exposés à l'air dans les cavités proches du bot
- * @param {object} bot Instance Mineflayer du bot
- * @param {number} radius Rayon de détection en blocs
+ * Scan valuable ores exposed to air inside nearby cavities around the bot
+ * @param {object} bot Mineflayer bot instance
+ * @param {number} radius Detection radius in blocks
  * @returns {Record<string, number>} Dictionnaire des minerais exposés et leurs quantités
  */
 function scanExposedOres(bot, radius = 16) {
   const exposedOres = {};
   const botPosition = bot.entity.position.floored();
+  const targetPos = new Vec3(0, 0, 0);
+  const yMin = Math.max(-8, -radius);
+  const yMax = Math.min(8, radius);
 
   for (let x = -radius; x <= radius; x++) {
-    for (let y = -radius; y <= radius; y++) {
+    for (let y = yMin; y <= yMax; y++) {
       for (let z = -radius; z <= radius; z++) {
-        const targetPos = botPosition.offset(x, y, z);
+        targetPos.set(botPosition.x + x, botPosition.y + y, botPosition.z + z);
         const block = bot.blockAt(targetPos);
         if (block && VALUABLE_ORES.has(block.name) && isBlockExposedToAir(bot, block)) {
           exposedOres[block.name] = (exposedOres[block.name] || 0) + 1;

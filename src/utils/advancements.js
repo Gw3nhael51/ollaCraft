@@ -31,8 +31,8 @@ const ADVANCEMENT_ICONS = {
 };
 
 /**
- * Détermine le prochain progrès officiel de l'histoire restant à débloquer
- * @param {object} state État global du bot
+ * Determine the next story advancement remaining to unlock
+ * @param {object} state Global bot state
  * @returns {object|null} Définition du prochain progrès ou null si terminé
  */
 function updateCurrentAdvancement(state) {
@@ -42,9 +42,9 @@ function updateCurrentAdvancement(state) {
 }
 
 /**
- * Construit l'URL externe vers l'image du badge de succès sans téléchargement local
+ * Construct external URL for the advancement badge image without local downloading
  * @param {string} advancementName Nom du progrès débloqué
- * @returns {string} URL sécurisée vers l'API d'icônes
+ * @returns {string} Safe URL pointing to external icon API
  */
 function getAdvancementBadgeUrl(advancementName) {
   const icon = ADVANCEMENT_ICONS[advancementName] || 'diamond';
@@ -54,9 +54,9 @@ function getAdvancementBadgeUrl(advancementName) {
 }
 
 /**
- * Traite les annonces du serveur pour enregistrer les succès attribués au bot
+ * Process server chat announcements to register advancements granted to the bot
  * @param {object} bot Instance Mineflayer du bot
- * @param {object} state État global du bot
+ * @param {object} state Global bot state
  * @param {string} rawServerMessage Message texte reçu du serveur
  */
 function checkAdvancementMessage(bot, state, rawServerMessage) {
@@ -85,8 +85,66 @@ function checkAdvancementMessage(bot, state, rawServerMessage) {
 }
 
 /**
- * Retourne le descriptif du progrès officiel actuellement poursuivi
- * @param {object} state État global du bot
+ * Synchronize unlocked advancements based on items already acquired in inventory
+ * @param {object} bot Instance Mineflayer du bot
+ * @param {object} state Global bot state
+ */
+function syncAdvancementsWithInventory(bot, state) {
+  const allSlots = (bot.inventory?.slots || []).filter(Boolean);
+  const hasItem = name => allSlots.some(item => item.name === name);
+  const hasItemMatching = suffix => allSlots.some(item => item.name.endsWith(suffix));
+
+  const rules = [
+    {
+      name: 'Stone Age',
+      condition: () => hasItem('cobblestone') || hasItem('furnace') || hasItemMatching('pickaxe')
+    },
+    {
+      name: 'Getting an Upgrade',
+      condition: () => hasItem('stone_pickaxe') || hasItem('iron_pickaxe') || hasItem('diamond_pickaxe')
+    },
+    {
+      name: 'Acquire Hardware',
+      condition: () => hasItem('iron_ingot') || hasItem('iron_pickaxe') || hasItem('iron_sword') || hasItem('iron_chestplate') || hasItem('shield')
+    },
+    {
+      name: 'Suit Up',
+      condition: () => hasItemMatching('helmet') || hasItemMatching('chestplate') || hasItemMatching('leggings') || hasItemMatching('boots')
+    },
+    {
+      name: "Isn't It Iron Pick",
+      condition: () => hasItem('iron_pickaxe') || hasItem('diamond_pickaxe')
+    },
+    {
+      name: 'Diamonds!',
+      condition: () => hasItem('diamond') || hasItem('diamond_pickaxe') || hasItem('diamond_sword') || hasItem('diamond_chestplate')
+    },
+    {
+      name: 'Ice Bucket Challenge',
+      condition: () => hasItem('obsidian')
+    },
+    {
+      name: 'Eye Spy',
+      condition: () => hasItem('ender_eye')
+    }
+  ];
+
+  let changed = false;
+  for (const { name, condition } of rules) {
+    if (!state.unlockedAdvancements.includes(name) && condition()) {
+      state.unlockedAdvancements.push(name);
+      changed = true;
+    }
+  }
+
+  if (changed) {
+    updateCurrentAdvancement(state);
+  }
+}
+
+/**
+ * Return description of the current advancement being pursued
+ * @param {object} state Global bot state
  * @returns {string} Libellé et description du jalon
  */
 function getCurrentAdvancementInfo(state) {
@@ -100,5 +158,6 @@ module.exports = {
   updateCurrentAdvancement,
   checkAdvancementMessage,
   getCurrentAdvancementInfo,
-  getAdvancementBadgeUrl
+  getAdvancementBadgeUrl,
+  syncAdvancementsWithInventory
 };
