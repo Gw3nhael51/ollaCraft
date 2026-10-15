@@ -9,78 +9,81 @@ const { checkAdvancementMessage } = require('./utils/advancements');
 const bot = mineflayer.createBot(config.BOT_CONFIG);
 bot.loadPlugin(pathfinder);
 
-  bot.on('spawn', () => {
-    console.log('✅ Le bot est connecté !');
-    
-    // Authentification via AuthMe (délai augmenté pour s'assurer que le serveur est prêt)
-    const pwd = config.AUTH_PASSWORD;
-    if (pwd) {
+// Handle bot spawn and initial setup on server
+bot.on('spawn', () => {
+  console.log('✅ Bot connected successfully!');
+
+  // Authenticate bot via AuthMe with safety delay
+  const pwd = config.AUTH_PASSWORD;
+  if (pwd) {
+    setTimeout(() => {
+      bot.chat(`/register ${pwd} ${pwd}`);
       setTimeout(() => {
-        bot.chat(`/register ${pwd} ${pwd}`);
-        setTimeout(() => {
-          bot.chat(`/login ${pwd}`);
-          console.log(`🔑 Tentative d'authentification envoyée.`);
-        }, 1000);
-      }, 1500);
+        bot.chat(`/login ${pwd}`);
+        console.log(`🔑 Authentication attempt sent.`);
+      }, 1000);
+    }, 1500);
+  }
+
+  const mcData = require("minecraft-data")(bot.version);
+  const defaultMove = new Movements(bot, mcData);
+  defaultMove.allowFreeClear = true; // Clear tall grass during movement
+  defaultMove.canDig = true;
+  defaultMove.allow1by1towers = true;
+  const scafolding = ['dirt', 'cobblestone', 'netherrack', 'stone'].map(name => bot.registry.blocksByName[name]?.id).filter(Boolean);
+  defaultMove.scafoldingBlocks = scafolding;
+
+  bot.pathfinder.setMovements(defaultMove);
+
+  // Keep bot at surface if falling into water
+  bot.on('physicsTick', () => {
+    if (bot.entity.isInWater) {
+      bot.setControlState('jump', true);
     }
+  });
 
-    const mcData = require("minecraft-data")(bot.version);
-    const defaultMove = new Movements(bot, mcData);
-    defaultMove.allowFreeClear = true; // Casser les herbes hautes
-    defaultMove.canDig = true;
-    defaultMove.allow1by1towers = true;
-    const scafolding = ['dirt', 'cobblestone', 'netherrack', 'stone'].map(name => bot.registry.blocksByName[name]?.id).filter(Boolean);
-    defaultMove.scafoldingBlocks = scafolding;
+  if (!pwd && !state.hasStarted) {
+    state.hasStarted = true;
+    state.isSurviving = true;
+    bot.chat("Autonomous ReAct mode ready. Objective : " + state.currentObjective);
+    void handleSurvivalRequest(bot);
+  }
+});
 
-    bot.pathfinder.setMovements(defaultMove);
+// Handle server messages for authentication and advancements
+bot.on('messagestr', (message) => {
+  const text = message.toLowerCase();
+  const pwd = config.AUTH_PASSWORD;
 
-    // Réflexe vital : maintenir le bot à la surface s'il tombe dans l'eau
-    bot.on('physicsTick', () => {
-      if (bot.entity.isInWater) {
-        bot.setControlState('jump', true);
-      }
-    });
+  if (text.includes('/register') && pwd) {
+    bot.chat(`/register ${pwd} ${pwd}`);
+  } else if (text.includes('/login') && pwd) {
+    bot.chat(`/login ${pwd}`);
+  }
 
-    if (!pwd && !state.hasStarted) {
+  if (text.includes('successful') || text.includes('succès') || text.includes('logged in') || text.includes('registered')) {
+    if (!state.hasStarted) {
       state.hasStarted = true;
       state.isSurviving = true;
-      bot.chat("Mode autonome ReAct prêt. Objectif : " + state.currentObjective);
+      console.log("🚀 Connection confirmed by server! Launching autonomous mode.");
+      bot.chat("Autonomous ReAct mode ready. Objective : " + state.currentObjective);
       void handleSurvivalRequest(bot);
     }
-  });
+  }
 
-  bot.on('messagestr', (message) => {
-    const text = message.toLowerCase();
-    const pwd = config.AUTH_PASSWORD;
+  checkAdvancementMessage(bot, state, message);
+});
 
-    if (text.includes('/register') && pwd) {
-      bot.chat(`/register ${pwd} ${pwd}`);
-    } else if (text.includes('/login') && pwd) {
-      bot.chat(`/login ${pwd}`);
-    }
-
-    if (text.includes('successful') || text.includes('succès') || text.includes('logged in') || text.includes('registered')) {
-      if (!state.hasStarted) {
-        state.hasStarted = true;
-        state.isSurviving = true;
-        console.log("🚀 Connexion confirmée par le serveur ! Lancement du mode autonome.");
-        bot.chat("Mode autonome ReAct prêt. Objectif : " + state.currentObjective);
-        void handleSurvivalRequest(bot);
-      }
-    }
-
-    checkAdvancementMessage(bot, state, message);
-  });
-
+// Handle player control commands from chat
 bot.on('chat', async (username, message) => {
   if (username === bot.username) return;
-  // LOG TOUTs LES MESSAGES POUR DEBUG AUTHME
+  // Log chat messages for debugging
   console.log(`[CHAT SERVER] ${username ? username + ': ' : ''}${message}`);
 
   if (message === 'start') {
     if (state.isSurviving) return;
     state.isSurviving = true;
-    bot.chat("Démarrage du mode autonome.");
+    bot.chat("Starting autonomous mode.");
     await handleSurvivalRequest(bot);
   }
 
@@ -88,46 +91,49 @@ bot.on('chat', async (username, message) => {
     state.isSurviving = false;
     bot.pathfinder.setGoal(null);
     bot.clearControlStates();
-    bot.chat("Arrêt du mode autonome.");
+    bot.chat("Stopping autonomous mode.");
   }
 
-  if (message.startsWith('objectif ')) {
+  if (message.startsWith('objectif ') || message.startsWith('goal ')) {
     const newGoal = message.split(' ')[1]?.trim();
     if (newGoal === 'auto') {
       state.manualObjective = false;
       syncObjective(bot, state);
-      bot.chat(`Progression automatique. Objectif : ${state.currentObjective}`);
+      bot.chat(`Automatic progression. Objective : ${state.currentObjective}`);
     } else if (newGoal) {
       state.manualObjective = true;
       state.currentObjective = newGoal;
-      bot.chat(`Nouvel objectif enregistré : ${state.currentObjective}`);
+      bot.chat(`New objective registered : ${state.currentObjective}`);
     }
   }
 
-  if (message === 'inventaire') {
-    const items = bot.inventory.items();
+  if (message === 'inventaire' || message === 'inv') {
+    const items = (bot.inventory?.slots || []).filter(Boolean);
     if (items.length === 0) {
-      bot.chat("Mes poches sont complètement vides !");
+      bot.chat("My pockets are completely empty!");
     } else {
-      const liste = items.map(item => `${item.count}x ${item.name}`).join(', ');
-      bot.chat(`J'ai sur moi : ${liste}`);
+      const list = items.map(item => `${item.count}x ${item.name}`).join(', ');
+      bot.chat(`Inventory : ${list}`);
     }
   }
 
   if (message === 'coords' || message === 'pos') {
     const pos = bot.entity.position.floored();
-    bot.chat(`Mes coordonnées actuelles : X:${pos.x}, Y:${pos.y}, Z:${pos.z}`);
+    bot.chat(`Current coordinates : X:${pos.x}, Y:${pos.y}, Z:${pos.z}`);
   }
 });
 
+// Suspend autonomous survival on bot death
 bot.on('death', () => {
   state.isSurviving = false;
-  bot.chat("Je suis mort, mode autonome suspendu.");
+  bot.chat("Bot died, autonomous mode suspended.");
 });
 
+// Display formatted server messages
 bot.on('message', (jsonMsg) => {
-  console.log(`[SERVEUR] ${jsonMsg.toAnsi()}`);
+  console.log(`[SERVER] ${jsonMsg.toAnsi()}`);
 });
 
+// Log disconnections and socket errors
 bot.on('kicked', console.log);
 bot.on('error', console.log);

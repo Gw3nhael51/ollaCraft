@@ -1,3 +1,6 @@
+/**
+ * Define shared global state for the autonomous agent
+ */
 module.exports = {
   isSurviving: false,
   hasStarted: false,
@@ -13,9 +16,9 @@ module.exports = {
     chest: null
   },
   lastActionResult: {
-    action: 'aucun',
-    target: 'aucune',
+    action: 'none',
+    target: 'none',
     success: true,
-    message: 'Bot initialisé et prêt.'
+    message: 'Bot initialized and ready.'
   }
 };
