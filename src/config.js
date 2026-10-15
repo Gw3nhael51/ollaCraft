@@ -1,3 +1,6 @@
+/**
+ * Central configuration module for bot credentials, progression, and blocks
+ */
 require("dotenv").config();
 
 module.exports = {
@@ -47,5 +50,5 @@ module.exports = {
     ender_pearl: 12,
     ender_eye: 12
   },
-  TOOL_SUFFIXES: ['_pickaxe', '_axe', '_shovel', '_sword', '_hoe', '_helmet', '_chestplate', '_leggings', '_boots', '_shield']
+  TOOL_SUFFIXES: ['_pickaxe', '_axe', '_shovel', '_sword', '_hoe', '_helmet', '_chestplate', '_leggings', '_boots', 'shield']
 };
