@@ -271,4 +271,6 @@ Example trace demonstrating the automated BFS vein-mining algorithm recursively 
 
 ## 📄 License
 
-This project is licensed under the [ISC License](LICENSE).
+Copyright &copy; 2026 Gw3nhael51. All rights reserved.
+
+This project is source-available for **personal evaluation and educational purposes only**. Redistribution, sublicensing, modification, copying, or commercial exploitation is strictly prohibited without prior written permission from the author. See [LICENSE](LICENSE) for full details.

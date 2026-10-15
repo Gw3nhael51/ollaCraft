@@ -7,8 +7,8 @@
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
-  "author": "",
-  "license": "ISC",
+  "author": "Gw3nhael51",
+  "license": "UNLICENSED",
   "dependencies": {
     "dotenv": "^18.0.6",
     "mineflayer": "^4.39.0",
