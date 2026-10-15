@@ -3,25 +3,25 @@ const config = require('../config');
 const { countItem } = require('../utils/inventory');
 
 /**
- * Fabrique un objet en utilisant la grille d'inventaire ou un établi selon la recette Minecraft
- * @param {object} bot Instance Mineflayer du bot
- * @param {object} state État global du bot
- * @param {string} targetName Nom de l'objet à fabriquer
- * @returns {Promise<{ success: boolean, message: string }>}
+ * Craft an item using personal inventory grid or nearby crafting table
+ * @param {object} bot Mineflayer bot instance
+ * @param {object} state Global bot state
+ * @param {string} targetName Name of the item to craft
+ * @returns {Promise<{ success: boolean, message: string }>} Result of the crafting operation
  */
 async function skillCraft(bot, state, targetName) {
   const item = bot.registry.itemsByName[targetName];
-  if (!item) return { success: false, message: `Objet '${targetName}' inconnu dans Minecraft.` };
+  if (!item) return { success: false, message: `Unknown Minecraft item '${targetName}'.` };
 
   const isTool = config.TOOL_SUFFIXES.some(suffix => targetName.endsWith(suffix));
   if (isTool && countItem(bot, targetName) > 0) {
-    return { success: false, message: `Tu possèdes DÉJÀ '${targetName}'. Inutile d'en fabriquer un autre, passe à l'étape suivante.` };
+    return { success: false, message: `You ALREADY own '${targetName}'. No need to craft another, proceed to next step.` };
   }
   if (targetName === 'crafting_table' && countItem(bot, 'crafting_table') > 0) {
-    return { success: false, message: `Tu possèdes DÉJÀ un établi dans ton inventaire. Utilise l'action "place" pour le poser au sol.` };
+    return { success: false, message: `You ALREADY have a crafting table in your inventory. Use 'place' to set it down.` };
   }
 
-  // Vérifier si la recette peut être réalisée dans la grille 2x2 personnelle
+  // Check if recipe fits inside personal 2x2 crafting grid
   const recipesInPersonalGrid = bot.recipesFor(item.id, null, 1, null);
   const canCraftInPersonalGrid = recipesInPersonalGrid.length > 0;
 
@@ -40,27 +40,27 @@ async function skillCraft(bot, state, targetName) {
   if (!canCraftInPersonalGrid && !tableToUse) {
     const hasTableInPocket = countItem(bot, 'crafting_table') > 0;
     if (hasTableInPocket) {
-      return { success: false, message: `'${targetName}' nécessite un établi. Tu en as un dans ton inventaire, utilise "place" avec cible 'crafting_table' pour le poser !` };
+      return { success: false, message: `'${targetName}' requires a crafting table. You carry one in inventory, use 'place' with target 'crafting_table' to place it!` };
     }
-    return { success: false, message: `'${targetName}' nécessite un établi. Aucun établi proche trouvé. Fabrique-en un ("craft crafting_table") ou approche-toi de ta base.` };
+    return { success: false, message: `'${targetName}' requires a crafting table. No nearby table found. Craft one ("craft crafting_table") or return to base.` };
   }
 
   if (tableToUse) {
     try {
       if (bot.entity.position.distanceTo(tableToUse.position) > 3) {
-        console.log(`[CRAFT] Déplacement vers l'établi en ${tableToUse.position}...`);
+        console.log(`[CRAFT] Moving to crafting table at (${tableToUse.position.x}, ${tableToUse.position.y}, ${tableToUse.position.z})...`);
         const { GoalNear } = goals;
         await bot.pathfinder.goto(new GoalNear(tableToUse.position.x, tableToUse.position.y, tableToUse.position.z, 2));
       }
       await bot.lookAt(tableToUse.position.offset(0.5, 0.5, 0.5));
     } catch (e) {
-      console.warn("Rapprochement de l'établi :", e.message);
+      console.warn("Approaching crafting table :", e.message);
     }
   }
 
   const recipes = bot.recipesFor(item.id, null, 1, tableToUse);
   if (recipes.length === 0) {
-    return { success: false, message: `Composants manquants dans l'inventaire pour fabriquer '${targetName}'.` };
+    return { success: false, message: `Missing required components in inventory to craft '${targetName}'.` };
   }
 
   const slotHelper = setInterval(() => {
@@ -69,12 +69,12 @@ async function skillCraft(bot, state, targetName) {
   }, 600);
 
   try {
-    bot.chat(`Fabrication de ${targetName}...`);
+    bot.chat(`Crafting ${targetName}...`);
     await bot.craft(recipes[0], 1, tableToUse);
-    return { success: true, message: `Craft de '${targetName}' réussi.` };
+    return { success: true, message: `Successfully crafted '${targetName}'.` };
   } catch (error) {
-    console.warn("Erreur pendant le craft :", error.message);
-    return { success: false, message: `Erreur lors de la fabrication : ${error.message}` };
+    console.warn("Error during craft :", error.message);
+    return { success: false, message: `Crafting failed : ${error.message}` };
   } finally {
     clearInterval(slotHelper);
   }

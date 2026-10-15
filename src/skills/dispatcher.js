@@ -9,13 +9,13 @@ const { skillHunt, skillFight } = require('./combat');
 const { skillChest } = require('./storage');
 
 /**
- * Route une action décidée par l'IA vers la compétence correspondante
- * @param {object} bot Instance Mineflayer du bot
- * @param {object} state État global du bot
- * @param {string} action Type d'action à exécuter
- * @param {string} target Cible de l'action
- * @param {number} qty Quantité demandée
- * @returns {Promise<{ success: boolean, message: string }>} Résultat de l'exécution
+ * Route an AI-decided action to its corresponding execution skill
+ * @param {object} bot Mineflayer bot instance
+ * @param {object} state Global bot state
+ * @param {string} action Type of action to execute
+ * @param {string} target Action target
+ * @param {number} qty Requested quantity
+ * @returns {Promise<{ success: boolean, message: string }>} Execution result
  */
 async function dispatchSkill(bot, state, action, target, qty) {
   if (action === 'unstuck') return skillUnstuck(bot);
@@ -29,7 +29,7 @@ async function dispatchSkill(bot, state, action, target, qty) {
   if (action === 'hunt') return skillHunt(bot, target);
   if (action === 'fight') return skillFight(bot, target);
   if (action === 'chest') return skillChest(bot, state);
-  return { success: false, message: `Action inconnue '${action}'.` };
+  return { success: false, message: `Unknown action '${action}'.` };
 }
 
 module.exports = { dispatchSkill };

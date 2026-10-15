@@ -2,15 +2,15 @@ const { Vec3 } = require('vec3');
 const config = require('../config');
 
 /**
- * Pose un bloc de l'inventaire au sol sur une surface dégagée
- * @param {object} bot Instance Mineflayer du bot
- * @param {object} state État global du bot
- * @param {string} targetName Nom du bloc à placer
- * @returns {Promise<{ success: boolean, message: string }>} Résultat du placement
+ * Place an inventory block onto an unobstructed surface on the ground
+ * @param {object} bot Mineflayer bot instance
+ * @param {object} state Global bot state
+ * @param {string} targetName Name of the block item to place
+ * @returns {Promise<{ success: boolean, message: string }>} Result of the placement action
  */
 async function skillPlace(bot, state, targetName) {
   const item = bot.inventory.items().find(i => i.name === targetName);
-  if (!item) return { success: false, message: `Tu ne possèdes pas de '${targetName}' dans ton inventaire.` };
+  if (!item) return { success: false, message: `You do not have '${targetName}' in your inventory.` };
 
   const refBlock = bot.findBlock({
     matching: (block) => {
@@ -26,7 +26,7 @@ async function skillPlace(bot, state, targetName) {
     maxDistance: 3
   });
 
-  if (!refBlock) return { success: false, message: "Aucun sol dégagé avec de l'air au-dessus pour poser ce bloc." };
+  if (!refBlock) return { success: false, message: "No clear ground with air above to place this block." };
 
   try {
     await bot.equip(item, 'hand');
@@ -43,10 +43,10 @@ async function skillPlace(bot, state, targetName) {
       state.base.chest = refBlock.position.offset(0, 1, 0).clone();
     }
 
-    return { success: true, message: `'${targetName}' posé au sol avec succès.` };
+    return { success: true, message: `'${targetName}' placed on the ground successfully.` };
   } catch (error) {
-    console.warn("Erreur de placement :", error.message);
-    return { success: false, message: `Échec du placement : ${error.message}` };
+    console.warn("Placement error :", error.message);
+    return { success: false, message: `Failed to place block : ${error.message}` };
   }
 }
 

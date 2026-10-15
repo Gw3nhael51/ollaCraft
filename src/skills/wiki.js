@@ -1,10 +1,10 @@
 const { getMcData } = require('../utils/wikiData');
 
 /**
- * Consulte la base de données du jeu pour extraire les propriétés et recettes d'un bloc ou item
- * @param {object} bot Instance Mineflayer du bot
- * @param {string} target Nom de l'item ou du bloc recherché
- * @returns {{ success: boolean, message: string }}
+ * Query game database to extract properties, harvest requirements, and crafting recipes for a block or item
+ * @param {object} bot Mineflayer bot instance
+ * @param {string} target Name of the targeted block or item
+ * @returns {{ success: boolean, message: string }} Database query result summary
  */
 function skillWiki(bot, target) {
   const mcData = getMcData(bot);
@@ -15,38 +15,38 @@ function skillWiki(bot, target) {
   const block = mcData.blocksByName[target];
 
   if (!item && !block) {
-    return { success: false, message: `L'élément '${target}' n'existe pas dans la base de données.` };
+    return { success: false, message: `'${target}' does not exist in the database.` };
   }
 
   if (block) {
     found = true;
-    response += `Type : Bloc\n`;
-    response += `Minable : ${block.diggable ? 'Oui' : 'Non'}\n`;
+    response += `Type: Block\n`;
+    response += `Mineable: ${block.diggable ? 'Yes' : 'No'}\n`;
 
     if (block.harvestTools) {
       const toolNames = Object.keys(block.harvestTools).map(id => mcData.items[id]?.name).filter(Boolean);
       if (toolNames.length > 0) {
-        response += `Outils requis pour miner et récupérer : ${toolNames.slice(0, 5).join(', ')}${toolNames.length > 5 ? '...' : ''}\n`;
+        response += `Required harvest tools: ${toolNames.slice(0, 5).join(', ')}${toolNames.length > 5 ? '...' : ''}\n`;
       }
     } else if (block.diggable) {
-      response += `Outils requis : Aucun (minable à la main)\n`;
+      response += `Required tools: None (hand mineable)\n`;
     }
 
     if (block.drops && block.drops.length > 0) {
       const dropNames = block.drops.map(id => mcData.items[id]?.name).filter(Boolean);
-      response += `Donne (drops) : ${dropNames.join(', ')}\n`;
+      response += `Drops: ${dropNames.join(', ')}\n`;
     } else {
-      response += `Donne (drops) : Rien\n`;
+      response += `Drops: None\n`;
     }
   }
 
   if (item) {
     found = true;
-    if (!block) response += `Type : Item\n`;
+    if (!block) response += `Type: Item\n`;
 
     const recipes = mcData.recipes[item.id];
     if (recipes && recipes.length > 0) {
-      response += `Fabrication (Craft) :\n`;
+      response += `Crafting recipe:\n`;
       const primaryRecipe = recipes[0];
       const requiresCraftingTable = primaryRecipe.inShape && (primaryRecipe.inShape.length > 2 || primaryRecipe.inShape[0].length > 2);
 
@@ -69,19 +69,19 @@ function skillWiki(bot, target) {
       });
       const recipeSummary = Object.entries(ingredientCounts).map(([name, count]) => `${count}x ${name}`).join(', ');
 
-      response += `- Recette : ${recipeSummary}\n`;
-      response += `- Quantité produite : ${primaryRecipe.result.count}\n`;
-      response += `- Nécessite un établi (crafting_table) : ${requiresCraftingTable ? 'Oui' : 'Non'}\n`;
+      response += `- Recipe: ${recipeSummary}\n`;
+      response += `- Output quantity: ${primaryRecipe.result.count}\n`;
+      response += `- Requires crafting table: ${requiresCraftingTable ? 'Yes' : 'No'}\n`;
     } else {
-      response += `Fabrication (Craft) : Non craftable (ou recette spéciale).\n`;
+      response += `Crafting: Not craftable (or special recipe).\n`;
     }
   }
 
   if (!found) {
-    return { success: false, message: `Aucune info utile trouvée pour '${target}'.` };
+    return { success: false, message: `No useful information found for '${target}'.` };
   }
 
-  bot.chat(`J'ai consulté le wiki pour : ${target}`);
+  bot.chat(`Checked wiki for: ${target}`);
   return { success: true, message: response.trim() };
 }
 
