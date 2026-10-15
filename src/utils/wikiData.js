@@ -91,9 +91,57 @@ function getBlockNamesForTarget(bot, targetItemName) {
   return matchingBlocks.length > 0 ? matchingBlocks : [targetItemName];
 }
 
+/**
+ * Check if a block name belongs to the ore family (including deepslate and nether)
+ * @param {string} blockName Name of block to check
+ * @returns {boolean} True if block is an ore
+ */
+function isOreBlock(blockName) {
+  if (!blockName || typeof blockName !== 'string') return false;
+  return blockName.endsWith('_ore') || blockName === 'ancient_debris';
+}
+
+/**
+ * Return all ore block definitions available in current Minecraft version
+ * @param {object} bot Mineflayer bot instance
+ * @returns {Set<string>} Set of ore block names
+ */
+function getOreBlockNames(bot) {
+  const mcData = getMcData(bot);
+  const oreNames = mcData.blocksArray
+    .filter(b => b.name.endsWith('_ore') || b.name === 'ancient_debris')
+    .map(b => b.name);
+  return new Set(oreNames);
+}
+
+/**
+ * Classify visible ores into harvestable and unharvestable based on bot tools
+ * @param {object} bot Mineflayer bot instance
+ * @param {Record<string, number>} exposedOres Scanned exposed ores count
+ * @returns {{ harvestable: Record<string, number>, unharvestable: Record<string, { count: number, requiredTools: string[] }> }}
+ */
+function classifyOresByHarvestability(bot, exposedOres) {
+  const harvestable = {};
+  const unharvestable = {};
+
+  for (const [oreName, count] of Object.entries(exposedOres || {})) {
+    const check = canHarvestBlock(bot, oreName);
+    if (check.canHarvest) {
+      harvestable[oreName] = count;
+    } else {
+      unharvestable[oreName] = { count, requiredTools: check.requiredTools };
+    }
+  }
+
+  return { harvestable, unharvestable };
+}
+
 module.exports = {
   getMcData,
   getBlockDrops,
   canHarvestBlock,
-  getBlockNamesForTarget
+  getBlockNamesForTarget,
+  isOreBlock,
+  getOreBlockNames,
+  classifyOresByHarvestability
 };

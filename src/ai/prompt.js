@@ -1,7 +1,7 @@
 const config = require('../config');
 const invUtils = require('../utils/inventory');
 const envUtils = require('../utils/environment');
-const { getMcData } = require('../utils/wikiData');
+const { getMcData, classifyOresByHarvestability } = require('../utils/wikiData');
 const { getCurrentAdvancementInfo } = require('../utils/advancements');
 
 /**
@@ -120,13 +120,33 @@ function buildReactPrompt(bot, state, environment, craftingTable) {
   const nearbyEntities = envUtils.scanNearbyEntities ? envUtils.scanNearbyEntities(bot, 20) : {};
   const entitiesText = Object.keys(nearbyEntities).length > 0 ? JSON.stringify(nearbyEntities) : "aucune";
   const exposedOres = envUtils.scanExposedOres ? envUtils.scanExposedOres(bot, 16) : {};
-  const exposedOresText = Object.keys(exposedOres).length > 0 ? JSON.stringify(exposedOres) : "aucun";
+  const { harvestable, unharvestable } = classifyOresByHarvestability(bot, exposedOres);
+  const harvestableKeys = Object.keys(harvestable);
+  const unharvestableKeys = Object.keys(unharvestable);
+
+  let orePromptText = "aucun";
+  if (harvestableKeys.length > 0 || unharvestableKeys.length > 0) {
+    const parts = [];
+    if (harvestableKeys.length > 0) {
+      const harvestableSummary = harvestableKeys.map(k => `${harvestable[k]}x ${k}`).join(', ');
+      parts.push(`Récoltables avec tes outils : ${harvestableSummary}`);
+    }
+    if (unharvestableKeys.length > 0) {
+      const unharvestableSummary = unharvestableKeys.map(k => {
+        const toolsDesc = unharvestable[k].requiredTools.slice(0, 2).join(' ou ');
+        return `${unharvestable[k].count}x ${k} (nécessite ${toolsDesc})`;
+      }).join(', ');
+      parts.push(`Visibles mais outil insuffisant : ${unharvestableSummary}`);
+    }
+    orePromptText = parts.join(' | ');
+  }
 
   return `
     Tu es ${bot.username || 'Herobrine'}, un agent IA autonome dans Minecraft. Tu dois raisonner et t'adapter par toi-même.
 
     OBJECTIF GLOBAL : Obtenir '${state.currentObjective}'.
     - Progression chiffrée : ${progressText}
+    - DIRECTIVE STRATÉGIQUE DU MANAGER : "${state.managerDirective || "Poursuivre la progression vers l'objectif actuel."}"
     - JALON / SUCCÈS OFFICIEL EN COURS : ${advancementInfo}
     - Succès déjà validés : ${unlockedText}
 
@@ -145,7 +165,7 @@ function buildReactPrompt(bot, state, environment, craftingTable) {
 
     ENVIRONNEMENT VISIBLE (RADAR) :
     - Biome actuel : ${currentBiome}
-    - Minerais exposés à l'air libre (visibles dans les parois) : ${exposedOresText}
+    - Minerais visibles dans la caverne/parois : ${orePromptText}
     - Blocs : ${envText}
     - Entités/Créatures proches : ${entitiesText}
 
@@ -153,7 +173,8 @@ function buildReactPrompt(bot, state, environment, craftingTable) {
     - Objets fabricables MAINTENANT avec ton inventaire : ${availableCrafts}
     - Ne fabrique jamais un outil que tu possèdes déjà.
     - RÈGLE MINEUR OPPORTUNISTE :
-      * Si des minerais précieux sont visibles à l'air libre (${exposedOresText}), mine-les ("mine") pour récolter fer, charbon, or ou diamants facilement !
+      * Si des minerais sont récoltables (${harvestableKeys.length > 0 ? harvestableKeys.join(', ') : 'aucun actuellement'}), utilise "mine" pour les récolter !
+      * N'attaque JAMAIS un minerai si ton outil est insuffisant (ex: casser du diamant sans pioche en fer le détruit sans rien drop).
     - RÈGLE SUR LA PIERRE :
       * La 'cobblestone' NE SE CRAFTE JAMAIS. Elle s'obtient en minant 'stone' avec l'action "mine".
       * ${getStoneHint(bot)}

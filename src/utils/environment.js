@@ -1,4 +1,5 @@
 const { Vec3 } = require('vec3');
+const { isOreBlock } = require('./wikiData');
 
 /**
  * Scan cubic blocks in a given radius around the bot's current position
@@ -104,16 +105,9 @@ function getCurrentBiome(bot) {
   return biomeEntry?.name || 'plains';
 }
 
-const VALUABLE_ORES = new Set([
-  'coal_ore', 'deepslate_coal_ore',
-  'iron_ore', 'deepslate_iron_ore',
-  'copper_ore', 'deepslate_copper_ore',
-  'gold_ore', 'deepslate_gold_ore',
-  'redstone_ore', 'deepslate_redstone_ore',
-  'lapis_ore', 'deepslate_lapis_ore',
-  'diamond_ore', 'deepslate_diamond_ore',
-  'emerald_ore', 'deepslate_emerald_ore'
-]);
+const VALUABLE_ORES = {
+  has: (name) => isOreBlock(name)
+};
 
 const AIR_BLOCK_NAMES = new Set(['air', 'cave_air', 'void_air']);
 
@@ -165,7 +159,7 @@ function scanExposedOres(bot, radius = 16) {
       for (let z = -radius; z <= radius; z++) {
         targetPos.set(botPosition.x + x, botPosition.y + y, botPosition.z + z);
         const block = bot.blockAt(targetPos);
-        if (block && VALUABLE_ORES.has(block.name) && isBlockExposedToAir(bot, block)) {
+        if (block && isOreBlock(block.name) && isBlockExposedToAir(bot, block)) {
           exposedOres[block.name] = (exposedOres[block.name] || 0) + 1;
         }
       }
