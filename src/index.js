@@ -125,6 +125,11 @@ bot.on('chat', async (username, message) => {
     const pos = bot.entity.position.floored();
     bot.chat(`Current coordinates : X:${pos.x}, Y:${pos.y}, Z:${pos.z}`);
   }
+
+  if (message === 'tokens' || message === 'token') {
+    const stats = state.tokenStats;
+    bot.chat(`Tokens : Joueur [${stats.playerPromptTokens} in / ${stats.playerCompletionTokens} out] | Manager [${stats.managerPromptTokens} in / ${stats.managerCompletionTokens} out] | Total : ${stats.totalTokens}`);
+  }
 });
 
 // Suspend autonomous survival on bot death
