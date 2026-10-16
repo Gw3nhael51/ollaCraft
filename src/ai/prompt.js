@@ -175,12 +175,17 @@ function buildReactPrompt(bot, state, environment, craftingTable) {
     - RÈGLE MINEUR OPPORTUNISTE :
       * Si des minerais sont récoltables (${harvestableKeys.length > 0 ? harvestableKeys.join(', ') : 'aucun actuellement'}), utilise "mine" pour les récolter !
       * N'attaque JAMAIS un minerai si ton outil est insuffisant (ex: casser du diamant sans pioche en fer le détruit sans rien drop).
+    - RÈGLE SUR LE BOIS ET L'ÉTABLI :
+      * N'importe quel type de bois (oak, birch, jungle, acacia, spruce, dark_oak, etc.) convient pour faire des planches, des bâtons, des outils ou un établi.
+      * Pour faire un établi ('crafting_table'), transforme d'abord tes bûches en planches ('craft' avec tes planches), puis crafte l'établi dans tes poches.
+      * Une fois la 'crafting_table' fabriquée, n'oublie pas de la poser au sol avec l'action "place" pour débloquer les crafts 3x3.
     - RÈGLE SUR LA PIERRE :
       * La 'cobblestone' NE SE CRAFTE JAMAIS. Elle s'obtient en minant 'stone' avec l'action "mine".
       * ${getStoneHint(bot)}
     - RÈGLE SUR LE FER :
       * Pour avoir 'raw_iron', mine 'iron_ore' avec au moins une 'stone_pickaxe'.
       * Pour avoir 'iron_ingot', utilise "smelt" sur 'raw_iron' dans un four ('furnace').
+      * Si aucun four n'est posé, fabrique-le ("craft" avec 'furnace') à l'établi avec 8 cobblestone, pose-le au sol ("place" avec 'furnace'), puis utilise "smelt" sur 'raw_iron' (avec du bois ou du charbon comme combustible).
     - RÈGLE SUR LE STOCKAGE :
       * Si ton inventaire est trop encombré (beaucoup de terre, diorite, granit, blocs en surplus), fabrique un coffre ('craft' cible 'chest'), pose-le ('place' cible 'chest') et utilise l'action "chest" pour déposer et trier tes surplus.
 

@@ -10,10 +10,31 @@ const { askOllama } = require('./ollama');
  */
 function detectActionLoop(actionHistory) {
   if (actionHistory.length < 3) return false;
-  const recent = actionHistory.slice(-3);
-  const allFailures = recent.every(item => !item.success);
-  const sameAction = recent.every(item => item.action === recent[0].action && item.target === recent[0].target);
-  return allFailures || sameAction;
+
+  // Detect consecutive failures or identical repeated actions
+  const recent3 = actionHistory.slice(-3);
+  const allFailures = recent3.every(item => !item.success);
+  const sameAction = recent3.every(item => item.action === recent3[0].action && item.target === recent3[0].target);
+  if (allFailures || sameAction) return true;
+
+  if (actionHistory.length >= 4) {
+    const r4 = actionHistory.slice(-4);
+    // Detect alternating action ping-pong loop
+    const isPingPong = (
+      r4[0].action === r4[2].action &&
+      r4[0].target === r4[2].target &&
+      r4[1].action === r4[3].action &&
+      r4[1].target === r4[3].target
+    );
+    if (isPingPong) return true;
+
+    // Detect repeated attempts on the same target with failures
+    const sameTargetCount = r4.filter(item => item.target === r4[3].target && r4[3].target !== 'none').length;
+    const hasFailure = r4.some(item => !item.success);
+    if (sameTargetCount >= 3 && hasFailure) return true;
+  }
+
+  return false;
 }
 
 /**
@@ -44,14 +65,48 @@ function sanitizeManagerOutput(bot, rawDecision) {
     const table = tableId ? bot.findBlock({ matching: tableId, maxDistance: 16 }) : null;
     const available = invUtils.getAvailableCrafts(bot, table);
     if (!available.includes(target)) {
-      action = 'explore';
-      directive = `Ressources manquantes pour fabriquer ${target}, explorer pour trouver des composants.`;
+      if (target === 'crafting_table') {
+        const hasLogs = bot.inventory.items().some(i => i.name.endsWith('_log') || i.name.endsWith('_wood'));
+        if (hasLogs) {
+          action = 'craft';
+          target = 'planks';
+          directive = "Fabriquer des planches à partir des bûches pour créer un établi.";
+        } else {
+          action = 'mine';
+          target = 'oak_log';
+          directive = "Couper du bois pour obtenir des planches et un établi.";
+        }
+      } else {
+        const hasTableInPocket = invUtils.countItem(bot, 'crafting_table') > 0;
+        if (!table && hasTableInPocket) {
+          action = 'place';
+          target = 'crafting_table';
+          directive = `Poser l'établi au sol pour pouvoir fabriquer ${target}.`;
+        } else {
+          action = 'explore';
+          directive = `Ressources manquantes pour fabriquer ${target}, explorer pour trouver des composants.`;
+        }
+      }
     }
   }
 
-  if (action === 'smelt' && invUtils.countItem(bot, target) === 0) {
-    action = 'mine';
-    directive = `Miner le minerai requis avant de pouvoir faire fondre ${target}.`;
+  // Adjust smelt action according to targeted resource
+  if (action === 'smelt') {
+    if (target === 'furnace') {
+      const hasFurnace = invUtils.countItem(bot, 'furnace') > 0;
+      action = hasFurnace ? 'place' : 'craft';
+      directive = hasFurnace ? "Poser le fourneau au sol pour fondre les minerais." : "Fabriquer un fourneau à l'établi pour fondre les minerais.";
+    } else if (target === 'iron_ingot') {
+      const hasOre = invUtils.countItem(bot, 'raw_iron') > 0 || invUtils.countItem(bot, 'iron_ore') > 0;
+      if (!hasOre) {
+        action = 'mine';
+        target = 'iron_ore';
+        directive = "Miner du minerai de fer avant de pouvoir fabriquer des lingots.";
+      }
+    } else if (invUtils.countItem(bot, target) === 0) {
+      action = 'mine';
+      directive = `Miner la ressource requise avant de pouvoir faire fondre ${target}.`;
+    }
   }
 
   return { directive, suggestedAction: action, suggestedTarget: target };
@@ -71,13 +126,18 @@ async function runManagerCycle(bot) {
     const inventory = invUtils.getInventorySummary(bot);
     const loopDetected = detectActionLoop(state.actionHistory);
     const recentHistory = JSON.stringify(state.actionHistory.slice(-4));
+    const requiredAmount = config.QUEST_AMOUNT[state.currentObjective] || 1;
+    const currentAmount = invUtils.countItem(bot, state.currentObjective);
+    const progressSummary = `${currentAmount}/${requiredAmount}`;
 
     const prompt = `
       Tu es le Manager Stratège du bot Minecraft.
       Ton rôle est de superviser le joueur, éviter qu'il boucle, et lui fixer une priorité claire.
 
       SITUATION ACTUELLE :
-      - Objectif final : '${state.currentObjective}'
+      - Objectif final : '${state.currentObjective}' (Progression actuelle : ${progressSummary}${currentAmount >= requiredAmount ? ' - PALIER ATTEINT' : ''})
+      - Quantité requise pour valider ce palier : ${requiredAmount} (possédé : ${currentAmount})
+      - IMPORTANT : Ne demande PAS au joueur d'arrêter tant que le palier (${requiredAmount}) n'est pas atteint !
       - Outils possédés : ${tools}
       - Inventaire : ${inventory}
       - Santé : ${Math.round(bot.health)}/20 | Faim : ${Math.round(bot.food)}/20
@@ -95,7 +155,7 @@ async function runManagerCycle(bot) {
       }
     `;
 
-    const result = await askOllama(prompt, config.OLLAMA_MODEL_MANAGER);
+    const result = await askOllama(prompt, config.OLLAMA_MODEL_MANAGER, 'manager');
 
     if (result) {
       const validated = sanitizeManagerOutput(bot, result);
