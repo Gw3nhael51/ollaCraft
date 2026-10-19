@@ -50,6 +50,9 @@ async function handleSurvivalRequest(bot) {
     let executionResult;
     let actionTimer = null;
 
+    // Increment active action identifier to track current execution
+    state.activeActionId = (state.activeActionId || 0) + 1;
+
     // Safety timeout promise to prevent infinite execution hangs
     const timeoutPromise = new Promise((_, reject) => {
       actionTimer = setTimeout(() => {
@@ -65,9 +68,17 @@ async function handleSurvivalRequest(bot) {
     } catch (error) {
       console.warn(`[TIMEOUT / ERROR] Action '${decision.action}' aborted:`, error.message);
 
+      // Invalidate action identifier to abort background recursive tasks
+      state.activeActionId = (state.activeActionId || 0) + 1;
+
       // Forcefully cancel pathfinding and reset controls
       bot.pathfinder.setGoal(null);
       bot.clearControlStates();
+      try {
+        bot.stopDigging();
+      } catch {
+        // Ignore error if bot is not currently digging
+      }
 
       // Close open container or crafting window if active
       if (bot.currentWindow) {

@@ -25,6 +25,7 @@ module.exports = {
   managerDirective: "Récolter du bois pour fabriquer les premiers outils.",
   managerSubGoal: null,
   isManagerThinking: false,
+  activeActionId: 0,
   tokenStats: {
     playerPromptTokens: 0,
     playerCompletionTokens: 0,

@@ -26,9 +26,15 @@ async function collectDrops(bot, position) {
  * Target, approach, and mine a single block matching requested resource
  * @param {object} bot Mineflayer bot instance
  * @param {string} targetName Targeted resource name
+ * @param {object|null} [state] Global bot state
+ * @param {number} [actionId] Active action identifier
  * @returns {Promise<{ success: boolean, empty: boolean, message: string }>}
  */
-async function mineSingleTarget(bot, targetName) {
+async function mineSingleTarget(bot, targetName, state = null, actionId = 0) {
+  if (state && state.activeActionId !== actionId) {
+    return { success: false, empty: true, message: "Action cancelled." };
+  }
+
   const isOpportunistic = targetName === 'opportuniste' || targetName === 'ore' || targetName === 'ores';
   const candidateBlockNames = isOpportunistic ? VALUABLE_ORES : new Set(getBlockNamesForTarget(bot, targetName));
 
@@ -72,8 +78,12 @@ async function mineSingleTarget(bot, targetName) {
 
     console.log(`[MINE] Moving towards ${targetBlock.name}...`);
     const gotoPromise = bot.pathfinder.goto(new GoalNear(targetBlock.position.x, targetBlock.position.y, targetBlock.position.z, 2));
-    const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error("Navigation timeout")), 30000));
+    const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error("Navigation timeout")), 15000));
     await Promise.race([gotoPromise, timeoutPromise]);
+
+    if (state && state.activeActionId !== actionId) {
+      return { success: false, empty: true, message: "Action cancelled." };
+    }
 
     bot.pathfinder.setGoal(null);
     bot.clearControlStates();
@@ -95,6 +105,10 @@ async function mineSingleTarget(bot, targetName) {
     const digTimeout = new Promise((_, reject) => setTimeout(() => reject(new Error("Digging timeout")), 10000));
     await Promise.race([digPromise, digTimeout]);
     console.log(`[MINE] Block broken, collecting loot...`);
+
+    if (state && state.activeActionId !== actionId) {
+      return { success: false, empty: true, message: "Action cancelled." };
+    }
 
     try {
       await bot.pathfinder.goto(new GoalNear(targetBlock.position.x, targetBlock.position.y, targetBlock.position.z, 1));
@@ -131,8 +145,8 @@ async function mineSingleTarget(bot, targetName) {
 
     // Extract immediately adjacent blocks from the same vein
     let veinExtraCount = 0;
-    if (VALUABLE_ORES.has(blockToBreak.name)) {
-      veinExtraCount = await harvestConnectedVein(bot, targetBlock.position, blockToBreak.name);
+    if (VALUABLE_ORES.has(blockToBreak.name) && (!state || state.activeActionId === actionId)) {
+      veinExtraCount = await harvestConnectedVein(bot, targetBlock.position, blockToBreak.name, 6, state, actionId);
     }
 
     const totalCollected = collectedQuantity + veinExtraCount;
@@ -197,23 +211,27 @@ async function mineVeinBlock(bot, neighborPos, neighborBlock) {
  * @param {object} bot Mineflayer bot instance
  * @param {object} current Center block position
  * @param {number} dirIndex Current direction index
- * @param {object} state Vein exploration state
+ * @param {object} veinState Vein exploration state
  * @returns {Promise<number>} Total blocks harvested
  */
-async function exploreVeinDirections(bot, current, dirIndex, state) {
-  if (dirIndex >= VEIN_DIRECTIONS.length || state.harvested >= state.maxVeinBlocks) {
-    return state.harvested;
+async function exploreVeinDirections(bot, current, dirIndex, veinState) {
+  if (
+    dirIndex >= VEIN_DIRECTIONS.length ||
+    veinState.harvested >= veinState.maxVeinBlocks ||
+    (veinState.globalState && veinState.globalState.activeActionId !== veinState.actionId)
+  ) {
+    return veinState.harvested;
   }
 
   const dir = VEIN_DIRECTIONS[dirIndex];
   const neighborPos = current.plus(dir);
   const key = getPosKey(neighborPos);
 
-  if (!state.visited.has(key)) {
-    state.visited.add(key);
+  if (!veinState.visited.has(key)) {
+    veinState.visited.add(key);
 
     const neighborBlock = bot.blockAt(neighborPos);
-    if (neighborBlock && state.targetTypes.has(neighborBlock.name) && !GLOBAL_BAD_BLOCKS.has(key)) {
+    if (neighborBlock && veinState.targetTypes.has(neighborBlock.name) && !GLOBAL_BAD_BLOCKS.has(key)) {
       const harvestCheck = canHarvestBlock(bot, neighborBlock);
       if (harvestCheck.canHarvest) {
         const touchesLava = VEIN_DIRECTIONS.some(d => {
@@ -224,33 +242,37 @@ async function exploreVeinDirections(bot, current, dirIndex, state) {
         if (!touchesLava) {
           const success = await mineVeinBlock(bot, neighborPos, neighborBlock);
           if (success) {
-            state.queue.push(neighborPos);
-            state.harvested++;
-            return exploreVeinDirections(bot, current, dirIndex + 1, state);
+            veinState.queue.push(neighborPos);
+            veinState.harvested++;
+            return exploreVeinDirections(bot, current, dirIndex + 1, veinState);
           }
         }
       }
     }
   }
 
-  return exploreVeinDirections(bot, current, dirIndex + 1, state);
+  return exploreVeinDirections(bot, current, dirIndex + 1, veinState);
 }
 
 /**
  * Traverse vein branches recursively without while-await loop
  * @param {object} bot Mineflayer bot instance
- * @param {object} state Vein exploration state
+ * @param {object} veinState Vein exploration state
  * @returns {Promise<number>} Total harvested
  */
-async function processVeinQueue(bot, state) {
-  if (state.queue.length === 0 || state.harvested >= state.maxVeinBlocks) {
-    return state.harvested;
+async function processVeinQueue(bot, veinState) {
+  if (
+    veinState.queue.length === 0 ||
+    veinState.harvested >= veinState.maxVeinBlocks ||
+    (veinState.globalState && veinState.globalState.activeActionId !== veinState.actionId)
+  ) {
+    return veinState.harvested;
   }
 
-  const current = state.queue.shift();
-  await exploreVeinDirections(bot, current, 0, state);
+  const current = veinState.queue.shift();
+  await exploreVeinDirections(bot, current, 0, veinState);
 
-  return processVeinQueue(bot, state);
+  return processVeinQueue(bot, veinState);
 }
 
 /**
@@ -258,10 +280,12 @@ async function processVeinQueue(bot, state) {
  * @param {object} bot Mineflayer bot instance
  * @param {object} originPos Initial broken ore position
  * @param {string} oreType Name of ore block
- * @param {number} maxVeinBlocks Maximum vein blocks to harvest
+ * @param {number} [maxVeinBlocks] Maximum vein blocks to harvest
+ * @param {object|null} [globalState] Global bot state
+ * @param {number} [actionId] Active action identifier
  * @returns {Promise<number>} Extra vein blocks harvested
  */
-async function harvestConnectedVein(bot, originPos, oreType, maxVeinBlocks = 8) {
+async function harvestConnectedVein(bot, originPos, oreType, maxVeinBlocks = 8, globalState = null, actionId = 0) {
   const originKey = getPosKey(originPos);
   const visited = new Set([originKey]);
   const queue = [originPos];
@@ -273,7 +297,7 @@ async function harvestConnectedVein(bot, originPos, oreType, maxVeinBlocks = 8) 
     targetTypes.add(`deepslate_${oreType}`);
   }
 
-  return processVeinQueue(bot, { queue, visited, targetTypes, harvested: 0, maxVeinBlocks });
+  return processVeinQueue(bot, { queue, visited, targetTypes, harvested: 0, maxVeinBlocks, globalState, actionId });
 }
 
 /**
@@ -281,10 +305,12 @@ async function harvestConnectedVein(bot, originPos, oreType, maxVeinBlocks = 8) 
  * @param {object} bot Mineflayer bot instance
  * @param {number} currentCount Current count of harvested ores
  * @param {number} maxCount Maximum count desired
+ * @param {object|null} [state] Global bot state
+ * @param {number} [actionId] Active action identifier
  * @returns {Promise<number>} Total count harvested
  */
-async function harvestNearbyExposedOresStep(bot, currentCount, maxCount) {
-  if (currentCount >= maxCount) return currentCount;
+async function harvestNearbyExposedOresStep(bot, currentCount, maxCount, state = null, actionId = 0) {
+  if (currentCount >= maxCount || (state && state.activeActionId !== actionId)) return currentCount;
 
   const oreBlock = bot.findBlock({
     matching: (block) => {
@@ -300,20 +326,22 @@ async function harvestNearbyExposedOresStep(bot, currentCount, maxCount) {
   if (!oreBlock) return currentCount;
 
   console.log(`[OPPORTUNISTIC MINER] Found '${oreBlock.name}' exposed to air! Mining immediately...`);
-  const singleResult = await mineSingleTarget(bot, oreBlock.name);
+  const singleResult = await mineSingleTarget(bot, oreBlock.name, state, actionId);
   if (!singleResult.success) return currentCount;
 
-  return harvestNearbyExposedOresStep(bot, currentCount + 1, maxCount);
+  return harvestNearbyExposedOresStep(bot, currentCount + 1, maxCount, state, actionId);
 }
 
 /**
  * Search and opportunistically mine exposed valuable ores around bot
  * @param {object} bot Mineflayer bot instance
- * @param {number} maxCount Maximum opportunistic ores to harvest per pass
+ * @param {number} [maxCount] Maximum opportunistic ores to harvest per pass
+ * @param {object|null} [state] Global bot state
+ * @param {number} [actionId] Active action identifier
  * @returns {Promise<number>} Total ores harvested
  */
-async function harvestNearbyExposedOres(bot, maxCount = 2) {
-  return harvestNearbyExposedOresStep(bot, 0, maxCount);
+async function harvestNearbyExposedOres(bot, maxCount = 2, state = null, actionId = 0) {
+  return harvestNearbyExposedOresStep(bot, 0, maxCount, state, actionId);
 }
 
 /**
@@ -324,22 +352,24 @@ async function harvestNearbyExposedOres(bot, maxCount = 2) {
  * @param {number} remaining Number of remaining blocks to harvest
  * @param {number} successfullyMined Number of blocks already harvested
  * @param {string} lastFailureMessage Last failure message
+ * @param {number} actionId Active action identifier
  * @returns {Promise<{ successfullyMined: number, lastFailureMessage: string }>}
  */
-async function runMiningSteps(bot, state, targetName, remaining, successfullyMined, lastFailureMessage) {
-  if (remaining <= 0 || !state.isSurviving) {
+async function runMiningSteps(bot, state, targetName, remaining, successfullyMined, lastFailureMessage, actionId) {
+  // Abort immediately if action timed out or survival mode stopped
+  if (remaining <= 0 || !state.isSurviving || state.activeActionId !== actionId) {
     return { successfullyMined, lastFailureMessage };
   }
 
-  const result = await mineSingleTarget(bot, targetName);
+  const result = await mineSingleTarget(bot, targetName, state, actionId);
   const nextFailure = result.message;
 
-  if (result.empty) {
+  if (result.empty || state.activeActionId !== actionId) {
     return { successfullyMined, lastFailureMessage: nextFailure };
   }
 
   const nextSuccess = result.success ? successfullyMined + 1 : successfullyMined;
-  return runMiningSteps(bot, state, targetName, remaining - 1, nextSuccess, nextFailure);
+  return runMiningSteps(bot, state, targetName, remaining - 1, nextSuccess, nextFailure, actionId);
 }
 
 /**
@@ -351,16 +381,18 @@ async function runMiningSteps(bot, state, targetName, remaining, successfullyMin
  * @returns {Promise<{ success: boolean, message: string }>}
  */
 async function skillMine(bot, state, targetName, count) {
-  const targetQuantity = Math.max(1, count || 1);
-  const { successfullyMined, lastFailureMessage } = await runMiningSteps(bot, state, targetName, targetQuantity, 0, '');
+  const actionId = state.activeActionId;
+  // Cap per-cycle block count to prevent safety timeout overflows
+  const targetQuantity = Math.min(3, Math.max(1, count || 1));
+  const { successfullyMined, lastFailureMessage } = await runMiningSteps(bot, state, targetName, targetQuantity, 0, '', actionId);
 
   if (successfullyMined === 0) {
     return { success: false, message: `Mining failed for '${targetName}' : ${lastFailureMessage}` };
   }
 
   let opportunisticMessage = '';
-  if (state.isSurviving && targetName !== 'dirt') {
-    const extraOresCount = await harvestNearbyExposedOres(bot, 2);
+  if (state.isSurviving && state.activeActionId === actionId && targetName !== 'dirt') {
+    const extraOresCount = await harvestNearbyExposedOres(bot, 2, state, actionId);
     if (extraOresCount > 0) {
       opportunisticMessage = ` + ${extraOresCount} opportunistic exposed ore(s)`;
     }
