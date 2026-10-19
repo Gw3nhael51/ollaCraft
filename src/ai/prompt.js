@@ -177,7 +177,8 @@ function buildReactPrompt(bot, state, environment, craftingTable) {
       * N'attaque JAMAIS un minerai si ton outil est insuffisant (ex: casser du diamant sans pioche en fer le détruit sans rien drop).
     - RÈGLE SUR LE BOIS ET L'ÉTABLI :
       * N'importe quel type de bois (oak, birch, jungle, acacia, spruce, dark_oak, etc.) convient pour faire des planches, des bâtons, des outils ou un établi.
-      * Pour faire un établi ('crafting_table'), transforme d'abord tes bûches en planches ('craft' avec tes planches), puis crafte l'établi dans tes poches.
+      * Tu peux utiliser directement "log" pour miner n'importe quel bois et "planks" pour fabriquer tes planches : le système s'adapte automatiquement.
+      * Pour faire un établi ('crafting_table'), transforme d'abord tes bûches en planches ('craft' avec 'planks'), puis crafte l'établi dans tes poches.
       * Une fois la 'crafting_table' fabriquée, n'oublie pas de la poser au sol avec l'action "place" pour débloquer les crafts 3x3.
     - RÈGLE SUR LA PIERRE :
       * La 'cobblestone' NE SE CRAFTE JAMAIS. Elle s'obtient en minant 'stone' avec l'action "mine".
@@ -203,21 +204,22 @@ function buildReactPrompt(bot, state, environment, craftingTable) {
     TES OUTILS D'ACTION :
     - "wiki" : Pour consulter la recette et les conditions d'un bloc/item si tu doutes (ex: {"target": "iron_ingot"}).
     - "unstuck" : Si tu es bloqué dans un trou pour te dégager vers la surface.
-    - "mine" : Pour récolter un bloc présent dans le Radar (ex: {"target": "oak_log", "qty": 3} ou {"target": "stone", "qty": 3}).
-    - "craft" : Pour fabriquer un objet disponible dans tes recettes (ex: {"target": "iron_pickaxe", "qty": 1}).
+    - "mine" : Pour récolter un bloc présent dans le Radar (ex: {"target": "log", "qty": 3} ou {"target": "stone", "qty": 3}).
+    - "craft" : Pour fabriquer un objet disponible dans tes recettes (ex: {"target": "planks", "qty": 1} ou {"target": "wooden_pickaxe", "qty": 1}).
     - "place" : Pour poser un objet de tes poches au sol (ex: {"target": "crafting_table"}, {"target": "furnace"}, {"target": "chest"}).
     - "smelt" : Pour faire fondre un minerai dans un four (ex: {"target": "raw_iron", "qty": 1}).
     - "chest" : Pour ouvrir le coffre de ta base et y ranger automatiquement tes blocs encombrants (terre, surplus de pierre, etc.).
     - "eat" : Pour consommer de la nourriture de ton inventaire.
     - "hunt" : Pour chasser un animal proche (ex: {"target": "cow"} ou {"target": "pig"}).
     - "fight" : Pour combattre un monstre hostile proche pour te défendre ou récolter du butin (ex: {"target": "zombie"}).
+    - "equip" : Pour équiper tes armures et placer le bouclier en main gauche (ex: {"target": "armor"} ou {"target": "shield"}).
     - "explore" : Pour marcher et trouver de nouvelles ressources si rien d'utile n'est visible.
 
     CONSIGNE : Analyse le résultat précédent, tes ressources et tes recettes. Déduis la prochaine action logique.
     Réponds UNIQUEMENT en JSON :
     {
       "thought": "Explication courte de ton raisonnement",
-      "action": "mine" | "craft" | "place" | "explore" | "unstuck" | "wiki" | "smelt" | "eat" | "hunt" | "fight" | "chest",
+      "action": "mine" | "craft" | "place" | "explore" | "unstuck" | "wiki" | "smelt" | "eat" | "hunt" | "fight" | "chest" | "equip",
       "target": "nom_cible_si_applicable",
       "qty": 1
     }

@@ -1,4 +1,5 @@
 const { goals } = require('mineflayer-pathfinder');
+const { autoEquipArmorAndShield } = require('./equip');
 
 const PASSIVE_MOBS = new Set([
   'cow', 'pig', 'sheep', 'chicken', 'rabbit', 'horse', 'donkey'
@@ -118,6 +119,13 @@ async function combatLoop(bot, targetEntity, startTime, maxDurationMs) {
  * @returns {Promise<{ success: boolean, message: string }>} Result of the encounter
  */
 async function executeCombat(bot, targetEntity) {
+  // Equip best armor pieces and off-hand shield prior to engagement
+  try {
+    await autoEquipArmorAndShield(bot);
+  } catch {
+    // Tolerate equipment error and proceed with combat
+  }
+
   const weapon = getBestWeapon(bot);
   if (weapon) {
     try {
