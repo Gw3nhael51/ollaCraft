@@ -121,6 +121,23 @@ function sanitizeManagerOutput(bot, rawDecision) {
     }
   }
 
+  // Validate chest sorting prerequisites (placed chest nearby or craft/place chest first)
+  if (action === 'chest') {
+    const chestId = bot.registry.blocksByName['chest']?.id;
+    const nearbyChest = chestId ? bot.findBlock({ matching: chestId, maxDistance: 24 }) : null;
+    if (!nearbyChest) {
+      if (invUtils.countItem(bot, 'chest') > 0) {
+        action = 'place';
+        target = 'chest';
+        directive = "Poser le coffre ('chest') au sol avant de pouvoir y ranger les surplus.";
+      } else {
+        action = 'craft';
+        target = 'chest';
+        directive = "Fabriquer un coffre ('chest') pour pouvoir trier et vider l'inventaire.";
+      }
+    }
+  }
+
   return { directive, suggestedAction: action, suggestedTarget: target };
 }
 
@@ -141,6 +158,8 @@ async function runManagerCycle(bot) {
     const requiredAmount = config.QUEST_AMOUNT[state.currentObjective] || 1;
     const currentAmount = invUtils.countItem(bot, state.currentObjective);
     const progressSummary = `${currentAmount}/${requiredAmount}`;
+    const { isInventoryCluttered } = require('../skills/storage');
+    const cluttered = isInventoryCluttered(bot);
 
     const prompt = `
       Tu es le Manager Stratège du bot Minecraft.
@@ -152,6 +171,7 @@ async function runManagerCycle(bot) {
       - IMPORTANT : Ne demande PAS au joueur d'arrêter tant que le palier (${requiredAmount}) n'est pas atteint !
       - Outils possédés : ${tools}
       - Inventaire : ${inventory}
+      - Encombrement de l'inventaire : ${cluttered ? 'OUI (ATTENTION : inventaire saturé de blocs en surplus, suggère de fabriquer/poser un coffre ou utiliser "chest")' : 'NON'}
       - Santé : ${Math.round(bot.health)}/20 | Faim : ${Math.round(bot.food)}/20
       - Historique des actions récentes : ${recentHistory}
       - Blocage ou boucle détectée : ${loopDetected ? 'OUI (ATTENTION : le joueur échoue ou répète la même action)' : 'NON'}
@@ -162,7 +182,7 @@ async function runManagerCycle(bot) {
       {
         "thought": "Diagnostic rapide de la situation",
         "directive": "Consigne impérative et courte pour le joueur",
-        "suggestedAction": "mine" | "craft" | "place" | "smelt" | "explore" | "unstuck" | "eat",
+        "suggestedAction": "mine" | "craft" | "place" | "smelt" | "explore" | "unstuck" | "eat" | "chest" | "equip" | "portal" | "fight" | "hunt",
         "suggestedTarget": "nom_cible"
       }
     `;

@@ -71,17 +71,26 @@ async function depositItems(chest, deposits) {
  */
 async function skillChest(bot, state) {
   const chestBlockId = bot.registry.blocksByName.chest?.id;
-  let chestBlock = chestBlockId ? bot.findBlock({ matching: chestBlockId, maxDistance: 32 }) : null;
+  let chestBlock = chestBlockId ? bot.findBlock({ matching: chestBlockId, maxDistance: 24 }) : null;
 
   if (!chestBlock && state.base.chest) {
-    chestBlock = bot.blockAt(state.base.chest);
-    if (chestBlock && chestBlock.name !== 'chest') {
-      chestBlock = null;
+    const rememberedChest = bot.blockAt(state.base.chest);
+    const dist = rememberedChest ? bot.entity.position.distanceTo(rememberedChest.position) : Infinity;
+    if (rememberedChest?.name === 'chest' && dist <= 24) {
+      chestBlock = rememberedChest;
+    } else if (rememberedChest && rememberedChest.name !== 'chest') {
       state.base.chest = null;
     }
   }
 
   if (!chestBlock) {
+    const hasInPocket = bot.inventory.items().some(i => i.name === 'chest');
+    if (hasInPocket) {
+      return {
+        success: false,
+        message: "No chest placed nearby. Use 'place' with target 'chest' to place your chest on the ground first."
+      };
+    }
     return {
       success: false,
       message: "No chest found nearby. Craft and place a chest ('craft chest' then 'place chest') first."
@@ -135,4 +144,22 @@ async function skillChest(bot, state) {
   }
 }
 
-module.exports = { skillChest, isItemToStore };
+/**
+ * Check whether the bot inventory is cluttered with bulky items and needs chest storage
+ * @param {object} bot Mineflayer bot instance
+ * @returns {boolean} True if inventory is nearly full or carries excessive bulk blocks
+ */
+function isInventoryCluttered(bot) {
+  const items = bot.inventory?.items() || [];
+  const hasStorableItems = items.some(item => isItemToStore(item));
+  if (!hasStorableItems) return false;
+
+  // Trigger storage if occupied main inventory slots exceed threshold or bulk count is high
+  const bulkCount = items
+    .filter(item => ['dirt', 'cobblestone', 'granite', 'diorite', 'andesite', 'cobbled_deepslate', 'gravel'].includes(item.name))
+    .reduce((sum, item) => sum + item.count, 0);
+
+  return items.length >= 24 || bulkCount >= 256;
+}
+
+module.exports = { skillChest, isItemToStore, isInventoryCluttered };
