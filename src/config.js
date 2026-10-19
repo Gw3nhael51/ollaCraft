@@ -17,7 +17,7 @@ module.exports = {
 
   SOFT_BLOCKS: new Set(['dirt', 'grass_block', 'sand', 'gravel', 'stone', 'cobblestone', 'clay']),
   VALID_GROUND_BLOCKS: new Set(['grass_block', 'dirt', 'stone', 'sand', 'cobblestone', 'deepslate', 'gravel']),
-  VALID_ACTIONS: new Set(['mine', 'explore', 'craft', 'place', 'unstuck', 'smelt', 'eat', 'wiki', 'hunt', 'fight', 'chest', 'equip']),
+  VALID_ACTIONS: new Set(['mine', 'explore', 'craft', 'place', 'unstuck', 'smelt', 'eat', 'wiki', 'hunt', 'fight', 'chest', 'equip', 'portal']),
   QUEST_CHAIN: [
     'wooden_pickaxe',
     'cobblestone',
@@ -29,7 +29,9 @@ module.exports = {
     'iron_sword',
     'shield',
     'bucket',
+    'water_bucket',
     'flint_and_steel',
+    'nether_portal',
     'blaze_rod',
     'ender_pearl',
     'ender_eye'
@@ -40,7 +42,9 @@ module.exports = {
     iron_ore: 3,
     iron_ingot: 3,
     bucket: 1,
+    water_bucket: 1,
     flint_and_steel: 1,
+    nether_portal: 1,
     blaze_rod: 7,
     ender_pearl: 12,
     ender_eye: 12

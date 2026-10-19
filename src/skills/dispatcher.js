@@ -8,6 +8,7 @@ const { skillEat } = require('./eat');
 const { skillHunt, skillFight } = require('./combat');
 const { skillChest } = require('./storage');
 const { skillEquip } = require('./equip');
+const { skillPortal } = require('./portal');
 
 /**
  * Route an AI-decided action to its corresponding execution skill
@@ -31,6 +32,7 @@ async function dispatchSkill(bot, state, action, target, qty) {
   if (action === 'fight') return skillFight(bot, target);
   if (action === 'chest') return skillChest(bot, state);
   if (action === 'equip') return skillEquip(bot, target);
+  if (action === 'portal') return skillPortal(bot);
   return { success: false, message: `Unknown action '${action}'.` };
 }
 

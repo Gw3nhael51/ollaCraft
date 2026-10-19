@@ -189,6 +189,21 @@ function isQuestDone(bot, questName, state) {
     return countItem(bot, 'cobblestone') >= required || countItem(bot, 'stone_pickaxe') > 0 || countItem(bot, 'iron_pickaxe') > 0;
   }
 
+  // Validate bucket quest if empty or filled bucket is owned
+  if (questName === 'bucket') {
+    return countItem(bot, 'bucket') > 0 || countItem(bot, 'water_bucket') > 0 || countItem(bot, 'lava_bucket') > 0;
+  }
+
+  // Validate water_bucket quest if water bucket is owned or already inside Nether
+  if (questName === 'water_bucket') {
+    return countItem(bot, 'water_bucket') > 0 || bot.game?.dimension === 'the_nether' || countItem(bot, 'blaze_rod') > 0;
+  }
+
+  // Validate nether_portal quest once inside the Nether or holding blaze rods
+  if (questName === 'nether_portal') {
+    return bot.game?.dimension === 'the_nether' || countItem(bot, 'blaze_rod') > 0;
+  }
+
   return countItem(bot, questName) >= (config.QUEST_AMOUNT[questName] || 1);
 }
 

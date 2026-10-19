@@ -209,6 +209,7 @@ function buildReactPrompt(bot, state, environment, craftingTable) {
     - "place" : Pour poser un objet de tes poches au sol (ex: {"target": "crafting_table"}, {"target": "furnace"}, {"target": "chest"}).
     - "smelt" : Pour faire fondre un minerai dans un four (ex: {"target": "raw_iron", "qty": 1}).
     - "chest" : Pour ouvrir le coffre de ta base et y ranger automatiquement tes blocs encombrants (terre, surplus de pierre, etc.).
+    - "portal" : Pour remplir ton seau d'eau, mouler/allumer le portail du Nether et entrer dedans.
     - "eat" : Pour consommer de la nourriture de ton inventaire.
     - "hunt" : Pour chasser un animal proche (ex: {"target": "cow"} ou {"target": "pig"}).
     - "fight" : Pour combattre un monstre hostile proche pour te défendre ou récolter du butin (ex: {"target": "zombie"}).
@@ -219,7 +220,7 @@ function buildReactPrompt(bot, state, environment, craftingTable) {
     Réponds UNIQUEMENT en JSON :
     {
       "thought": "Explication courte de ton raisonnement",
-      "action": "mine" | "craft" | "place" | "explore" | "unstuck" | "wiki" | "smelt" | "eat" | "hunt" | "fight" | "chest" | "equip",
+      "action": "mine" | "craft" | "place" | "explore" | "unstuck" | "wiki" | "smelt" | "eat" | "hunt" | "fight" | "chest" | "equip" | "portal",
       "target": "nom_cible_si_applicable",
       "qty": 1
     }
