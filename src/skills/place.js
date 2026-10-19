@@ -33,13 +33,13 @@ async function skillPlace(bot, state, targetName) {
     await bot.lookAt(refBlock.position.offset(0.5, 1, 0.5));
     await bot.placeBlock(refBlock, new Vec3(0, 1, 0));
 
-    if (targetName === 'crafting_table' && !state.base.crafting_table) {
+    if (targetName === 'crafting_table') {
       state.base.crafting_table = refBlock.position.offset(0, 1, 0).clone();
     }
-    if (targetName === 'furnace' && !state.base.furnace) {
+    if (targetName === 'furnace') {
       state.base.furnace = refBlock.position.offset(0, 1, 0).clone();
     }
-    if (targetName === 'chest' && !state.base.chest) {
+    if (targetName === 'chest') {
       state.base.chest = refBlock.position.offset(0, 1, 0).clone();
     }
 

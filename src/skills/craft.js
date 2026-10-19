@@ -50,11 +50,12 @@ async function skillCraft(bot, state, targetName) {
   const fitsInPersonalGrid = allRecipes.some(r => !r.requiresTable);
 
   const craftingTableBlockId = bot.registry.blocksByName.crafting_table?.id;
-  let nearbyCraftingTable = craftingTableBlockId ? bot.findBlock({ matching: craftingTableBlockId, maxDistance: 48 }) : null;
+  let nearbyCraftingTable = craftingTableBlockId ? bot.findBlock({ matching: craftingTableBlockId, maxDistance: 24 }) : null;
 
   if (!nearbyCraftingTable && state?.base?.crafting_table) {
     const baseTableBlock = bot.blockAt(state.base.crafting_table);
-    if (baseTableBlock?.name === 'crafting_table') {
+    const dist = baseTableBlock ? bot.entity.position.distanceTo(baseTableBlock.position) : Infinity;
+    if (baseTableBlock?.name === 'crafting_table' && dist <= 24) {
       nearbyCraftingTable = baseTableBlock;
     }
   }

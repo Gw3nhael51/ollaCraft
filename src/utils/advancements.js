@@ -109,7 +109,7 @@ function syncAdvancementsWithInventory(bot, state) {
     },
     {
       name: 'Suit Up',
-      condition: () => hasItemMatching('helmet') || hasItemMatching('chestplate') || hasItemMatching('leggings') || hasItemMatching('boots')
+      condition: () => hasItem('shield') || hasItemMatching('helmet') || hasItemMatching('chestplate') || hasItemMatching('leggings') || hasItemMatching('boots')
     },
     {
       name: "Isn't It Iron Pick",
@@ -117,11 +117,15 @@ function syncAdvancementsWithInventory(bot, state) {
     },
     {
       name: 'Diamonds!',
-      condition: () => hasItem('diamond') || hasItem('diamond_pickaxe') || hasItem('diamond_sword') || hasItem('diamond_chestplate')
+      condition: () => hasItem('diamond') || hasItem('diamond_pickaxe') || hasItem('bucket') || hasItem('water_bucket') || hasItem('flint_and_steel')
     },
     {
       name: 'Ice Bucket Challenge',
-      condition: () => hasItem('obsidian')
+      condition: () => hasItem('obsidian') || hasItem('blaze_rod') || bot.game?.dimension === 'the_nether'
+    },
+    {
+      name: 'We Need to Go Deeper',
+      condition: () => bot.game?.dimension === 'the_nether' || hasItem('blaze_rod')
     },
     {
       name: 'Eye Spy',

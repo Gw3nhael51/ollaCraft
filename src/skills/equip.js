@@ -67,7 +67,7 @@ async function autoEquipArmorAndShield(bot) {
     }
     return null;
   }));
-  
+
   equipped.push(...equipResults.filter(Boolean));
 
   // Equip shield to off-hand if not already holding one
@@ -102,7 +102,20 @@ async function skillEquip(bot, target) {
     return { success: true, message: `Successfully equipped: ${equipped.join(', ')}.` };
   }
 
-  const item = bot.inventory.items().find(i => i.name.toLowerCase().includes(target.toLowerCase()));
+  // Confirm immediately if shield is already held in off-hand slot
+  const cleanTarget = target.toLowerCase().trim();
+  if (cleanTarget === 'shield' && bot.inventory.slots[45]?.name === 'shield') {
+    return { success: true, message: "Shield is already equipped in off-hand." };
+  }
+
+  // Confirm immediately if requested armor piece is already worn
+  const wornArmorSlots = [5, 6, 7, 8];
+  const alreadyWorn = wornArmorSlots.map(id => bot.inventory.slots[id]).find(s => s?.name.toLowerCase().includes(cleanTarget));
+  if (alreadyWorn) {
+    return { success: true, message: `'${alreadyWorn.name}' is already equipped.` };
+  }
+
+  const item = bot.inventory.items().find(i => i.name.toLowerCase().includes(cleanTarget));
   if (!item) {
     return { success: false, message: `No item matching '${target}' in inventory.` };
   }

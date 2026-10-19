@@ -19,15 +19,21 @@ async function skillSmelt(bot, state, targetName, qty) {
   });
 
   if (!furnaceBlock && state.base.furnace) {
-    furnaceBlock = bot.blockAt(state.base.furnace);
-    if (furnaceBlock && furnaceBlock.name !== 'furnace') {
-      furnaceBlock = null;
+    const rememberedFurnace = bot.blockAt(state.base.furnace);
+    const dist = rememberedFurnace ? bot.entity.position.distanceTo(rememberedFurnace.position) : Infinity;
+    if (rememberedFurnace?.name === 'furnace' && dist <= 24) {
+      furnaceBlock = rememberedFurnace;
+    } else if (rememberedFurnace && rememberedFurnace.name !== 'furnace') {
       state.base.furnace = null;
     }
   }
 
   if (!furnaceBlock) {
-    return { success: false, message: "No furnace found nearby or remembered. Place one down first." };
+    const hasInPocket = bot.inventory.items().some(i => i.name === 'furnace');
+    if (hasInPocket) {
+      return { success: false, message: "No furnace placed nearby. Use 'place' with target 'furnace' to set down the furnace from your inventory." };
+    }
+    return { success: false, message: "No furnace found nearby. Craft one ('craft furnace') and place it down ('place furnace') first." };
   }
 
   const targetItem = bot.inventory.items().find(i => i.name === targetName);
