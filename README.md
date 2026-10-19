@@ -6,13 +6,25 @@ An autonomous Minecraft survival agent powered by local Large Language Models (L
 
 ## 🌟 Highlights
 
-- **Local LLM Intelligence:** Operates 100% locally and privately using Ollama (supporting models such as `qwen2.5:27b`, `llama3.1:8b`, or similar).
-- **ReAct Decision Loop:** Structured cycle of **Perception &rarr; Prompt Synthesis &rarr; LLM Reasoning & Plan &rarr; Skill Execution &rarr; Environment Feedback**.
-- **Deterministic Heuristic Fallback:** If the LLM produces invalid JSON, encounters an API timeout, or hallucinates an unreachable goal, a rule-based fallback immediately takes over to maintain uninterrupted survival.
+- **Local LLM Intelligence:** Operates 100% locally and privately using Ollama (supporting models such as `qwen3.5:9B`, `qwen2.5:27b`, `llama3.1:8b`, or similar).
+- **Two-Tier ReAct Decision Loop:** Structured cycle of **Perception -> Prompt Synthesis -> LLM Reasoning -> Skill Execution -> Supervisor Review & Feedback**.
+- **Anti-Looping Strategy Manager:** A supervisor pass monitors action history, detects repeated failures or ping-pong loops, and sanitizes directives against real inventory and recipe constraints.
 - **Autonomous Progression Chain:** Naturally advances through survival tiers:
-  $$\text{Logs} \rightarrow \text{Wooden Pickaxe} \rightarrow \text{Cobblestone} \rightarrow \text{Stone Pickaxe} \rightarrow \text{Furnace} \rightarrow \text{Iron Gear \& Shield} \rightarrow \text{Bucket} \rightarrow \text{Nether} \dots$$
-- **Smart Pathfinding & Unstuck Recovery:** Powered by `mineflayer-pathfinder` with 3D cave/terrain obstacle analysis, jump-scaffolding, and automatic unstuck routines for holes, water, or deep pits.
-- **Full Combat & Vitality Safeguards:** Automatic mob threat assessment, tactical fleeing when low on health, weapon selection, shield blocking, and proactive eating.
+
+```mermaid
+flowchart LR
+    A["Logs"] --> B["Wooden Pickaxe"]
+    B --> C["Cobblestone"]
+    C --> D["Stone Pickaxe"]
+    D --> E["Furnace"]
+    E --> F["Iron Gear & Shield"]
+    F --> G["Water Bucket"]
+    G --> H["Nether Portal"]
+    H --> I["Blaze Rods & Ender Eyes"]
+```
+
+- **Smart Pathfinding & Unstuck Recovery:** Powered by `mineflayer-pathfinder` with 3D cave and terrain obstacle analysis and automatic unstuck routines for holes, walls, or water.
+- **Full Combat & Vitality Safeguards:** Weapon selection, automatic armor and off-hand shield equipping, passive animal hunting, hostile mob combat, and food consumption.
 - **Crafting, Smelting & Storage Automation:** Finds or places crafting tables, operates furnaces with fuel matching, and organizes chest storage to deposit bulky materials.
 - **Built-in Minecraft Wiki Database:** Queries local game metadata (`minecraft-data`) for recipes, drop tables, and harvest tool requirements.
 
@@ -22,27 +34,27 @@ An autonomous Minecraft survival agent powered by local Large Language Models (L
 
 ```mermaid
 flowchart TD
-    subgraph Minecraft ["Minecraft World (Server)"]
-        SENSORS["World State & Sensors<br/>(Health, Food, Biome, Nearby Blocks, Hostile Entities)"]
-        EXEC["Skill Execution<br/>(Pathfinder, Mining, Crafting, Smelting, Combat)"]
+    subgraph Minecraft["Minecraft World (Server)"]
+        SENSORS["World State & Sensors (Health, Food, Biome, Blocks, Entities)"]
+        EXEC["Skill Execution (Pathfinder, Mining, Crafting, Smelting, Combat)"]
     end
 
-    subgraph Core ["Agent Brain (Node.js)"]
-        CTX["State & Context Aggregator<br/>(Inventory, Base Locations, Quest Chain, Advancements)"]
-        PROMPT["Dynamic Prompt Generator<br/>(Markdown-formatted Observations & Available Actions)"]
-        LLM{"Local Ollama API<br/>(qwen2.5:27b / llama3.1)"}
-        FALLBACK["Deterministic Fallback Engine<br/>(Rule-based quest progression)"]
-        DISPATCH["Skill Dispatcher<br/>(mine, craft, place, smelt, explore, unstuck, eat, flee)"]
+    subgraph Core["Agent Brain (Node.js)"]
+        CTX["State & Context Aggregator (Inventory, Base Coords, Quest Chain, Advancements)"]
+        PROMPT["Dynamic Prompt Generator (3D Radar, Wiki Knowledge & Available Crafts)"]
+        LLM{"Player Ollama Model (Tactical ReAct)"}
+        MANAGER{"Manager Ollama Model (Anti-Loop Supervisor)"}
+        DISPATCH["Skill Dispatcher (mine, craft, place, smelt, chest, hunt, fight, equip, portal, wiki, explore, unstuck, eat)"]
     end
 
     SENSORS --> CTX
     CTX --> PROMPT
     PROMPT --> LLM
-    LLM -- "Valid JSON Action" --> DISPATCH
-    LLM -- "Timeout / Parsing Error" --> FALLBACK
-    FALLBACK --> DISPATCH
+    LLM -->|JSON Action| DISPATCH
     DISPATCH --> EXEC
-    EXEC -- "Action Result Feedback" --> CTX
+    EXEC -->|Action Result Feedback| CTX
+    CTX --> MANAGER
+    MANAGER -->|Validated Directive| CTX
 ```
 
 ---
@@ -65,10 +77,12 @@ flowchart TD
 │   │   ├── craft.js           # Crafting table detection/placement and 2x2/3x3 recipe crafting
 │   │   ├── smelt.js           # Furnace placement, fuel selection, and smelting operations
 │   │   ├── place.js           # Physical block placement (crafting tables, furnaces, chests)
-│   │   ├── navigate.js        # Safe exploration, obstacle avoidance, sleeping, and unstuck
-│   │   ├── combat.js          # Mob combat, fleeing, armor auto-equip, and shield defense
+│   │   ├── navigate.js        # Safe exploration, obstacle avoidance, and unstuck recovery
+│   │   ├── combat.js          # Passive animal hunting and hostile mob combat
+│   │   ├── equip.js           # Automatic armor upgrades and off-hand shield equipping
 │   │   ├── eat.js             # Food selection and eating routines
 │   │   ├── storage.js         # Chest sorting and bulky item depositing
+│   │   ├── portal.js          # Water bucket filling, lava casting, and Nether portal ignition
 │   │   └── wiki.js            # Game data lookups (recipes, harvest tools, drops)
 │   └── utils/
 │       ├── environment.js     # 3D block scanner, exposed ore locator, entity tracking, biomes
@@ -161,7 +175,8 @@ Players can interact with and command the bot directly using in-game chat:
 | `objectif <item>` or `goal <item>` | Manually sets the agent's target objective (e.g., `objectif iron_pickaxe`). |
 | `objectif auto` or `goal auto` | Restores the default automatic survival quest progression chain. |
 | `inventaire` or `inv` | Causes the bot to output its current inventory contents into chat. |
-| `coords` or `pos` | Outputs the bot's current $(X, Y, Z)$ coordinates into chat. |
+| `coords` or `pos` | Outputs the bot's current `(X, Y, Z)` coordinates into chat. |
+| `tokens` or `token` | Outputs token consumption statistics for both the Player and Manager LLMs. |
 
 ---
 
@@ -182,10 +197,9 @@ Players can interact with and command the bot directly using in-game chat:
 
 ### Bot Rules & Parameters (`src/config.js`)
 
-- **Survival Delay:** Configured delay between consecutive ReAct decisions (`config.LOOP_DELAY_MS`).
-- **Quest Chain:** Streamlined speedrun progression focusing on essential iron tools, shield, water bucket, and Nether/End navigation (avoiding diamond mining bottlenecks).
-- **Safety Thresholds:** Health and hunger limits that trigger immediate fleeing or eating before continuing tasks.
-- **Base Management:** Stored coordinates for the player base, placed crafting tables, furnaces, and storage chests.
+- **Quest Chain:** Streamlined speedrun progression focusing on essential iron tools, shield, water bucket, and Nether/End navigation (`QUEST_CHAIN` & `QUEST_AMOUNT`).
+- **Action Whitelist:** Strict validation of allowed LLM actions (`VALID_ACTIONS`) and valid placement surfaces (`VALID_GROUND_BLOCKS`).
+- **Base Management:** Stored coordinates in `src/state.js` for the player base, placed crafting tables, furnaces, and storage chests.
 
 ---
 
@@ -195,17 +209,19 @@ The ReAct loop provides the LLM with structured actions formatted in JSON:
 
 | Skill | Parameters | Description |
 |---|---|---|
-| `mine` | `target: string` | Finds the closest target block in the world, navigates to it, equips the optimal tool, and mines it. |
-| `craft` | `item: string` | Crafts an item using 2x2 player inventory or navigates to/places a crafting table for 3x3 recipes. |
-| `place` | `blockName: string` | Places a block from inventory on safe, valid adjacent ground (e.g., `crafting_table`, `furnace`, `chest`). |
-| `smelt` | `item: string` | Places or approaches a furnace, loads fuel (coal/charcoal/wood), and smelts raw ores or food. |
-| `explore` | *None* | Selects a safe, unvisited terrain location and walks forward to discover new resources. |
-| `unstuck` | *None* | Performs emergency jump-and-place or wall mining maneuvers to escape deep pits, 1x1 holes, or water. |
-| `eat` | *None* | Scans inventory for the highest-nourishment food item and consumes it. |
-| `store_chest` | *None* | Navigates to a nearby chest and deposits bulky materials (dirt, excess cobblestone, mob drops). |
-| `flee` | *None* | Retreats from nearby hostile mobs to recover health in safety. |
-| `sleep` | *None* | Searches for a nearby bed during night or thunderstorm to pass the night safely. |
-| `wiki` | `target: string` | Looks up recipes, tool requirements, and drops for any block or item in the game database. |
+| `mine` | `target: string, qty?: number` | Finds the closest target block in the world, navigates to it, equips the optimal tool, and mines it (with BFS vein mining for ores). |
+| `craft` | `target: string, qty?: number` | Crafts an item using 2x2 player inventory or navigates to a nearby crafting table for 3x3 recipes. |
+| `place` | `target: string` | Places a block from inventory on safe, valid adjacent ground (e.g., `crafting_table`, `furnace`, `chest`). |
+| `smelt` | `target: string, qty?: number` | Approaches a furnace, loads fuel (coal/charcoal/wood), and smelts raw ores or food. |
+| `chest` | *None* | Navigates to a nearby chest and deposits bulky materials (excess dirt, cobblestone, mob drops). |
+| `hunt` | `target?: string` | Hunts nearby passive animals (`cow`, `pig`, `sheep`, `chicken`) to gather food. |
+| `fight` | `target?: string` | Engages nearby hostile mobs (`zombie`, `skeleton`, `spider`, `blaze`) with best weapon and armor. |
+| `equip` | `target?: string` | Equips best available armor pieces and places the shield in the off-hand slot. |
+| `portal` | *None* | Fills water bucket, casts or builds the Nether portal frame, ignites it with `flint_and_steel`, and enters the Nether. |
+| `eat` | `target?: string` | Scans inventory for an edible food item and consumes it. |
+| `explore` | *None* | Selects a randomized terrain coordinate and walks forward to discover new resources. |
+| `unstuck` | *None* | Performs emergency ceiling breaking, wall digging, or upward swimming to escape holes or water. |
+| `wiki` | `target: string` | Looks up recipes, tool requirements, and drops for any block or item in the local game database. |
 
 ---
 
