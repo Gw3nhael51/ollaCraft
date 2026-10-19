@@ -10,7 +10,7 @@ An autonomous Minecraft survival agent powered by local Large Language Models (L
 - **ReAct Decision Loop:** Structured cycle of **Perception &rarr; Prompt Synthesis &rarr; LLM Reasoning & Plan &rarr; Skill Execution &rarr; Environment Feedback**.
 - **Deterministic Heuristic Fallback:** If the LLM produces invalid JSON, encounters an API timeout, or hallucinates an unreachable goal, a rule-based fallback immediately takes over to maintain uninterrupted survival.
 - **Autonomous Progression Chain:** Naturally advances through survival tiers:
-  $$\text{Logs} \rightarrow \text{Wooden Pickaxe} \rightarrow \text{Cobblestone} \rightarrow \text{Stone Pickaxe} \rightarrow \text{Furnace} \rightarrow \text{Iron Gear} \rightarrow \text{Diamonds} \dots$$
+  $$\text{Logs} \rightarrow \text{Wooden Pickaxe} \rightarrow \text{Cobblestone} \rightarrow \text{Stone Pickaxe} \rightarrow \text{Furnace} \rightarrow \text{Iron Gear \& Shield} \rightarrow \text{Bucket} \rightarrow \text{Nether} \dots$$
 - **Smart Pathfinding & Unstuck Recovery:** Powered by `mineflayer-pathfinder` with 3D cave/terrain obstacle analysis, jump-scaffolding, and automatic unstuck routines for holes, water, or deep pits.
 - **Full Combat & Vitality Safeguards:** Automatic mob threat assessment, tactical fleeing when low on health, weapon selection, shield blocking, and proactive eating.
 - **Crafting, Smelting & Storage Automation:** Finds or places crafting tables, operates furnaces with fuel matching, and organizes chest storage to deposit bulky materials.
@@ -158,7 +158,7 @@ Players can interact with and command the bot directly using in-game chat:
 |---|---|
 | `start` | Starts or resumes the autonomous ReAct survival loop. |
 | `stop` | Immediately suspends the autonomous loop, clears current pathfinding, and resets controls. |
-| `objectif <item>` or `goal <item>` | Manually sets the agent's target objective (e.g., `objectif diamond_pickaxe`). |
+| `objectif <item>` or `goal <item>` | Manually sets the agent's target objective (e.g., `objectif iron_pickaxe`). |
 | `objectif auto` or `goal auto` | Restores the default automatic survival quest progression chain. |
 | `inventaire` or `inv` | Causes the bot to output its current inventory contents into chat. |
 | `coords` or `pos` | Outputs the bot's current $(X, Y, Z)$ coordinates into chat. |
@@ -183,7 +183,7 @@ Players can interact with and command the bot directly using in-game chat:
 ### Bot Rules & Parameters (`src/config.js`)
 
 - **Survival Delay:** Configured delay between consecutive ReAct decisions (`config.LOOP_DELAY_MS`).
-- **Quest Chain:** Linear fallback progression from `oak_log` up to `diamond` tools and armor.
+- **Quest Chain:** Streamlined speedrun progression focusing on essential iron tools, shield, water bucket, and Nether/End navigation (avoiding diamond mining bottlenecks).
 - **Safety Thresholds:** Health and hunger limits that trigger immediate fleeing or eating before continuing tasks.
 - **Base Management:** Stored coordinates for the player base, placed crafting tables, furnaces, and storage chests.
 

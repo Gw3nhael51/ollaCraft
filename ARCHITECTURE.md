@@ -75,41 +75,44 @@ flowchart TD
     SKILLS --> NET
 
     %% Feedback
-    SKILLS -.->|"Action Result (Success/Failure)"| STATE
+    SKILLS -. "Action Result (Success/Failure)" .-> STATE
 ```
 
 ---
 
 ## 2. Hierarchical Decision Loop: Strategy Manager vs Tactical ReAct Player
 
-The agent uses two decoupled asynchronous loops to separate macro-level strategy from micro-level reactivity:
+The agent separates macro-level strategy from micro-level reactivity with synchronized execution:
 
-1. **Strategy Manager** ([`src/ai/manager.js`](file:///home/orion-pc/dev/projets/ollaCraft/src/ai/manager.js)): Periodically reviews recent actions to detect loops or consecutive failures, updates macro directives, and sanitizes goals to prevent hallucinations.
-2. **Tactical ReAct Player** ([`src/ai/loop.js`](file:///home/orion-pc/dev/projets/ollaCraft/src/ai/loop.js)): Runs the continuous **Perception &rarr; Prompt Construction &rarr; LLM Reasoning &rarr; Skill Dispatch &rarr; Action Feedback** cycle.
+1. **Tactical ReAct Player** ([`src/ai/loop.js`](src/ai/loop.js)): Runs the **Perception &rarr; Prompt Construction &rarr; LLM Reasoning &rarr; Skill Dispatch (with 45s Timeout Guard) &rarr; Action Feedback** cycle.
+2. **Strategy Manager** ([`src/ai/manager.js`](src/ai/manager.js)): Executed synchronously at the end of each Player thinking cycle, receiving the exact up-to-date state (eliminating blind timers and preventing idle token waste), reviewing recent actions, detecting loops or consecutive failures, updating macro directives, and sanitizing goals.
 
 ```mermaid
-flowchart LR
-    subgraph MGMT["1. Strategy Supervisor (Periodic Loop)"]
-        M1["Analyze last 3 actions in history"] --> M2{"Loop or repeated failure detected?"}
-        M2 -- "Yes" --> M3["Generate unstuck / recovery directive"]
-        M2 -- "No" --> M4["Maintain current objective directive"]
-        M3 --> M5["Sanitization & Anti-hallucination verification"]
-        M4 --> M5
-        M5 --> M6["Update managerDirective in state.js"]
-    end
-
-    subgraph REACT_LOOP["2. Tactical ReAct Loop (Continuous)"]
+flowchart TD
+    subgraph REACT_LOOP["1. Tactical ReAct Cycle (Player)"]
         R1["Observation (3D Radar, Health, Hunger, Inventory)"] --> R2["Build Contextual Dynamic Prompt"]
         R2 --> R3["Query Player LLM (Ollama)"]
         R3 --> R4{"Valid JSON & Action Whitelisted?"}
         R4 -- "No" --> R5["2s Backoff & Retry"]
-        R4 -- "Yes" --> R6["Dispatch to dedicated skill module"]
-        R6 --> R7["Execute in-game physical action"]
-        R7 --> R8["Record Action Feedback into history"]
-        R8 --> R1
+        R4 -- "Yes" --> R6["Dispatch skill inside Promise.race (45s timeout guard)"]
+        R6 --> R7{"Action timed out?"}
+        R7 -- "Yes" --> R8["Emergency unstuck & Record failure"]
+        R7 -- "No" --> R9["Execute physical action & Record feedback"]
+        R8 --> R10["syncObjective()"]
+        R9 --> R10
     end
 
-    M6 -.->|"Injected into prompt"| R2
+    subgraph MGMT["2. Strategy Supervisor (Synchronized at cycle end)"]
+        M1["Analyze updated state & last actions in history"] --> M2{"Loop or repeated failure detected?"}
+        M2 -- "Yes" --> M3["Generate unstuck / recovery directive"]
+        M2 -- "No" --> M4["Maintain current objective directive"]
+        M3 --> M5["Sanitization & Wood/recipe normalization"]
+        M4 --> M5
+        M5 --> M6["Update managerDirective in state.js"]
+    end
+
+    R10 -- "Trigger supervisor with exact state" --> M1
+    M6 -. "Injected into next cycle prompt" .-> R2
 ```
 
 ---
@@ -128,6 +131,7 @@ sequenceDiagram
     participant Dispatcher as Dispatcher (skills/dispatcher.js)
     participant Skill as Skill Module (e.g., mine.js)
     participant State as Global State (state.js)
+    participant Manager as Supervisor Manager (ai/manager.js)
 
     Loop->>Bot: 3D Environment scan & inventory readout
     Loop->>State: syncObjective() (Check if current tier is completed)
@@ -136,23 +140,36 @@ sequenceDiagram
     Loop->>Ollama: POST /api/generate (Player Model)
     Ollama-->>Loop: JSON Response { thought, action, target, qty }
     Loop->>Bot: bot.chat("Action : action (target)")
-    Loop->>Dispatcher: dispatchSkill(bot, state, action, target, qty)
     
-    alt "mine" Action
-        Dispatcher->>Skill: skillMine(bot, state, target, qty)
-        Skill->>Bot: Equip best harvest tool
-        Skill->>Bot: Pathfinder to target block
-        Skill->>Bot: bot.dig(block)
-        Skill-->>Dispatcher: { success: true, message: "Successfully mined" }
-    else "craft" Action
-        Dispatcher->>Skill: skillCraft(bot, state, target)
-        Skill->>Bot: Locate / place crafting table for 3x3 recipes
-        Skill->>Bot: bot.craft(recipe)
-        Skill-->>Dispatcher: { success: true, message: "Item crafted" }
+    rect rgb(240, 248, 255)
+        Note over Loop,Skill: 45s Timeout Guard (Promise.race)
+        Loop->>Dispatcher: dispatchSkill(bot, state, action, target, qty)
+        
+        alt "mine" Action
+            Dispatcher->>Skill: skillMine(bot, state, target, qty)
+            Skill->>Bot: Equip best harvest tool & pathfinder to block
+            Skill->>Bot: bot.dig(block)
+            Skill-->>Dispatcher: { success: true, message: "Successfully mined" }
+        else "craft" Action
+            Dispatcher->>Skill: skillCraft(bot, state, target)
+            Skill->>Skill: Wood & plank normalization (oak, jungle, birch, etc.)
+            Skill->>Bot: Locate / place crafting table for 3x3 recipes
+            Skill->>Bot: bot.craft(recipe)
+            Skill-->>Dispatcher: { success: true, message: "Item crafted" }
+        end
+        Dispatcher-->>Loop: Action execution result
     end
 
-    Dispatcher-->>Loop: Action execution result
     Loop->>State: Record into actionHistory & lastActionResult
+    Loop->>State: syncObjective()
+    
+    rect rgb(255, 250, 240)
+        Note over Loop,Manager: Synchronized Supervisor Cycle
+        Loop->>Manager: runManagerCycle(bot) (Evaluate exact state)
+        Manager->>Ollama: POST /api/generate (Supervisor Model)
+        Manager->>State: Update managerDirective & managerSubGoal
+    end
+
     Loop->>Loop: 1.5s delay, then trigger next cycle
 ```
 
@@ -160,25 +177,26 @@ sequenceDiagram
 
 ## 4. Skills Matrix & Modular Capabilities
 
-[`src/skills/dispatcher.js`](file:///home/orion-pc/dev/projets/ollaCraft/src/skills/dispatcher.js) routes validated action requests to dedicated, deterministic skill implementations:
+[`src/skills/dispatcher.js`](src/skills/dispatcher.js) routes validated action requests to dedicated, deterministic skill implementations:
 
 | ReAct Action | Source Module | Functional Scope |
 | :--- | :--- | :--- |
-| `mine` | [`src/skills/mine.js`](file:///home/orion-pc/dev/projets/ollaCraft/src/skills/mine.js) | Scans for target blocks in 3D space, handles pathfinding, equips the optimal tool, and mines safely (prohibits digging straight down). |
-| `craft` | [`src/skills/craft.js`](file:///home/orion-pc/dev/projets/ollaCraft/src/skills/craft.js) | Handles 2x2 player inventory recipes and 3x3 crafting table recipes (locates or automatically places a crafting table if missing). |
-| `smelt` | [`src/skills/smelt.js`](file:///home/orion-pc/dev/projets/ollaCraft/src/skills/smelt.js) | Operates nearby furnaces, matches fuel sources (coal, logs, planks), and smelts raw ores into ingots. |
-| `place` | [`src/skills/place.js`](file:///home/orion-pc/dev/projets/ollaCraft/src/skills/place.js) | Evaluates valid solid ground blocks (`VALID_GROUND_BLOCKS`) and places utility blocks (crafting tables, furnaces, chests). |
-| `hunt` / `fight` | [`src/skills/combat.js`](file:///home/orion-pc/dev/projets/ollaCraft/src/skills/combat.js) | Selects the best weapon (swords/axes), engages targets with shield defense timing, attacks within melee range, and gathers drops. |
-| `chest` | [`src/skills/storage.js`](file:///home/orion-pc/dev/projets/ollaCraft/src/skills/storage.js) | Automates inventory dumping: navigates to the base chest and deposits bulky materials (dirt, cobblestone, gravel). |
-| `eat` | [`src/skills/eat.js`](file:///home/orion-pc/dev/projets/ollaCraft/src/skills/eat.js) | Evaluates food items in inventory by saturation/nutrition value and consumes food proactively. |
-| `unstuck` / `explore` | [`src/skills/navigate.js`](file:///home/orion-pc/dev/projets/ollaCraft/src/skills/navigate.js) | Failsafe routine (jump-scaffolding out of holes, escaping water) or safe perimeter exploration to uncover new resources. |
-| `wiki` | [`src/skills/wiki.js`](file:///home/orion-pc/dev/projets/ollaCraft/src/skills/wiki.js) | Queries local game registries (`minecraft-data`) for recipes, harvest tools, and drop tables without LLM hallucination. |
+| `mine` | [`src/skills/mine.js`](src/skills/mine.js) | Scans for target blocks in 3D space, handles pathfinding, equips the optimal tool, and mines safely (prohibits digging straight down). |
+| `craft` | [`src/skills/craft.js`](src/skills/craft.js) | Handles 2x2 player inventory recipes and 3x3 crafting table recipes (locates or automatically places a crafting table if missing). |
+| `smelt` | [`src/skills/smelt.js`](src/skills/smelt.js) | Operates nearby furnaces, matches fuel sources (coal, logs, planks), and smelts raw ores into ingots. |
+| `place` | [`src/skills/place.js`](src/skills/place.js) | Evaluates valid solid ground blocks (`VALID_GROUND_BLOCKS`) and places utility blocks (crafting tables, furnaces, chests). |
+| `hunt` / `fight` | [`src/skills/combat.js`](src/skills/combat.js) | Selects the best weapon (swords/axes), engages targets with shield defense timing, attacks within melee range, and gathers drops. |
+| `equip` | [`src/skills/equip.js`](src/skills/equip.js) | Evaluates and equips best armor upgrades and places the shield into the off-hand slot. |
+| `chest` | [`src/skills/storage.js`](src/skills/storage.js) | Automates inventory dumping: navigates to the base chest and deposits bulky materials (dirt, cobblestone, gravel). |
+| `eat` | [`src/skills/eat.js`](src/skills/eat.js) | Evaluates food items in inventory by saturation/nutrition value and consumes food proactively. |
+| `unstuck` / `explore` | [`src/skills/navigate.js`](src/skills/navigate.js) | Failsafe routine (jump-scaffolding out of holes, escaping water) or safe perimeter exploration to uncover new resources. |
+| `wiki` | [`src/skills/wiki.js`](src/skills/wiki.js) | Queries local game registries (`minecraft-data`) for recipes, harvest tools, and drop tables without LLM hallucination. |
 
 ---
 
 ## 5. State Machine: Survival Progression Chain
 
-The agent advances through an ordered progression chain defined in [`QUEST_CHAIN`](file:///home/orion-pc/dev/projets/ollaCraft/src/config.js#L21-L43), dynamically evaluated against inventory counts:
+The agent advances through an ordered progression chain defined in [`QUEST_CHAIN`](src/config.js#L21-L43), dynamically evaluated against inventory counts:
 
 ```mermaid
 stateDiagram-v2
@@ -186,7 +204,7 @@ stateDiagram-v2
     
     state WoodAge {
         direction LR
-        wooden_axe --> wooden_pickaxe
+        [*] --> wooden_pickaxe
     }
 
     WoodAge --> StoneAge: Mine 'stone' with wooden pickaxe
@@ -194,8 +212,7 @@ stateDiagram-v2
     state StoneAge {
         direction LR
         cobblestone --> stone_pickaxe
-        stone_pickaxe --> stone_axe
-        stone_axe --> furnace
+        stone_pickaxe --> furnace
     }
 
     StoneAge --> IronAge: Locate & Smelt Iron Ore
@@ -206,23 +223,14 @@ stateDiagram-v2
         iron_ingot --> iron_pickaxe
         iron_pickaxe --> iron_sword
         iron_sword --> shield
-        shield --> iron_chestplate
+        shield --> bucket
     }
 
-    IronAge --> DiamondAge: Deep Underground Mining (Y < 0)
-    
-    state DiamondAge {
-        direction LR
-        diamond --> diamond_pickaxe
-        diamond_pickaxe --> diamond_sword
-        diamond_sword --> diamond_chestplate
-    }
-
-    DiamondAge --> TheNether: Portal Construction & Obsidian
+    IronAge --> TheNether: Lava & Water Bucket Portal (Speedrun Route)
     
     state TheNether {
         direction LR
-        obsidian --> flint_and_steel
+        [*] --> flint_and_steel
         flint_and_steel --> blaze_rod
     }
 
@@ -263,6 +271,7 @@ ollaCraft/
     │   ├── smelt.js         # Furnace placement and fuel smelting operations
     │   ├── place.js         # Physical placement on solid terrain
     │   ├── combat.js        # Hostile mob fighting and passive entity hunting
+    │   ├── equip.js         # Automatic armor and off-hand shield equipping
     │   ├── storage.js       # Base chest item sorting and dumping
     │   ├── eat.js           # Food consumption and vitality management
     │   ├── navigate.js      # Unstuck jump-scaffolding and exploration
