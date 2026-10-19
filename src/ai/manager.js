@@ -64,16 +64,22 @@ function sanitizeManagerOutput(bot, rawDecision) {
     const tableId = bot.registry.blocksByName['crafting_table']?.id;
     const table = tableId ? bot.findBlock({ matching: tableId, maxDistance: 16 }) : null;
     const available = invUtils.getAvailableCrafts(bot, table);
-    if (!available.includes(target)) {
+
+    // Accept planks if any wood variety is craftable
+    const isPlankRequested = invUtils.isPlanks(target);
+    const hasAvailablePlanks = available.some(item => invUtils.isPlanks(item));
+    const isCraftPossible = available.includes(target) || (isPlankRequested && hasAvailablePlanks);
+
+    if (!isCraftPossible) {
       if (target === 'crafting_table') {
-        const hasLogs = bot.inventory.items().some(i => i.name.endsWith('_log') || i.name.endsWith('_wood'));
+        const hasLogs = bot.inventory.items().some(i => invUtils.isWoodLog(i.name));
         if (hasLogs) {
           action = 'craft';
           target = 'planks';
           directive = "Fabriquer des planches à partir des bûches pour créer un établi.";
         } else {
           action = 'mine';
-          target = 'oak_log';
+          target = 'log';
           directive = "Couper du bois pour obtenir des planches et un établi.";
         }
       } else {
@@ -86,6 +92,12 @@ function sanitizeManagerOutput(bot, rawDecision) {
           action = 'explore';
           directive = `Ressources manquantes pour fabriquer ${target}, explorer pour trouver des composants.`;
         }
+      }
+    } else if (isPlankRequested && !available.includes(target)) {
+      // Target the specific wood plank variety directly craftable
+      const specificPlank = available.find(item => invUtils.isPlanks(item) && item !== 'planks');
+      if (specificPlank) {
+        target = specificPlank;
       }
     }
   }
@@ -113,7 +125,7 @@ function sanitizeManagerOutput(bot, rawDecision) {
 }
 
 /**
- * Execute periodic supervisor reasoning cycle to steer the autonomous player
+ * Execute supervisor reasoning cycle to steer the autonomous player
  * @param {object} bot Mineflayer bot instance
  * @returns {Promise<void>}
  */
@@ -170,26 +182,14 @@ async function runManagerCycle(bot) {
   }
 }
 
-let managerIntervalHandle = null;
-
 /**
- * Start asynchronous supervisor loop running in the background
+ * Run initial supervisor reasoning cycle synchronously
  * @param {object} bot Mineflayer bot instance
- * @param {number} [intervalMs] Periodic check interval in milliseconds
- * @returns {NodeJS.Timeout} Interval timer handle
+ * @returns {Promise<void>}
  */
-function startManagerLoop(bot, intervalMs = 20000) {
-  if (managerIntervalHandle) return managerIntervalHandle;
-
-  setTimeout(() => runManagerCycle(bot), 3000);
-
-  managerIntervalHandle = setInterval(() => {
-    if (state.isSurviving) {
-      void runManagerCycle(bot);
-    }
-  }, intervalMs);
-
-  return managerIntervalHandle;
+async function startManagerLoop(bot) {
+  // Trigger initial supervisor reasoning pass
+  return runManagerCycle(bot);
 }
 
 module.exports = {

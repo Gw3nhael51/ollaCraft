@@ -5,6 +5,10 @@ const { scanEnvironment } = require('../utils/environment');
 const { buildReactPrompt } = require('./prompt');
 const { askOllama } = require('./ollama');
 const { dispatchSkill } = require('../skills/dispatcher');
+const { skillUnstuck } = require('../skills/navigate');
+const { runManagerCycle } = require('./manager');
+
+const ACTION_TIMEOUT_MS = 45000;
 
 /**
  * Execute a complete ReAct thought and action cycle for autonomous survival
@@ -43,7 +47,55 @@ async function handleSurvivalRequest(bot) {
     }
     bot.chat(`Action : ${decision.action} (${decision.target || 'none'})`);
 
-    const executionResult = await dispatchSkill(bot, state, decision.action, decision.target, decision.qty || 1);
+    let executionResult;
+    let actionTimer = null;
+
+    // Safety timeout promise to prevent infinite execution hangs
+    const timeoutPromise = new Promise((_, reject) => {
+      actionTimer = setTimeout(() => {
+        reject(new Error("Action execution timeout exceeded"));
+      }, ACTION_TIMEOUT_MS);
+    });
+
+    try {
+      executionResult = await Promise.race([
+        dispatchSkill(bot, state, decision.action, decision.target, decision.qty || 1),
+        timeoutPromise
+      ]);
+    } catch (error) {
+      console.warn(`[TIMEOUT / ERROR] Action '${decision.action}' aborted:`, error.message);
+
+      // Forcefully cancel pathfinding and reset controls
+      bot.pathfinder.setGoal(null);
+      bot.clearControlStates();
+
+      // Close open container or crafting window if active
+      if (bot.currentWindow) {
+        try {
+          bot.closeWindow(bot.currentWindow);
+        } catch {
+          // Ignore error if window is already closed by server
+        }
+      }
+
+      // Execute emergency unstuck procedure to free bot
+      try {
+        console.log("[SAFETY] Executing emergency unstuck procedure...");
+        await skillUnstuck(bot);
+      } catch (unstuckError) {
+        console.warn("[SAFETY] Emergency unstuck failure:", unstuckError.message);
+      }
+
+      executionResult = {
+        success: false,
+        message: "Action timed out after maximum safety limit. Emergency unstuck executed."
+      };
+    } finally {
+      if (actionTimer) {
+        clearTimeout(actionTimer);
+      }
+    }
+
     console.log(`[RESULT] ${executionResult.success ? '✅' : '❌'} ${executionResult.message}`);
 
     state.lastActionResult = {
@@ -64,6 +116,11 @@ async function handleSurvivalRequest(bot) {
     }
 
     syncObjective(bot, state);
+
+    // Evaluate supervisor strategy with exact player state after action
+    if (state.isSurviving) {
+      await runManagerCycle(bot);
+    }
 
     if (state.isSurviving) {
       setTimeout(() => handleSurvivalRequest(bot), 1500);
