@@ -2,6 +2,7 @@ services:
   minecraft-server:
     image: itzg/minecraft-server
     container_name: mc-server
+    restart: unless-stopped
     ports:
       - ${PORT}
     environment:
@@ -13,7 +14,6 @@ services:
       SPIGET_RESOURCES: "60192" # Installe automatiquement le plugin LoginSecurity
     volumes:
       - mc-data:/data
-    restart: unless-stopped
 
 volumes:
   mc-data:
