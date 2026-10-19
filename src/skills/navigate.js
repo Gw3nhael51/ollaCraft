@@ -52,7 +52,10 @@ async function findAndDigEscapeRoute(bot, cardinals, index) {
 
       const targetPos = bot.entity.position.plus(dir);
       const { GoalNear } = goals;
-      await bot.pathfinder.goto(new GoalNear(targetPos.x, targetPos.y, targetPos.z, 1));
+      // Abort navigation if unstuck movement exceeds safety timeout
+      const escapeGoto = bot.pathfinder.goto(new GoalNear(targetPos.x, targetPos.y, targetPos.z, 1));
+      const escapeTimeout = new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout navigation unstuck")), 6000));
+      await Promise.race([escapeGoto, escapeTimeout]);
       console.log("[UNSTUCK] Successfully escaped!");
       return true;
     } catch (err) {

@@ -1,6 +1,6 @@
 const { goals } = require('mineflayer-pathfinder');
 const config = require('../config');
-const { countItem } = require('../utils/inventory');
+const { countItem, isWoodLog, isPlanks, resolvePlankTarget } = require('../utils/inventory');
 
 /**
  * Craft an item using personal inventory grid or nearby crafting table
@@ -10,7 +10,18 @@ const { countItem } = require('../utils/inventory');
  * @returns {Promise<{ success: boolean, message: string }>} Result of the crafting operation
  */
 async function skillCraft(bot, state, targetName) {
-  const item = bot.registry.itemsByName[targetName];
+  // Reject raw logs since they cannot be crafted and must be mined
+  if (isWoodLog(targetName)) {
+    return { success: false, message: "Raw logs and wood cannot be crafted: harvest them with 'mine' on trees." };
+  }
+
+  // Normalize plank variety according to carried logs in inventory
+  let normalizedTarget = targetName;
+  if (isPlanks(targetName)) {
+    normalizedTarget = resolvePlankTarget(bot, targetName);
+  }
+
+  const item = bot.registry.itemsByName[normalizedTarget];
   if (!item) return { success: false, message: `Unknown Minecraft item '${targetName}'.` };
 
   const isTool = config.TOOL_SUFFIXES.some(suffix => targetName.endsWith(suffix));
@@ -21,19 +32,19 @@ async function skillCraft(bot, state, targetName) {
     return { success: false, message: `You ALREADY have a crafting table in your inventory. Use 'place' to set it down.` };
   }
 
-  // Handle crafting table specifically to avoid circular requirement error
+  // Verify plank availability for crafting table recipe
   if (targetName === 'crafting_table') {
-    const totalPlanks = bot.inventory.items().filter(i => i.name.endsWith('_planks')).reduce((s, i) => s + i.count, 0);
+    const totalPlanks = bot.inventory.items().filter(i => isPlanks(i.name)).reduce((s, i) => s + i.count, 0);
     if (totalPlanks < 4) {
-      const hasLogs = bot.inventory.items().some(i => i.name.endsWith('_log') || i.name.endsWith('_wood'));
+      const hasLogs = bot.inventory.items().some(i => isWoodLog(i.name));
       if (hasLogs) {
-        return { success: false, message: "Missing planks to craft 'crafting_table' (4 planks needed). Convert your logs into planks first ('craft' with 'oak_planks', 'birch_planks' or 'jungle_planks')." };
+        return { success: false, message: "Missing planks to craft 'crafting_table' (4 planks needed). Convert your logs into planks first ('craft' with 'planks')." };
       }
-      return { success: false, message: "Missing wood to craft 'crafting_table'. Harvest tree logs first ('mine' with 'oak_log', 'birch_log' or 'jungle_log')." };
+      return { success: false, message: "Missing wood to craft 'crafting_table'. Harvest tree logs first ('mine' with 'log')." };
     }
   }
 
-  // Check if recipe fits inside personal 2x2 crafting grid
+  // Determine required crafting grid dimensions (2x2 personal vs 3x3 table)
   const Recipe = require('prismarine-recipe')(bot.version || config.BOT_CONFIG.version || '1.20.4').Recipe;
   const allRecipes = Recipe.find(item.id, null);
   const fitsInPersonalGrid = allRecipes.some(r => !r.requiresTable);
@@ -76,13 +87,29 @@ async function skillCraft(bot, state, targetName) {
     }
   }
 
-  const recipes = bot.recipesFor(item.id, null, 1, tableToUse);
+  let recipes = bot.recipesFor(item.id, null, 1, tableToUse);
+
+  // Substitute alternate wood variety if initial plank recipe fails
+  if (recipes.length === 0 && isPlanks(normalizedTarget)) {
+    const alternatePlank = resolvePlankTarget(bot, 'planks');
+    if (alternatePlank !== normalizedTarget) {
+      const alternateItem = bot.registry.itemsByName[alternatePlank];
+      if (alternateItem) {
+        const alternateRecipes = bot.recipesFor(alternateItem.id, null, 1, tableToUse);
+        if (alternateRecipes.length > 0) {
+          recipes = alternateRecipes;
+          normalizedTarget = alternatePlank;
+        }
+      }
+    }
+  }
+
   if (recipes.length === 0) {
     return { success: false, message: `Missing required components in inventory to craft '${targetName}'.` };
   }
 
   // Record inventory count before crafting
-  const countBefore = countItem(bot, targetName);
+  const countBefore = countItem(bot, normalizedTarget);
 
   // Define crafting timeout guard
   let timeoutId;
@@ -103,7 +130,7 @@ async function skillCraft(bot, state, targetName) {
   });
 
   try {
-    bot.chat(`Crafting ${targetName}...`);
+    bot.chat(`Crafting ${normalizedTarget}...`);
     // Execute craft recipe via Mineflayer
     await Promise.race([
       bot.craft(recipes[0], 1, tableToUse),
@@ -127,12 +154,12 @@ async function skillCraft(bot, state, targetName) {
   // Wait for server inventory synchronization
   await bot.waitForTicks(8);
 
-  let countAfter = countItem(bot, targetName);
+  let countAfter = countItem(bot, normalizedTarget);
 
   // Pick up dropped craft result if necessary
   if (countAfter <= countBefore) {
     const droppedItem = bot.nearestEntity(e => {
-      return e.name === 'item' && e.getDroppedItem?.()?.name === targetName && bot.entity.position.distanceTo(e.position) < 4;
+      return e.name === 'item' && e.getDroppedItem?.()?.name === normalizedTarget && bot.entity.position.distanceTo(e.position) < 4;
     });
     if (droppedItem) {
       try {
@@ -143,16 +170,17 @@ async function skillCraft(bot, state, targetName) {
         bot.setControlState('forward', false);
       }
       await bot.waitForTicks(5);
-      countAfter = countItem(bot, targetName);
+      countAfter = countItem(bot, normalizedTarget);
     }
   }
 
   // Confirm item count increase in inventory
   if (countAfter > countBefore) {
-    return { success: true, message: `Successfully crafted '${targetName}'.` };
+    const substitutionNote = normalizedTarget !== targetName ? ` (adapted substitute for '${targetName}')` : '';
+    return { success: true, message: `Successfully crafted '${normalizedTarget}'${substitutionNote}.` };
   }
 
-  return { success: false, message: `Crafting completed but '${targetName}' was not found in inventory.` };
+  return { success: false, message: `Crafting completed but '${normalizedTarget}' was not found in inventory.` };
 }
 
 module.exports = { skillCraft };

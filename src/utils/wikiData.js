@@ -73,9 +73,20 @@ function canHarvestBlock(bot, block) {
  */
 function getBlockNamesForTarget(bot, targetItemName) {
   const mcData = getMcData(bot);
+  const { isWoodLog, isPlanks } = require('./inventory');
 
-  if (targetItemName.includes('log')) {
-    return mcData.blocksArray.filter(b => b.name.includes('log')).map(b => b.name);
+  // Return all tree logs and wood blocks when any log is targeted
+  if (isWoodLog(targetItemName)) {
+    return mcData.blocksArray
+      .filter(b => isWoodLog(b.name))
+      .map(b => b.name);
+  }
+
+  // Return all plank varieties when any plank block is targeted
+  if (isPlanks(targetItemName)) {
+    return mcData.blocksArray
+      .filter(b => isPlanks(b.name))
+      .map(b => b.name);
   }
 
   if (targetItemName === 'lapis' || targetItemName === 'lapis_lazuli') {
