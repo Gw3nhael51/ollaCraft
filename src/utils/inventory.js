@@ -1,22 +1,133 @@
 const config = require('../config');
 const { syncAdvancementsWithInventory } = require('./advancements');
 
+const GENERIC_LOG_NAMES = new Set(['log', 'logs', 'wood', 'bois', 'buche', 'buches', 'bûche', 'bûches', 'tree', 'arbre']);
+const GENERIC_PLANK_NAMES = new Set(['planks', 'plank', 'planche', 'planches']);
+const WOOD_TYPES = [
+  'dark_oak', 'oak', 'spruce', 'birch', 'jungle', 'acacia', 'mangrove', 'cherry', 'bamboo', 'crimson', 'warped'
+];
+
+/**
+ * Check whether an item or block name corresponds to a tree log or wood
+ * @param {string} name Item or block name
+ * @returns {boolean} True if wood log
+ */
+function isWoodLog(name) {
+  if (!name || typeof name !== 'string') return false;
+  const clean = name.toLowerCase().trim();
+  if (GENERIC_LOG_NAMES.has(clean)) return true;
+  return clean.endsWith('_log') || clean.endsWith('_wood') || clean.endsWith('_stem') || clean.endsWith('_hyphae');
+}
+
+/**
+ * Check whether an item or block name corresponds to planks
+ * @param {string} name Item or block name
+ * @returns {boolean} True if planks
+ */
+function isPlanks(name) {
+  if (!name || typeof name !== 'string') return false;
+  const clean = name.toLowerCase().trim();
+  if (GENERIC_PLANK_NAMES.has(clean)) return true;
+  return clean.endsWith('_planks');
+}
+
+/**
+ * Extract wood variety type from an item name
+ * @param {string} name Item or block name
+ * @returns {string|null} Wood type identifier or null
+ */
+function getWoodType(name) {
+  if (!name || typeof name !== 'string') return null;
+  const clean = name.toLowerCase().trim();
+  for (const type of WOOD_TYPES) {
+    if (clean.includes(type)) return type;
+  }
+  return null;
+}
+
+/**
+ * Determine plank item name corresponding to a log name
+ * @param {string} logName Log or wood block name
+ * @returns {string} Matching plank item name
+ */
+function getPlankForLog(logName) {
+  const type = getWoodType(logName);
+  return type ? `${type}_planks` : 'oak_planks';
+}
+
+/**
+ * Resolve target plank name according to logs currently carried in inventory
+ * @param {object} bot Mineflayer bot instance
+ * @param {string} requestedTarget Requested plank target
+ * @returns {string} Optimal craftable plank item name
+ */
+function resolvePlankTarget(bot, requestedTarget) {
+  const inventoryItems = (bot.inventory?.slots || []).filter(Boolean);
+  const logsInInventory = inventoryItems.filter(i => isWoodLog(i.name));
+
+  // Fallback to existing planks if no logs in inventory
+  if (logsInInventory.length === 0) {
+    const existingPlanks = inventoryItems.find(i => isPlanks(i.name));
+    if (existingPlanks) return existingPlanks.name;
+    const requestedType = getWoodType(requestedTarget);
+    return requestedType ? `${requestedType}_planks` : 'oak_planks';
+  }
+
+  // Preserve requested wood type if matching logs are present
+  const requestedWoodType = getWoodType(requestedTarget);
+  if (requestedWoodType) {
+    const hasMatchingLog = logsInInventory.some(l => getWoodType(l.name) === requestedWoodType);
+    if (hasMatchingLog) {
+      return `${requestedWoodType}_planks`;
+    }
+  }
+
+  // Pick the wood type with largest quantity in inventory
+  logsInInventory.sort((a, b) => b.count - a.count);
+  const bestType = getWoodType(logsInInventory[0].name) || 'oak';
+  return `${bestType}_planks`;
+}
+
 /**
  * Count total quantity of a given item in the inventory
  * @param {object} bot Mineflayer bot instance
- * @param {string} name Nom de l'item recherché
- * @returns {number} Quantité cumulée de l'item
+ * @param {string} name Target item name
+ * @returns {number} Cumulative quantity of the item
  */
 function countItem(bot, name) {
   const allSlots = (bot.inventory?.slots || []).filter(Boolean);
-  return allSlots.filter(item => item.name === name).reduce((sum, item) => sum + item.count, 0);
+
+  // Sum all logs for generic wood query
+  if (name === 'log' || name === 'logs' || name === 'wood' || name === 'bois') {
+    return allSlots.filter(item => isWoodLog(item.name)).reduce((sum, item) => sum + item.count, 0);
+  }
+
+  // Sum all planks for generic plank query
+  if (name === 'planks' || name === 'plank' || name === 'planche' || name === 'planches') {
+    return allSlots.filter(item => isPlanks(item.name)).reduce((sum, item) => sum + item.count, 0);
+  }
+
+  const exactCount = allSlots.filter(item => item.name === name).reduce((sum, item) => sum + item.count, 0);
+  if (exactCount > 0) return exactCount;
+
+  // Substitute matching logs if specific wood type is missing
+  if (isWoodLog(name)) {
+    return allSlots.filter(item => isWoodLog(item.name)).reduce((sum, item) => sum + item.count, 0);
+  }
+
+  // Substitute matching planks if specific plank type is missing
+  if (isPlanks(name)) {
+    return allSlots.filter(item => isPlanks(item.name)).reduce((sum, item) => sum + item.count, 0);
+  }
+
+  return 0;
 }
 
 /**
  * Check whether the bot possesses at least one tool of a specific type
  * @param {object} bot Mineflayer bot instance
- * @param {string} suffix Suffixe du type d'outil (ex: '_pickaxe', '_axe')
- * @returns {boolean} True si un outil correspondant est possédé
+ * @param {string} suffix Tool type suffix (e.g. '_pickaxe', '_axe')
+ * @returns {boolean} True if matching tool is owned
  */
 function hasToolType(bot, suffix) {
   const allSlots = (bot.inventory?.slots || []).filter(Boolean);
@@ -26,7 +137,7 @@ function hasToolType(bot, suffix) {
 /**
  * Return deduplicated list of tools present in the inventory
  * @param {object} bot Mineflayer bot instance
- * @returns {string[]} Liste des noms d'outils possédés
+ * @returns {string[]} List of owned tool names
  */
 function getOwnedTools(bot) {
   const allSlots = (bot.inventory?.slots || []).filter(Boolean);
@@ -36,66 +147,46 @@ function getOwnedTools(bot) {
   return [...new Set(tools)];
 }
 
+const TOOL_TIERS = {
+  pickaxe: ['wooden_pickaxe', 'stone_pickaxe', 'iron_pickaxe', 'diamond_pickaxe', 'netherite_pickaxe'],
+  axe: ['wooden_axe', 'stone_axe', 'iron_axe', 'diamond_axe', 'netherite_axe'],
+  sword: ['wooden_sword', 'stone_sword', 'iron_sword', 'diamond_sword', 'netherite_sword']
+};
+
 /**
  * Determine whether a quest objective is achieved according to current inventory
  * @param {object} bot Mineflayer bot instance
- * @param {string} questName Nom de l'objectif à vérifier
- * @returns {boolean} True si l'objectif est complété
+ * @param {string} questName Objective name to check
+ * @param {object} state Global bot state
+ * @returns {boolean} True if objective is achieved
  */
 function isQuestDone(bot, questName, state) {
+  for (const tierList of Object.values(TOOL_TIERS)) {
+    const questIndex = tierList.indexOf(questName);
+    if (questIndex !== -1) {
+      return tierList.slice(questIndex).some(tool => countItem(bot, tool) > 0);
+    }
+  }
+
+  if (questName === 'furnace' || questName === 'crafting_table') {
+    const hasInInventory = countItem(bot, questName) > 0;
+    const isPlacedInBase = Boolean(state?.base?.[questName]);
+    const nearbyBlock = bot.findBlock({ matching: bot.registry.blocksByName[questName]?.id, maxDistance: 32 });
+    const hasAdvancedGear = questName === 'furnace' && (countItem(bot, 'iron_ingot') > 0 || countItem(bot, 'iron_pickaxe') > 0);
+    return hasInInventory || isPlacedInBase || Boolean(nearbyBlock) || hasAdvancedGear;
+  }
+
+  if (questName === 'raw_iron' || questName === 'iron_ore' || questName === 'iron_ingot') {
+    const required = config.QUEST_AMOUNT[questName] || 3;
+    const hasAdvancedGear = countItem(bot, 'iron_pickaxe') > 0 || countItem(bot, 'iron_sword') > 0 || countItem(bot, 'shield') > 0;
+    const hasIngots = countItem(bot, 'iron_ingot') >= (config.QUEST_AMOUNT.iron_ingot || 3);
+    const hasRaw = countItem(bot, 'raw_iron') >= required || countItem(bot, 'iron_ore') >= required;
+    return hasAdvancedGear || hasIngots || hasRaw;
+  }
+
   if (questName === 'cobblestone') {
-    const requiredAmount = config.QUEST_AMOUNT.cobblestone || 3;
-    return countItem(bot, 'cobblestone') >= requiredAmount || countItem(bot, 'stone_pickaxe') > 0 || countItem(bot, 'iron_pickaxe') > 0;
-  }
-
-  if (questName === 'furnace') {
-    const hasFurnaceInInventory = countItem(bot, 'furnace') > 0;
-    const hasPlacedFurnace = Boolean(state?.base?.furnace);
-    const hasAdvancedIronItems = countItem(bot, 'iron_ingot') > 0 || countItem(bot, 'iron_pickaxe') > 0 || countItem(bot, 'iron_sword') > 0;
-    const nearbyFurnace = bot.findBlock({ matching: bot.registry.blocksByName.furnace?.id, maxDistance: 32 });
-    return hasFurnaceInInventory || hasPlacedFurnace || Boolean(nearbyFurnace) || hasAdvancedIronItems;
-  }
-
-  if (questName === 'crafting_table') {
-    const hasTableInInventory = countItem(bot, 'crafting_table') > 0;
-    const hasPlacedTable = Boolean(state?.base?.crafting_table);
-    const nearbyTable = bot.findBlock({ matching: bot.registry.blocksByName.crafting_table?.id, maxDistance: 32 });
-    return hasTableInInventory || hasPlacedTable || Boolean(nearbyTable);
-  }
-
-  if (questName === 'raw_iron' || questName === 'iron_ore') {
-    const requiredAmount = config.QUEST_AMOUNT.raw_iron || config.QUEST_AMOUNT.iron_ore || 3;
-    const hasRawIron = countItem(bot, 'raw_iron') >= requiredAmount;
-    const hasIronOre = countItem(bot, 'iron_ore') >= requiredAmount;
-    const hasIronIngot = countItem(bot, 'iron_ingot') > 0;
-    const hasIronGear = countItem(bot, 'iron_pickaxe') > 0 || countItem(bot, 'iron_sword') > 0 || countItem(bot, 'iron_chestplate') > 0 || countItem(bot, 'shield') > 0;
-    return hasRawIron || hasIronOre || hasIronIngot || hasIronGear;
-  }
-
-  if (questName === 'iron_ingot') {
-    const requiredAmount = config.QUEST_AMOUNT.iron_ingot || 3;
-    const hasIronGear = countItem(bot, 'iron_pickaxe') > 0 || countItem(bot, 'iron_sword') > 0 || countItem(bot, 'iron_chestplate') > 0 || countItem(bot, 'shield') > 0;
-    return countItem(bot, 'iron_ingot') >= requiredAmount || hasIronGear;
-  }
-
-  if (questName === 'wooden_axe') {
-    return countItem(bot, 'wooden_axe') > 0 || countItem(bot, 'stone_axe') > 0 || countItem(bot, 'iron_axe') > 0;
-  }
-
-  if (questName === 'wooden_pickaxe') {
-    return countItem(bot, 'wooden_pickaxe') > 0 || countItem(bot, 'stone_pickaxe') > 0 || countItem(bot, 'iron_pickaxe') > 0;
-  }
-
-  if (questName === 'stone_pickaxe') {
-    return countItem(bot, 'stone_pickaxe') > 0 || countItem(bot, 'iron_pickaxe') > 0 || countItem(bot, 'diamond_pickaxe') > 0;
-  }
-
-  if (questName === 'stone_axe') {
-    return countItem(bot, 'stone_axe') > 0 || countItem(bot, 'iron_axe') > 0 || countItem(bot, 'diamond_axe') > 0;
-  }
-
-  if (questName === 'iron_pickaxe') {
-    return countItem(bot, 'iron_pickaxe') > 0 || countItem(bot, 'diamond_pickaxe') > 0;
+    const required = config.QUEST_AMOUNT.cobblestone || 3;
+    return countItem(bot, 'cobblestone') >= required || countItem(bot, 'stone_pickaxe') > 0 || countItem(bot, 'iron_pickaxe') > 0;
   }
 
   return countItem(bot, questName) >= (config.QUEST_AMOUNT[questName] || 1);
@@ -167,10 +258,8 @@ function getAvailableCrafts(bot, craftingTable) {
   const targetItemsToCheck = [
     'oak_planks', 'birch_planks', 'spruce_planks', 'jungle_planks', 'acacia_planks', 'dark_oak_planks', 'mangrove_planks', 'cherry_planks', 'bamboo_planks',
     'stick', 'crafting_table', 'chest', 'furnace', 'torch', 'bucket',
-    'wooden_axe', 'wooden_pickaxe', 'wooden_sword',
-    'stone_pickaxe', 'stone_axe', 'stone_sword',
-    'iron_pickaxe', 'iron_axe', 'iron_sword', 'shield', 'iron_helmet', 'iron_chestplate', 'iron_leggings', 'iron_boots',
-    'diamond_pickaxe', 'diamond_axe', 'diamond_sword', 'diamond_helmet', 'diamond_chestplate', 'diamond_leggings', 'diamond_boots',
+    'wooden_pickaxe', 'stone_pickaxe', 'stone_axe', 'stone_sword',
+    'iron_pickaxe', 'iron_axe', 'iron_sword', 'shield',
     'flint_and_steel', 'ender_eye'
   ];
   const availableCrafts = [];
@@ -197,6 +286,12 @@ function getAvailableCrafts(bot, craftingTable) {
         }
       }
     }
+  }
+
+  // Provide generic planks craft option if any wood plank variety is available
+  const canCraftAnyPlanks = availableCrafts.some(craft => isPlanks(craft));
+  if (canCraftAnyPlanks && !availableCrafts.includes('planks')) {
+    availableCrafts.unshift('planks');
   }
 
   return availableCrafts;
@@ -248,5 +343,10 @@ module.exports = {
   syncObjective,
   getInventorySummary,
   getAvailableCrafts,
-  getBestToolForBlock
+  getBestToolForBlock,
+  isWoodLog,
+  isPlanks,
+  getWoodType,
+  getPlankForLog,
+  resolvePlankTarget
 };
