@@ -162,6 +162,9 @@ function buildReactPrompt(bot, state, environment, craftingTable) {
   const ownedTools = invUtils.getOwnedTools(bot);
   const toolsText = ownedTools.length > 0 ? ownedTools.join(', ') : 'aucun';
   const baseInfo = formatBaseInfo(state.base);
+  const subGoalText = state.managerSubGoal?.action
+    ? `{"action": "${state.managerSubGoal.action}", "target": "${state.managerSubGoal.target || 'none'}"}`
+    : "aucune action spécifique suggérée";
 
   const nearbyEntities = envUtils.scanNearbyEntities ? envUtils.scanNearbyEntities(bot, 20) : {};
   const entitiesText = Object.keys(nearbyEntities).length > 0 ? JSON.stringify(nearbyEntities) : "aucune";
@@ -176,6 +179,7 @@ function buildReactPrompt(bot, state, environment, craftingTable) {
     OBJECTIF GLOBAL : Obtenir '${state.currentObjective}'.
     - Progression chiffrée : ${progressText}
     - DIRECTIVE STRATÉGIQUE DU MANAGER : "${state.managerDirective || "Poursuivre la progression vers l'objectif actuel."}"
+    - SOUS-OBJECTIF SUGGÉRÉ PAR LE MANAGER : ${subGoalText}
     - JALON / SUCCÈS OFFICIEL EN COURS : ${advancementInfo}
     - Succès déjà validés : ${unlockedText}
 

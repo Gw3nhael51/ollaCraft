@@ -114,6 +114,17 @@ function recordActionResult(decision, executionResult) {
 }
 
 /**
+ * Resolve valid player decision or fall back to manager sub-goal when LLM output is invalid
+ * @param {object|null} rawDecision Decision returned by player LLM
+ * @returns {object|null} Validated decision object or null
+ */
+function resolvePlayerDecision(rawDecision) {
+  const candidate = [rawDecision, state.managerSubGoal].find(d => config.VALID_ACTIONS.has(d?.action));
+  if (!candidate) return null;
+  return { thought: state.managerDirective, target: 'none', qty: 1, ...candidate };
+}
+
+/**
  * Execute a complete ReAct thought and action cycle for autonomous survival
  * @param {object} bot Mineflayer bot instance
  * @returns {Promise<void>}
@@ -129,10 +140,11 @@ async function handleSurvivalRequest(bot) {
     const prompt = buildReactPrompt(bot, state, environment, craftingTable);
 
     console.log(`\n=== REACT THINKING CYCLE (objective : ${state.currentObjective}) ===`);
-    const decision = await askOllama(prompt);
+    const rawDecision = await askOllama(prompt);
+    const decision = resolvePlayerDecision(rawDecision);
 
-    if (!decision || !config.VALID_ACTIONS.has(decision.action)) {
-      console.log("Invalid decision received from Ollama, pausing for 2s...");
+    if (!decision) {
+      console.log("Invalid decision received from Ollama and no valid fallback, pausing for 2s...");
       state.lastActionResult = { action: 'error', target: 'none', success: false, message: "Invalid JSON decision format." };
       setTimeout(() => handleSurvivalRequest(bot), 2000);
       return;
@@ -141,7 +153,7 @@ async function handleSurvivalRequest(bot) {
     if (decision.thought) {
       console.log(`[AI THOUGHT] ${decision.thought}`);
     }
-    bot.chat(`Action : ${decision.action} (${decision.target || 'none'})`);
+    bot.chat(`Action : ${decision.action} (${decision.target})`);
 
     const executionResult = await executeDecisionWithTimeout(bot, decision);
     console.log(`[RESULT] ${executionResult.success ? '✅' : '❌'} ${executionResult.message}`);
@@ -165,4 +177,4 @@ async function handleSurvivalRequest(bot) {
   }
 }
 
-module.exports = { handleSurvivalRequest };
+module.exports = { handleSurvivalRequest, resolvePlayerDecision };
