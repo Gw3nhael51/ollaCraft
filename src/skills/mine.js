@@ -4,6 +4,17 @@ const GLOBAL_BAD_BLOCKS = new Set();
 const { getBestToolForBlock, countItem, getInventorySummary, isWoodLog, GENERIC_LOG_NAMES } = require('../utils/inventory');
 const { getBlockDrops, canHarvestBlock, getBlockNamesForTarget } = require('../utils/wikiData');
 const { isBlockExposedToAir, VALUABLE_ORES } = require('../utils/environment');
+const { fillBucketFromSource } = require('./portal');
+
+const LIQUID_TARGETS = new Map([
+  ['water', 'water'],
+  ['flowing_water', 'water'],
+  ['water_bucket', 'water'],
+  ['water_source', 'water'],
+  ['lava', 'lava'],
+  ['flowing_lava', 'lava'],
+  ['lava_bucket', 'lava']
+]);
 
 /**
  * Move briefly towards destroyed block position to vacuum item drops
@@ -410,6 +421,11 @@ async function runMiningSteps(bot, state, targetName, remaining, successfullyMin
  * @returns {Promise<{ success: boolean, message: string }>}
  */
 async function skillMine(bot, state, targetName, count) {
+  const cleanTarget = typeof targetName === 'string' ? targetName.toLowerCase().trim() : '';
+  if (LIQUID_TARGETS.has(cleanTarget)) {
+    return fillBucketFromSource(bot, LIQUID_TARGETS.get(cleanTarget));
+  }
+
   const actionId = state.activeActionId;
   // Cap per-cycle block count to prevent safety timeout overflows
   const targetQuantity = Math.min(3, Math.max(1, count || 1));

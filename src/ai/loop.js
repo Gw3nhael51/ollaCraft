@@ -123,12 +123,22 @@ function resolvePlayerDecision(rawDecision) {
 }
 
 /**
+ * Check whether autonomous mode is active and matches the given session identifier
+ * @param {number} sessionId Session identifier to check
+ * @returns {boolean} True if session is still active
+ */
+function isSessionActive(sessionId) {
+  return Boolean(state.isSurviving && sessionId === state.survivalSessionId);
+}
+
+/**
  * Execute a complete ReAct thought and action cycle for autonomous survival
  * @param {object} bot Mineflayer bot instance
+ * @param {number} [sessionId] Active survival session identifier
  * @returns {Promise<void>}
  */
-async function handleSurvivalRequest(bot) {
-  if (!state.isSurviving) return;
+async function handleSurvivalRequest(bot, sessionId = state.survivalSessionId) {
+  if (!isSessionActive(sessionId)) return;
 
   try {
     syncObjective(bot, state);
@@ -139,12 +149,13 @@ async function handleSurvivalRequest(bot) {
 
     console.log(`\n=== REACT THINKING CYCLE (objective : ${state.currentObjective}) ===`);
     const rawDecision = await askOllama(prompt);
+    if (!isSessionActive(sessionId)) return;
     const decision = resolvePlayerDecision(rawDecision);
 
     if (!decision) {
       console.log("Invalid decision received from Ollama and no valid fallback, pausing for 2s...");
       state.lastActionResult = { action: 'error', target: 'none', success: false, message: "Invalid JSON decision format." };
-      setTimeout(() => handleSurvivalRequest(bot), 2000);
+      setTimeout(() => handleSurvivalRequest(bot, sessionId), 2000);
       return;
     }
 
@@ -154,23 +165,24 @@ async function handleSurvivalRequest(bot) {
     bot.chat(`Action : ${decision.action} (${decision.target})`);
 
     const executionResult = await executeDecisionWithTimeout(bot, decision);
+    if (!isSessionActive(sessionId)) return;
     console.log(`[RESULT] ${executionResult.success ? '✅' : '❌'} ${executionResult.message}`);
 
     recordActionResult(decision, executionResult);
     syncObjective(bot, state);
 
     // Evaluate supervisor strategy with exact player state after action
-    if (state.isSurviving) {
+    if (isSessionActive(sessionId)) {
       await runManagerCycle(bot);
     }
 
-    if (state.isSurviving) {
-      setTimeout(() => handleSurvivalRequest(bot), 1500);
+    if (isSessionActive(sessionId)) {
+      setTimeout(() => handleSurvivalRequest(bot, sessionId), 1500);
     }
   } catch (error) {
     console.error("Unexpected error in survival cycle :", error);
-    if (state.isSurviving) {
-      setTimeout(() => handleSurvivalRequest(bot), 2500);
+    if (isSessionActive(sessionId)) {
+      setTimeout(() => handleSurvivalRequest(bot, sessionId), 2500);
     }
   }
 }

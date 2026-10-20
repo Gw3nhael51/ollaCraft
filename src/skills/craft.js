@@ -174,6 +174,9 @@ async function performCraftWithTimeout(bot, recipe, tableToUse, normalizedTarget
   try {
     bot.chat(`Crafting ${normalizedTarget} (x${craftCount})...`);
     await Promise.race([bot.craft(recipe, craftCount, tableToUse), timeoutPromise]);
+    if (typeof bot.waitForTicks === 'function') {
+      await bot.waitForTicks(4);
+    }
     return { success: true };
   } catch (error) {
     console.warn("Error during craft :", error.message);

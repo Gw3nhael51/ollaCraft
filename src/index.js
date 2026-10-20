@@ -31,10 +31,12 @@ function launchAutonomousLoop() {
     syncObjective(bot, state);
     state.hasStarted = true;
     state.isSurviving = true;
+    state.survivalSessionId = (state.survivalSessionId || 0) + 1;
+    const sessionId = state.survivalSessionId;
     console.log(`🚀 Autonomous mode active. Objective : ${state.currentObjective}`);
     bot.chat("Autonomous ReAct mode ready. Objective : " + state.currentObjective);
     void startManagerLoop(bot);
-    void handleSurvivalRequest(bot);
+    void handleSurvivalRequest(bot, sessionId);
   }, 600);
 }
 
@@ -142,14 +144,18 @@ bot.on('chat', async (username, message) => {
 
   if (message === 'start' && !state.isSurviving) {
     state.isSurviving = true;
+    state.survivalSessionId = (state.survivalSessionId || 0) + 1;
+    const sessionId = state.survivalSessionId;
     bot.chat("Starting autonomous mode.");
     void startManagerLoop(bot);
-    await handleSurvivalRequest(bot);
+    await handleSurvivalRequest(bot, sessionId);
     return;
   }
 
   if (message === 'stop') {
     state.isSurviving = false;
+    state.survivalSessionId = (state.survivalSessionId || 0) + 1;
+    state.activeActionId = (state.activeActionId || 0) + 1;
     bot.pathfinder.setGoal(null);
     bot.clearControlStates();
     bot.chat("Stopping autonomous mode.");

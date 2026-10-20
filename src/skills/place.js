@@ -1,5 +1,8 @@
 const { Vec3 } = require('vec3');
 const config = require('../config');
+const { fillBucketFromSource } = require('./portal');
+
+const WATER_SCOOP_TARGETS = new Set(['water', 'water_source', 'water_bucket']);
 
 /**
  * Place an inventory block onto an unobstructed surface on the ground
@@ -9,12 +12,17 @@ const config = require('../config');
  * @returns {Promise<{ success: boolean, message: string }>} Result of the placement action
  */
 async function skillPlace(bot, state, targetName) {
+  const cleanTarget = typeof targetName === 'string' ? targetName.toLowerCase().trim() : '';
+  if (WATER_SCOOP_TARGETS.has(cleanTarget) || (cleanTarget === 'bucket' && state?.currentObjective === 'water_bucket')) {
+    return fillBucketFromSource(bot, 'water');
+  }
+
   const item = bot.inventory.items().find(i => i.name === targetName);
   if (!item) return { success: false, message: `You do not have '${targetName}' in your inventory.` };
 
   const refBlock = bot.findBlock({
     matching: (block) => {
-      if (!config.VALID_GROUND_BLOCKS.has(block.name)) return false;
+      if (!config.VALID_GROUND_BLOCKS.has(block.name) && block.boundingBox !== 'block') return false;
       if (!block?.position) return true;
       const above = bot.blockAt(block.position.offset(0, 1, 0));
       const botPos = bot.entity.position.floored();
@@ -23,7 +31,7 @@ async function skillPlace(bot, state, targetName) {
       const isAir = above?.name === 'air' || above?.name === 'cave_air' || above?.name === 'void_air';
       return isAir && !collides;
     },
-    maxDistance: 3
+    maxDistance: 4
   });
 
   if (!refBlock) return { success: false, message: "No clear ground with air above to place this block." };

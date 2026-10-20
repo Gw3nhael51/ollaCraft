@@ -26,6 +26,7 @@ module.exports = {
   managerSubGoal: null,
   isManagerThinking: false,
   activeActionId: 0,
+  survivalSessionId: 0,
   tokenStats: {
     playerPromptTokens: 0,
     playerCompletionTokens: 0,

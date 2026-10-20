@@ -395,3 +395,43 @@ test('Wood species isolation, generic plank wiki recipes, and foliage unstuck pr
   assert.equal(isDiggableObstacle({ name: 'jungle_log' }), true);
   assert.equal(isDiggableObstacle({ name: 'bedrock' }), false);
 });
+
+test('Water bucket scooping via mine/place and solid block placement on tree logs work offline', async () => {
+  const { Vec3 } = require('vec3');
+  const bot = createMockBot([
+    { name: 'bucket', count: 1 },
+    { name: 'crafting_table', count: 1 }
+  ]);
+  bot.entity.position = new Vec3(0, 64, 0);
+  bot.clearControlStates = () => {};
+  bot.equip = async () => {};
+  bot.lookAt = async () => {};
+  bot.waitForTicks = async () => {};
+
+  const wikiWater = skillWiki(bot, 'water_bucket');
+  assert.ok(wikiWater.message.includes("Fill an empty 'bucket'"));
+
+  const waterId = mcData.blocksByName.water.id;
+  const waterPos = new Vec3(2, 64, 0);
+  bot.findBlock = ({ matching }) => {
+    const candidate = { name: 'water', type: waterId, metadata: 0, position: waterPos };
+    return matching(candidate) ? candidate : null;
+  };
+  bot.activateItem = async () => {
+    bot.inventory.slots[9] = { name: 'water_bucket', count: 1, type: mcData.itemsByName.water_bucket.id };
+  };
+
+  const scoopRes = await dispatchSkill(bot, state, 'mine', 'water', 1);
+  assert.equal(scoopRes.success, true);
+  assert.equal(invUtils.countItem(bot, 'water_bucket'), 1);
+
+  const logPos = new Vec3(1, 63, 0);
+  bot.findBlock = ({ matching }) => {
+    const candidate = { name: 'oak_log', boundingBox: 'block', position: logPos };
+    return matching(candidate) ? candidate : null;
+  };
+  bot.placeBlock = async () => {};
+
+  const placeRes = await dispatchSkill(bot, state, 'place', 'crafting_table', 1);
+  assert.equal(placeRes.success, true);
+});

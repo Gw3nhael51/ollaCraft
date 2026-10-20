@@ -36,6 +36,35 @@ const PORTAL_BUILD_STEPS = [
 ];
 
 /**
+ * Locate the best reachable liquid source block (preferring immediate immersion or surface blocks)
+ * @param {object} bot Mineflayer bot instance
+ * @param {string} liquidName Target liquid block name ('water' or 'lava')
+ * @returns {object|null} Located liquid source block or null
+ */
+function findReachableLiquidSource(bot, liquidName) {
+  const blockId = bot.registry.blocksByName[liquidName]?.id;
+  if (!blockId) return null;
+
+  const isSource = (block) => Boolean(block && block.type === blockId && (!block.metadata || block.metadata === 0));
+  const feetPos = bot.entity.position.floored ? bot.entity.position.floored() : bot.entity.position;
+  const eyeBlock = bot.blockAt(feetPos.offset(0, 1, 0));
+  if (isSource(eyeBlock)) return eyeBlock;
+  const feetBlock = bot.blockAt(feetPos);
+  if (isSource(feetBlock)) return feetBlock;
+
+  const surfaceSource = bot.findBlock({
+    matching: (block) => {
+      if (!isSource(block)) return false;
+      const above = block.position ? bot.blockAt(block.position.offset(0, 1, 0)) : null;
+      return !above || above.name === 'air' || above.name === 'cave_air';
+    },
+    maxDistance: 28
+  });
+
+  return surfaceSource || bot.findBlock({ matching: isSource, maxDistance: 28 });
+}
+
+/**
  * Fill an empty bucket from a nearby water or lava source block
  * @param {object} bot Mineflayer bot instance
  * @param {string} liquidName Target liquid block name ('water' or 'lava')
@@ -47,12 +76,7 @@ async function fillBucketFromSource(bot, liquidName) {
     return { success: false, message: "No empty 'bucket' in inventory." };
   }
 
-  const blockId = bot.registry.blocksByName[liquidName]?.id;
-  const sourceBlock = blockId ? bot.findBlock({
-    matching: (block) => block.type === blockId && block.metadata === 0,
-    maxDistance: 28
-  }) : null;
-
+  const sourceBlock = findReachableLiquidSource(bot, liquidName);
   if (!sourceBlock) {
     return {
       success: false,
@@ -62,7 +86,7 @@ async function fillBucketFromSource(bot, liquidName) {
 
   let navTimer = null;
   try {
-    if (bot.entity.position.distanceTo(sourceBlock.position) > 3.5) {
+    if (bot.entity.position.distanceTo(sourceBlock.position) > 3) {
       const { GoalNear } = goals;
       const gotoPromise = bot.pathfinder.goto(new GoalNear(sourceBlock.position.x, sourceBlock.position.y, sourceBlock.position.z, 2));
       const timeoutPromise = new Promise((_, reject) => {
@@ -71,12 +95,23 @@ async function fillBucketFromSource(bot, liquidName) {
       await Promise.race([gotoPromise, timeoutPromise]);
     }
 
+    bot.pathfinder.setGoal(null);
+    bot.clearControlStates();
+
     await bot.equip(bucketItem, 'hand');
-    await bot.lookAt(sourceBlock.position.offset(0.5, 0.5, 0.5), true);
+    await bot.lookAt(sourceBlock.position.offset(0.5, 0.8, 0.5), true);
+    await bot.waitForTicks(2);
     await bot.activateItem();
     await bot.waitForTicks(8);
 
     const expectedFilled = liquidName === 'water' ? 'water_bucket' : 'lava_bucket';
+    if (countItem(bot, expectedFilled) === 0) {
+      await bot.lookAt(sourceBlock.position.offset(0.5, 0.5, 0.5), true);
+      await bot.waitForTicks(2);
+      await bot.activateItem();
+      await bot.waitForTicks(8);
+    }
+
     if (countItem(bot, expectedFilled) > 0) {
       return { success: true, message: `Successfully filled '${expectedFilled}' from nearby ${liquidName} source.` };
     }
