@@ -296,4 +296,9 @@ test('Combat collects drops at actual death position instead of initial position
 
   bot.blockAt = () => ({ name: 'lava' });
   assert.equal(isPositionSafeForLoot(bot, makeVec(18, 64, 4)), false);
+
+  bot.recipesFor = (id, _meta, _count, table) => (table ? [{ id }] : []);
+  const allCrafts = invUtils.getAvailableCrafts(bot, { name: 'crafting_table' });
+  assert.ok(allCrafts.includes('iron_shovel'));
+  assert.ok(allCrafts.includes('iron_chestplate'));
 });
