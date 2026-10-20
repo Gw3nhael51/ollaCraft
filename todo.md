@@ -20,7 +20,7 @@
   - Remplacer le simple versement d'eau de `castObsidianAtLavaPool` par un vrai moulage bloc par bloc ou par le minage de l'obsidienne formée si une pioche en diamant est disponible.
 
 ## ⚡ Priorité P1 : Optimisations Performances (CPU, Mémoire & Coût LLM)
-- [ ] **Fusion du scan 3D (`src/utils/environment.js`)** : Unifier `scanEnvironment` et `scanExposedOres` en une seule passe (évite > 47 000 appels `bot.blockAt()` synchrones par cycle) et mettre en cache les listes de blocs de `src/utils/wikiData.js`.
+- [x] **Fusion du scan 3D (`src/utils/environment.js`)** : Unifier `scanEnvironment` et `scanExposedOres` en une seule passe (évite > 47 000 appels `bot.blockAt()` synchrones par cycle) et mettre en cache les listes de blocs de `src/utils/wikiData.js`.
 - [ ] **Manager événementiel (`src/ai/loop.js` & `src/ai/manager.js`)** : N'exécuter `runManagerCycle` que sur événement (échec d'action, boucle détectée par `detectActionLoop`, changement de palier, ou tous les $N$ cycles) pour réduire de ~75% la consommation de tokens et la latence.
 - [ ] **Filtrage du radar dans le prompt (`src/ai/prompt.js`)** : Exclure les blocs décoratifs inutiles (`short_grass`, `tall_grass`, fleurs, `bedrock`, `kelp`) du JSON envoyé au LLM.
 - [ ] **Structured Outputs & Configuration Ollama (`src/ai/ollama.js` & `src/config.js`)** :

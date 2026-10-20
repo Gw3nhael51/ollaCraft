@@ -13,6 +13,8 @@ const { computeCraftOperations } = require('../src/skills/craft');
 const { computeSmeltPlan } = require('../src/skills/smelt');
 const { skillHunt, isPositionSafeForLoot } = require('../src/skills/combat');
 const { buildObsidianFrame, PORTAL_BUILD_STEPS } = require('../src/skills/portal');
+const { scanEnvironment } = require('../src/utils/environment');
+const { getBlockNamesForTarget, getOreBlockNames } = require('../src/utils/wikiData');
 const { buildReactPrompt } = require('../src/ai/prompt');
 
 /**
@@ -339,4 +341,34 @@ test('Portal builder assembles all 11 blocks (including top-left corner and hori
     const pos = base.plus(step.offset);
     assert.equal(bot.blockAt(pos).name, 'obsidian', `Expected obsidian at (${pos.x},${pos.y},${pos.z})`);
   }
+});
+
+test('Unified 3D scan collects blocks and exposed ores in one pass and wikiData caches results', () => {
+  const { Vec3 } = require('vec3');
+  const bot = createMockBot([{ name: 'stone_pickaxe', count: 1 }]);
+  bot.entity.position = new Vec3(0, 64, 0);
+
+  let blockAtCalls = 0;
+  bot.blockAt = (pos) => {
+    blockAtCalls++;
+    if (pos.x === 1 && pos.y === 64 && pos.z === 0) {
+      return { name: 'iron_ore', position: pos.clone() };
+    }
+    return { name: 'air', position: pos.clone() };
+  };
+
+  const env = scanEnvironment(bot, 2, 2);
+  assert.equal(env.iron_ore, 1);
+  assert.equal(env.exposedOres.iron_ore, 1);
+  assert.equal(JSON.stringify(env), '{"iron_ore":1}');
+
+  const callsAfterScan = blockAtCalls;
+  const prompt = buildReactPrompt(bot, state, env, null);
+  assert.ok(prompt.includes('1x iron_ore'));
+  assert.equal(blockAtCalls, callsAfterScan + 11);
+
+  const logsFirst = getBlockNamesForTarget(bot, 'oak_log');
+  const logsSecond = getBlockNamesForTarget(bot, 'birch_log');
+  assert.equal(logsFirst, logsSecond);
+  assert.equal(getOreBlockNames(bot), getOreBlockNames(bot));
 });
