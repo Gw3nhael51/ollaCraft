@@ -15,7 +15,7 @@
 - [x] **Prise en compte de `qty` dans le craft (`src/skills/dispatcher.js` & `src/skills/craft.js`)** : Transmettre le paramètre `qty` à `skillCraft` et l'utiliser dans `bot.craft(recipes[0], qty, tableToUse)`.
 - [x] **Cuisson multiple et gestion du combustible (`src/skills/smelt.js`)** : Calculer la quantité de combustible requise selon `qty`, attendre la cuisson complète de tous les items (au lieu de s'arrêter dès le 1er item produit) et adapter le timeout dynamiquement.
 - [x] **Collecte des drops à la position de mort réelle (`src/skills/combat.js`)** : Mémoriser la dernière position valide de la cible pendant `combatLoop` au lieu d'aller chercher le butin à `startPos` (position initiale avant poursuite).
-- [ ] **Construction et moulage du portail du Nether (`src/skills/portal.js`)** :
+- [x] **Construction et moulage du portail du Nether (`src/skills/portal.js`)** :
   - Corriger `placePortalFrameStep` pour poser les blocs contre n'importe quelle face adjacente solide (et utiliser des blocs d'échafaudage pour les coins) afin de pouvoir monter les piliers et le linteau supérieur.
   - Remplacer le simple versement d'eau de `castObsidianAtLavaPool` par un vrai moulage bloc par bloc ou par le minage de l'obsidienne formée si une pioche en diamant est disponible.
 

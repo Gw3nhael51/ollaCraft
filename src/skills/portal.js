@@ -3,6 +3,38 @@ const { goals } = require('mineflayer-pathfinder');
 const config = require('../config');
 const { countItem, getBestToolForBlock } = require('../utils/inventory');
 
+const NON_SOLID_BLOCKS = new Set([
+  'air', 'cave_air', 'void_air', 'water', 'flowing_water', 'lava', 'flowing_lava', 'fire', 'soul_fire'
+]);
+
+const SCAFFOLD_BLOCKS = [
+  'cobblestone', 'cobbled_deepslate', 'dirt', 'stone', 'netherrack', 'andesite', 'diorite', 'granite'
+];
+
+const ADJACENT_DIRECTIONS = [
+  new Vec3(0, -1, 0),
+  new Vec3(-1, 0, 0),
+  new Vec3(1, 0, 0),
+  new Vec3(0, 0, -1),
+  new Vec3(0, 0, 1),
+  new Vec3(0, 1, 0)
+];
+
+// 11-block embedded portal sequence: 2 recessed floor blocks, left pillar + top-left corner, roof lintel, right pillar
+const PORTAL_BUILD_STEPS = [
+  { offset: new Vec3(0, 0, 0), isCorner: false },
+  { offset: new Vec3(1, 0, 0), isCorner: false },
+  { offset: new Vec3(-1, 1, 0), isCorner: false },
+  { offset: new Vec3(-1, 2, 0), isCorner: false },
+  { offset: new Vec3(-1, 3, 0), isCorner: false },
+  { offset: new Vec3(-1, 4, 0), isCorner: true },
+  { offset: new Vec3(0, 4, 0), isCorner: false },
+  { offset: new Vec3(1, 4, 0), isCorner: false },
+  { offset: new Vec3(2, 1, 0), isCorner: false },
+  { offset: new Vec3(2, 2, 0), isCorner: false },
+  { offset: new Vec3(2, 3, 0), isCorner: false }
+];
+
 /**
  * Fill an empty bucket from a nearby water or lava source block
  * @param {object} bot Mineflayer bot instance
@@ -28,11 +60,14 @@ async function fillBucketFromSource(bot, liquidName) {
     };
   }
 
+  let navTimer = null;
   try {
     if (bot.entity.position.distanceTo(sourceBlock.position) > 3.5) {
       const { GoalNear } = goals;
       const gotoPromise = bot.pathfinder.goto(new GoalNear(sourceBlock.position.x, sourceBlock.position.y, sourceBlock.position.z, 2));
-      const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error(`Navigation timeout towards ${liquidName}`)), 15000));
+      const timeoutPromise = new Promise((_, reject) => {
+        navTimer = setTimeout(() => reject(new Error(`Navigation timeout towards ${liquidName}`)), 15000);
+      });
       await Promise.race([gotoPromise, timeoutPromise]);
     }
 
@@ -49,6 +84,8 @@ async function fillBucketFromSource(bot, liquidName) {
     return { success: false, message: `Attempted to scoop ${liquidName} but '${expectedFilled}' was not acquired.` };
   } catch (err) {
     return { success: false, message: `Failed to scoop ${liquidName} : ${err.message}` };
+  } finally {
+    if (navTimer) clearTimeout(navTimer);
   }
 }
 
@@ -97,11 +134,14 @@ async function igniteAndEnterPortal(bot, portalBasePos) {
     return { success: false, message: "Portal frame could not be ignited or no active 'nether_portal' found nearby." };
   }
 
+  let navTimer = null;
   try {
     console.log(`[PORTAL] Entering Nether portal at (${portalBlock.position.x}, ${portalBlock.position.y}, ${portalBlock.position.z})...`);
     const { GoalBlock } = goals;
     const gotoPromise = bot.pathfinder.goto(new GoalBlock(portalBlock.position.x, portalBlock.position.y, portalBlock.position.z));
-    const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error("Navigation timeout towards portal")), 12000));
+    const timeoutPromise = new Promise((_, reject) => {
+      navTimer = setTimeout(() => reject(new Error("Navigation timeout towards portal")), 12000);
+    });
     await Promise.race([gotoPromise, timeoutPromise]).catch(() => {});
 
     // Wait inside portal block for dimension transition (up to 6 seconds)
@@ -114,11 +154,145 @@ async function igniteAndEnterPortal(bot, portalBasePos) {
     return { success: true, message: "Nether portal ignited and entered. Waiting for server dimension transfer." };
   } catch (err) {
     return { success: false, message: `Failed to enter Nether portal : ${err.message}` };
+  } finally {
+    if (navTimer) clearTimeout(navTimer);
   }
 }
 
 /**
- * Cast obsidian by pouring water near a lava source or placing lava into a mold
+ * Find any solid adjacent block and its opposite face vector to support block placement at targetPos
+ * @param {object} bot Mineflayer bot instance
+ * @param {object} targetPos Target block coordinates
+ * @returns {{ referenceBlock: object, faceVector: Vec3 }|null} Reference block and face or null
+ */
+function findPlacementReference(bot, targetPos) {
+  for (const dir of ADJACENT_DIRECTIONS) {
+    const neighborPos = targetPos.plus(dir);
+    const neighbor = bot.blockAt(neighborPos);
+    if (neighbor && !NON_SOLID_BLOCKS.has(neighbor.name)) {
+      const refPosition = neighbor.position || neighborPos;
+      return {
+        referenceBlock: { ...neighbor, position: refPosition },
+        faceVector: new Vec3(-dir.x, -dir.y, -dir.z)
+      };
+    }
+  }
+  return null;
+}
+
+/**
+ * Select item to place for a portal step (obsidian for frame or top corner, scaffold fallback for corner)
+ * @param {object} bot Mineflayer bot instance
+ * @param {boolean} isCorner Whether current step is the top-left bridge corner
+ * @param {number} remainingCoreBlocks Number of core obsidian blocks still needed
+ * @returns {object|null} Inventory item to equip and place
+ */
+function selectFrameStepItem(bot, isCorner, remainingCoreBlocks) {
+  const items = bot.inventory.items();
+  const obsidianItem = items.find(i => i.name === 'obsidian');
+
+  if (!isCorner) return obsidianItem || null;
+
+  // Prefer obsidian for the 11th corner block when enough obsidian is carried
+  if (countItem(bot, 'obsidian') > remainingCoreBlocks && obsidianItem) {
+    return obsidianItem;
+  }
+
+  for (const scaffoldName of SCAFFOLD_BLOCKS) {
+    const found = items.find(i => i.name === scaffoldName);
+    if (found) return found;
+  }
+
+  return obsidianItem || null;
+}
+
+/**
+ * Scoop placed water source back into an empty bucket
+ * @param {object} bot Mineflayer bot instance
+ * @param {object} waterLookPos Target position where water was placed
+ * @returns {Promise<void>}
+ */
+async function retrieveWaterSource(bot, waterLookPos) {
+  const emptyBucket = bot.inventory.items().find(i => i.name === 'bucket');
+  if (!emptyBucket) return;
+
+  await bot.equip(emptyBucket, 'hand');
+  await bot.lookAt(waterLookPos, true);
+  await bot.activateItem();
+  await bot.waitForTicks(6);
+}
+
+/**
+ * Mine newly formed obsidian block if a diamond or netherite pickaxe is available
+ * @param {object} bot Mineflayer bot instance
+ * @returns {Promise<boolean>} True if obsidian was mined
+ */
+async function tryMineFormedObsidian(bot) {
+  const canMineObsidian = countItem(bot, 'diamond_pickaxe') > 0 || countItem(bot, 'netherite_pickaxe') > 0;
+  if (!canMineObsidian) return false;
+
+  const obsidianId = bot.registry.blocksByName.obsidian?.id;
+  const formedObsidian = obsidianId ? bot.findBlock({ matching: obsidianId, maxDistance: 6 }) : null;
+  if (!formedObsidian) return false;
+
+  const pickaxe = getBestToolForBlock(bot, formedObsidian);
+  if (pickaxe) await bot.equip(pickaxe, 'hand').catch(() => {});
+  await bot.dig(formedObsidian);
+  await bot.waitForTicks(8);
+  return true;
+}
+
+/**
+ * Cast a single portal frame block by scooping lava and pouring it against a reference face
+ * @param {object} bot Mineflayer bot instance
+ * @param {object} targetPos Target block coordinates
+ * @returns {Promise<boolean>} False if no more lava can be scooped, true otherwise
+ */
+async function castSingleLavaFrameBlock(bot, targetPos) {
+  if (bot.blockAt(targetPos)?.name === 'obsidian') return true;
+
+  const ref = findPlacementReference(bot, targetPos);
+  if (!ref) return true;
+
+  const scoop = await fillBucketFromSource(bot, 'lava');
+  if (!scoop.success) return false;
+
+  const lavaItem = bot.inventory.items().find(i => i.name === 'lava_bucket');
+  if (!lavaItem) return false;
+
+  const { referenceBlock, faceVector } = ref;
+  const clickPos = referenceBlock.position.offset(
+    0.5 + faceVector.x * 0.5,
+    0.5 + faceVector.y * 0.5,
+    0.5 + faceVector.z * 0.5
+  );
+  
+  await bot.equip(lavaItem, 'hand');
+  await bot.lookAt(clickPos, true);
+  await bot.activateItem();
+  await bot.waitForTicks(6);
+  return true;
+}
+
+/**
+ * Recursively cast portal frame blocks with lava buckets while water flows nearby
+ * @param {object} bot Mineflayer bot instance
+ * @param {object} basePos Origin coordinate of the portal frame
+ * @param {number} index Current step index in PORTAL_BUILD_STEPS
+ * @returns {Promise<void>}
+ */
+async function castPortalFrameStep(bot, basePos, index) {
+  if (index >= PORTAL_BUILD_STEPS.length) return;
+
+  const step = PORTAL_BUILD_STEPS[index];
+  const canContinue = await castSingleLavaFrameBlock(bot, basePos.plus(step.offset));
+  if (!canContinue) return;
+
+  return castPortalFrameStep(bot, basePos, index + 1);
+}
+
+/**
+ * Cast or mine obsidian at a nearby lava pool using water bucket and available tools
  * @param {object} bot Mineflayer bot instance
  * @returns {Promise<{ success: boolean, message: string }>}
  */
@@ -141,63 +315,75 @@ async function castObsidianAtLavaPool(bot) {
     return fillBucketFromSource(bot, 'water');
   }
 
+  let navTimer = null;
   try {
     if (bot.entity.position.distanceTo(lavaBlock.position) > 3.5) {
       const { GoalNear } = goals;
       const gotoPromise = bot.pathfinder.goto(new GoalNear(lavaBlock.position.x, lavaBlock.position.y, lavaBlock.position.z, 2));
-      const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error("Navigation timeout towards lava pool")), 15000));
+      const timeoutPromise = new Promise((_, reject) => {
+        navTimer = setTimeout(() => reject(new Error("Navigation timeout towards lava pool")), 15000);
+      });
       await Promise.race([gotoPromise, timeoutPromise]);
     }
 
-    // Place water adjacent to lava to convert lava sources into obsidian
+    const waterLookPos = lavaBlock.position.offset(0.5, 1, 0.5);
     await bot.equip(waterBucket, 'hand');
-    await bot.lookAt(lavaBlock.position.offset(0.5, 1, 0.5), true);
+    await bot.lookAt(waterLookPos, true);
     await bot.activateItem();
     await bot.waitForTicks(12);
 
-    // Retrieve water back into bucket
-    const emptyBucket = bot.inventory.items().find(i => i.name === 'bucket');
-    if (emptyBucket) {
-      await bot.equip(emptyBucket, 'hand');
-      await bot.activateItem();
-      await bot.waitForTicks(6);
+    if (await tryMineFormedObsidian(bot)) {
+      await retrieveWaterSource(bot, waterLookPos);
+      return {
+        success: true,
+        message: `Cast and harvested obsidian from lava pool (${countItem(bot, 'obsidian')}/11).`
+      };
     }
+
+    await castPortalFrameStep(bot, lavaBlock.position, 0);
+    await retrieveWaterSource(bot, waterLookPos);
 
     return {
       success: true,
-      message: "Poured water onto lava pool to form obsidian."
+      message: "Poured water onto lava pool and cast obsidian portal blocks."
     };
   } catch (err) {
     return { success: false, message: `Failed to cast obsidian at lava pool : ${err.message}` };
+  } finally {
+    if (navTimer) clearTimeout(navTimer);
   }
 }
 
 /**
- * Clear obstructing block and place a single obsidian block at target position
+ * Clear obstructing block and place a single portal frame or corner block against any solid adjacent face
  * @param {object} bot Mineflayer bot instance
  * @param {object} targetPos Target block coordinates
- * @returns {Promise<boolean>} False if out of obsidian, true otherwise
+ * @param {boolean} [isCorner] Whether this position is the top-left support corner
+ * @param {number} [remainingCoreBlocks] Remaining core obsidian blocks to place after this step
+ * @returns {Promise<boolean>} False if required item or reference face is missing, true otherwise
  */
-async function placeSingleObsidianAt(bot, targetPos) {
+async function placeSingleObsidianAt(bot, targetPos, isCorner = false, remainingCoreBlocks = 0) {
   const currentBlock = bot.blockAt(targetPos);
   if (currentBlock?.name === 'obsidian') return true;
+  if (isCorner && currentBlock && !NON_SOLID_BLOCKS.has(currentBlock.name)) return true;
 
-  if (currentBlock && currentBlock.name !== 'air' && currentBlock.name !== 'cave_air') {
+  if (currentBlock && !NON_SOLID_BLOCKS.has(currentBlock.name)) {
     const tool = getBestToolForBlock(bot, currentBlock);
     if (tool) await bot.equip(tool, 'hand').catch(() => {});
     await bot.dig(currentBlock).catch(() => {});
   }
 
-  const obsItem = bot.inventory.items().find(i => i.name === 'obsidian');
-  if (!obsItem) return false;
+  const itemToPlace = selectFrameStepItem(bot, isCorner, remainingCoreBlocks);
+  if (!itemToPlace) return false;
 
-  const below = bot.blockAt(targetPos.offset(0, -1, 0));
-  if (below && below.name !== 'air') {
-    await bot.equip(obsItem, 'hand');
-    await bot.lookAt(below.position.offset(0.5, 1, 0.5), true);
-    await bot.placeBlock(below, new Vec3(0, 1, 0)).catch(() => {});
-    await bot.waitForTicks(4);
-  }
+  const placementRef = findPlacementReference(bot, targetPos);
+  if (!placementRef) return false;
+
+  const { referenceBlock, faceVector } = placementRef;
+  await bot.equip(itemToPlace, 'hand');
+  await bot.lookAt(referenceBlock.position.offset(0.5 + faceVector.x * 0.5, 0.5 + faceVector.y * 0.5, 0.5 + faceVector.z * 0.5), true);
+  await bot.placeBlock(referenceBlock, faceVector).catch(() => {});
+  await bot.waitForTicks(4);
   return true;
 }
 
@@ -205,21 +391,26 @@ async function placeSingleObsidianAt(bot, targetPos) {
  * Place obsidian frame blocks recursively without await-in-loop
  * @param {object} bot Mineflayer bot instance
  * @param {object} base Origin position vector of the portal frame
- * @param {Array<object>} frameOffsets Array of relative offset vectors
- * @param {number} index Current offset index
+ * @param {Array<{ offset: Vec3, isCorner: boolean }>} frameSteps Array of step definitions
+ * @param {number} index Current step index
  * @returns {Promise<void>}
  */
-async function placePortalFrameStep(bot, base, frameOffsets, index) {
-  if (index >= frameOffsets.length) return;
+async function placePortalFrameStep(bot, base, frameSteps, index) {
+  if (index >= frameSteps.length) return;
 
-  const canContinue = await placeSingleObsidianAt(bot, base.plus(frameOffsets[index]));
+  const step = frameSteps[index];
+  const offset = step.offset || step;
+  const isCorner = Boolean(step.isCorner);
+  const remainingCore = frameSteps.slice(index + 1).filter(s => !s.isCorner).length;
+
+  const canContinue = await placeSingleObsidianAt(bot, base.plus(offset), isCorner, remainingCore);
   if (!canContinue) return;
 
-  return placePortalFrameStep(bot, base, frameOffsets, index + 1);
+  return placePortalFrameStep(bot, base, frameSteps, index + 1);
 }
 
 /**
- * Construct a 4x5 Nether portal frame from inventory obsidian if available
+ * Construct an embedded 4x5 Nether portal frame (11 blocks including top-left corner)
  * @param {object} bot Mineflayer bot instance
  * @returns {Promise<{ success: boolean, portalInnerPos: object|null, message: string }>}
  */
@@ -229,7 +420,7 @@ async function buildObsidianFrame(bot) {
     return {
       success: false,
       portalInnerPos: null,
-      message: `Insufficient obsidian in inventory (${obsidianCount}/10).`
+      message: `Insufficient obsidian in inventory (${obsidianCount}/11).`
     };
   }
 
@@ -246,17 +437,11 @@ async function buildObsidianFrame(bot) {
     return { success: false, portalInnerPos: null, message: "No flat ground nearby to build the Nether portal." };
   }
 
-  const base = refBlock.position.offset(0, 1, 0);
-  // Standard 10-obsidian cornerless portal frame offsets relative to base
-  const frameOffsets = [
-    new Vec3(0, 0, 0), new Vec3(1, 0, 0),
-    new Vec3(-1, 1, 0), new Vec3(-1, 2, 0), new Vec3(-1, 3, 0),
-    new Vec3(2, 1, 0), new Vec3(2, 2, 0), new Vec3(2, 3, 0),
-    new Vec3(0, 4, 0), new Vec3(1, 4, 0)
-  ];
+  // Embed threshold directly at refBlock ground level so natural terrain supports both pillars
+  const base = refBlock.position.clone ? refBlock.position.clone() : refBlock.position;
 
   try {
-    await placePortalFrameStep(bot, base, frameOffsets, 0);
+    await placePortalFrameStep(bot, base, PORTAL_BUILD_STEPS, 0);
 
     return {
       success: true,
@@ -321,5 +506,8 @@ async function skillPortal(bot) {
 module.exports = {
   skillPortal,
   fillBucketFromSource,
-  igniteAndEnterPortal
+  igniteAndEnterPortal,
+  buildObsidianFrame,
+  findPlacementReference,
+  PORTAL_BUILD_STEPS
 };

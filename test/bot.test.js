@@ -12,6 +12,7 @@ const { dispatchSkill } = require('../src/skills/dispatcher');
 const { computeCraftOperations } = require('../src/skills/craft');
 const { computeSmeltPlan } = require('../src/skills/smelt');
 const { skillHunt, isPositionSafeForLoot } = require('../src/skills/combat');
+const { buildObsidianFrame, PORTAL_BUILD_STEPS } = require('../src/skills/portal');
 const { buildReactPrompt } = require('../src/ai/prompt');
 
 /**
@@ -301,4 +302,41 @@ test('Combat collects drops at actual death position instead of initial position
   const allCrafts = invUtils.getAvailableCrafts(bot, { name: 'crafting_table' });
   assert.ok(allCrafts.includes('iron_shovel'));
   assert.ok(allCrafts.includes('iron_chestplate'));
+});
+
+test('Portal builder assembles all 11 blocks (including top-left corner and horizontal roof) using multi-face placement', async () => {
+  const { Vec3 } = require('vec3');
+  const bot = createMockBot([{ name: 'obsidian', count: 11 }]);
+  const worldBlocks = new Map();
+  const key = (p) => `${p.x},${p.y},${p.z}`;
+
+  for (let x = -2; x <= 3; x++) {
+    for (let y = 63; y <= 64; y++) {
+      const pos = new Vec3(x, y, 0);
+      worldBlocks.set(key(pos), { name: 'grass_block', position: pos });
+    }
+  }
+
+  bot.blockAt = (pos) => worldBlocks.get(key(pos)) || { name: 'air', position: pos };
+  bot.findBlock = () => worldBlocks.get('0,64,0');
+  bot.equip = async () => {};
+  bot.lookAt = async () => {};
+  bot.waitForTicks = async () => {};
+  bot.dig = async (block) => {
+    worldBlocks.set(key(block.position), { name: 'air', position: block.position });
+  };
+  bot.placeBlock = async (refBlock, faceVec) => {
+    const placedPos = refBlock.position.plus(faceVec);
+    worldBlocks.set(key(placedPos), { name: 'obsidian', position: placedPos });
+  };
+
+  assert.equal(PORTAL_BUILD_STEPS.length, 11);
+  const res = await buildObsidianFrame(bot);
+  assert.equal(res.success, true);
+
+  const base = new Vec3(0, 64, 0);
+  for (const step of PORTAL_BUILD_STEPS) {
+    const pos = base.plus(step.offset);
+    assert.equal(bot.blockAt(pos).name, 'obsidian', `Expected obsidian at (${pos.x},${pos.y},${pos.z})`);
+  }
 });
