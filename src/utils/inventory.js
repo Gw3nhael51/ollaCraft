@@ -153,6 +153,50 @@ const TOOL_TIERS = {
   sword: ['wooden_sword', 'stone_sword', 'iron_sword', 'diamond_sword', 'netherite_sword']
 };
 
+// Quests requiring the item (or a higher tool tier) to remain in inventory
+const PERSISTENT_GEAR_QUESTS = new Set([
+  'wooden_pickaxe', 'stone_pickaxe', 'iron_pickaxe', 'iron_sword', 'shield'
+]);
+
+// Equivalent items or conditions that directly satisfy a specific quest
+const QUEST_EQUIVALENTS = {
+  raw_iron: ['raw_iron', 'iron_ore'],
+  bucket: ['bucket', 'water_bucket', 'lava_bucket'],
+  blaze_rod: (bot) => countItem(bot, 'blaze_rod') + Math.ceil((countItem(bot, 'blaze_powder') + countItem(bot, 'ender_eye')) / 2),
+  blaze_powder: (bot) => countItem(bot, 'blaze_powder') + countItem(bot, 'ender_eye'),
+  ender_pearl: (bot) => countItem(bot, 'ender_pearl') + countItem(bot, 'ender_eye'),
+  nether_portal: (bot) => (bot.game?.dimension === 'the_nether' ? 1 : 0)
+};
+
+/**
+ * Check whether a single quest requirement is directly met by current inventory or surroundings
+ * @param {object} bot Mineflayer bot instance
+ * @param {string} questName Objective name to check
+ * @param {object} state Global bot state
+ * @returns {boolean} True if directly satisfied
+ */
+function isQuestDirectlyMet(bot, questName, state) {
+  for (const tierList of Object.values(TOOL_TIERS)) {
+    const idx = tierList.indexOf(questName);
+    if (idx !== -1) {
+      return tierList.slice(idx).some(tool => countItem(bot, tool) > 0);
+    }
+  }
+
+  if (questName === 'furnace' || questName === 'crafting_table') {
+    const nearby = bot.findBlock({ matching: bot.registry.blocksByName[questName]?.id, maxDistance: 32 });
+    return countItem(bot, questName) > 0 || Boolean(state?.base?.[questName]) || Boolean(nearby);
+  }
+
+  const required = config.QUEST_AMOUNT[questName] || 1;
+  const rule = QUEST_EQUIVALENTS[questName];
+
+  if (typeof rule === 'function') return rule(bot) >= required;
+  if (Array.isArray(rule)) return rule.some(item => countItem(bot, item) >= required);
+
+  return countItem(bot, questName) >= required;
+}
+
 /**
  * Determine whether a quest objective is achieved according to current inventory
  * @param {object} bot Mineflayer bot instance
@@ -161,63 +205,13 @@ const TOOL_TIERS = {
  * @returns {boolean} True if objective is achieved
  */
 function isQuestDone(bot, questName, state) {
-  for (const tierList of Object.values(TOOL_TIERS)) {
-    const questIndex = tierList.indexOf(questName);
-    if (questIndex !== -1) {
-      return tierList.slice(questIndex).some(tool => countItem(bot, tool) > 0);
-    }
-  }
+  if (isQuestDirectlyMet(bot, questName, state)) return true;
+  if (PERSISTENT_GEAR_QUESTS.has(questName)) return false;
 
-  if (questName === 'furnace' || questName === 'crafting_table') {
-    const hasInInventory = countItem(bot, questName) > 0;
-    const isPlacedInBase = Boolean(state?.base?.[questName]);
-    const nearbyBlock = bot.findBlock({ matching: bot.registry.blocksByName[questName]?.id, maxDistance: 32 });
-    const hasAdvancedGear = questName === 'furnace' && (countItem(bot, 'iron_ingot') > 0 || countItem(bot, 'iron_pickaxe') > 0);
-    return hasInInventory || isPlacedInBase || Boolean(nearbyBlock) || hasAdvancedGear;
-  }
+  const questIndex = config.QUEST_CHAIN.indexOf(questName);
+  if (questIndex === -1) return false;
 
-  if (questName === 'raw_iron' || questName === 'iron_ore' || questName === 'iron_ingot') {
-    const required = config.QUEST_AMOUNT[questName] || 3;
-    const hasAdvancedGear = countItem(bot, 'iron_pickaxe') > 0 || countItem(bot, 'iron_sword') > 0 || countItem(bot, 'shield') > 0;
-    const hasIngots = countItem(bot, 'iron_ingot') >= (config.QUEST_AMOUNT.iron_ingot || 3);
-    const hasRaw = countItem(bot, 'raw_iron') >= required || countItem(bot, 'iron_ore') >= required;
-    return hasAdvancedGear || hasIngots || hasRaw;
-  }
-
-  if (questName === 'cobblestone') {
-    const required = config.QUEST_AMOUNT.cobblestone || 3;
-    return countItem(bot, 'cobblestone') >= required || countItem(bot, 'stone_pickaxe') > 0 || countItem(bot, 'iron_pickaxe') > 0;
-  }
-
-  // Validate bucket quest if empty or filled bucket is owned
-  if (questName === 'bucket') {
-    return countItem(bot, 'bucket') > 0 || countItem(bot, 'water_bucket') > 0 || countItem(bot, 'lava_bucket') > 0;
-  }
-
-  // Validate water_bucket quest if water bucket is owned or already inside Nether
-  if (questName === 'water_bucket') {
-    return countItem(bot, 'water_bucket') > 0 || bot.game?.dimension === 'the_nether' || countItem(bot, 'blaze_rod') > 0;
-  }
-
-  // Validate nether_portal quest once inside the Nether or holding blaze rods
-  if (questName === 'nether_portal') {
-    return bot.game?.dimension === 'the_nether' || countItem(bot, 'blaze_rod') > 0 || countItem(bot, 'blaze_powder') > 0 || countItem(bot, 'ender_eye') > 0;
-  }
-
-  // Validate blaze_rod quest even after rods are crafted into powder or eyes
-  if (questName === 'blaze_rod') {
-    const required = config.QUEST_AMOUNT.blaze_rod || 7;
-    const equivalentRods = countItem(bot, 'blaze_rod') + Math.ceil((countItem(bot, 'blaze_powder') + countItem(bot, 'ender_eye')) / 2);
-    return equivalentRods >= required;
-  }
-
-  // Validate blaze_powder quest even after powder is crafted into ender eyes
-  if (questName === 'blaze_powder') {
-    const required = config.QUEST_AMOUNT.blaze_powder || 12;
-    return (countItem(bot, 'blaze_powder') + countItem(bot, 'ender_eye')) >= required;
-  }
-
-  return countItem(bot, questName) >= (config.QUEST_AMOUNT[questName] || 1);
+  return config.QUEST_CHAIN.slice(questIndex + 1).some(laterQuest => isQuestDirectlyMet(bot, laterQuest, state));
 }
 
 /**
@@ -231,6 +225,7 @@ function syncObjective(bot, state) {
   if (state.manualObjective) return;
 
   if (state.completedQuests) {
+    state.completedQuests.clear();
     for (const name of config.QUEST_CHAIN) {
       if (isQuestDone(bot, name, state)) {
         state.completedQuests.add(name);
@@ -238,10 +233,7 @@ function syncObjective(bot, state) {
     }
   }
 
-  const nextObjective = config.QUEST_CHAIN.find(name => {
-    if (state.completedQuests?.has(name)) return false;
-    return !isQuestDone(bot, name, state);
-  }) || config.QUEST_CHAIN.at(-1);
+  const nextObjective = config.QUEST_CHAIN.find(name => !state.completedQuests?.has(name)) || config.QUEST_CHAIN.at(-1);
 
   if (nextObjective !== state.currentObjective) {
     const previousObjective = state.currentObjective;
@@ -277,6 +269,29 @@ function getInventorySummary(bot) {
 }
 
 /**
+ * Resolve craft availability label for a single item
+ * @param {object} bot Mineflayer bot instance
+ * @param {string} itemName Item name to evaluate
+ * @param {object|null} craftingTable Placed crafting table block if available
+ * @param {object|null} dummyTable Virtual or placed table for recipe lookup
+ * @returns {string|null} Craftable label or null if not craftable
+ */
+function resolveCraftEntry(bot, itemName, craftingTable, dummyTable) {
+  const itemDefinition = bot.registry.itemsByName[itemName];
+  if (!itemDefinition) return null;
+
+  if (bot.recipesFor(itemDefinition.id, null, 1, null).length > 0) {
+    return itemName;
+  }
+
+  if (dummyTable && bot.recipesFor(itemDefinition.id, null, 1, dummyTable).length > 0) {
+    return craftingTable ? itemName : `${itemName} (nécessite de poser ton établi d'abord)`;
+  }
+
+  return null;
+}
+
+/**
  * Return list of crafts immediately craftable with current inventory
  * @param {object} bot Mineflayer bot instance
  * @param {object|null} craftingTable Placed crafting table block nearby if available
@@ -290,35 +305,15 @@ function getAvailableCrafts(bot, craftingTable) {
     'iron_pickaxe', 'iron_axe', 'iron_sword', 'shield',
     'flint_and_steel', 'blaze_powder', 'ender_eye'
   ];
-  const availableCrafts = [];
-  const hasCraftingTableInInventory = countItem(bot, 'crafting_table') > 0;
-  const dummyTable = craftingTable || (hasCraftingTableInInventory ? { type: bot.registry.blocksByName['crafting_table']?.id, name: 'crafting_table' } : null);
+  const hasTableInInv = countItem(bot, 'crafting_table') > 0;
+  const dummyTable = craftingTable || (hasTableInInv ? { type: bot.registry.blocksByName['crafting_table']?.id, name: 'crafting_table' } : null);
 
-  for (const itemName of targetItemsToCheck) {
-    const itemDefinition = bot.registry.itemsByName[itemName];
-    if (!itemDefinition) continue;
-
-    const recipesInInventoryGrid = bot.recipesFor(itemDefinition.id, null, 1, null);
-    if (recipesInInventoryGrid.length > 0) {
-      availableCrafts.push(itemName);
-      continue;
-    }
-
-    if (dummyTable) {
-      const recipesWithTable = bot.recipesFor(itemDefinition.id, null, 1, dummyTable);
-      if (recipesWithTable.length > 0) {
-        if (!craftingTable) {
-          availableCrafts.push(`${itemName} (nécessite de poser ton établi d'abord)`);
-        } else {
-          availableCrafts.push(itemName);
-        }
-      }
-    }
-  }
+  const availableCrafts = targetItemsToCheck
+    .map(itemName => resolveCraftEntry(bot, itemName, craftingTable, dummyTable))
+    .filter(Boolean);
 
   // Provide generic planks craft option if any wood plank variety is available
-  const canCraftAnyPlanks = availableCrafts.some(craft => isPlanks(craft));
-  if (canCraftAnyPlanks && !availableCrafts.includes('planks')) {
+  if (availableCrafts.some(craft => isPlanks(craft)) && !availableCrafts.includes('planks')) {
     availableCrafts.unshift('planks');
   }
 
@@ -328,6 +323,12 @@ function getAvailableCrafts(bot, craftingTable) {
 const PICKAXE_ORDER = ['netherite_pickaxe', 'diamond_pickaxe', 'iron_pickaxe', 'golden_pickaxe', 'stone_pickaxe', 'wooden_pickaxe'];
 const AXE_ORDER = ['netherite_axe', 'diamond_axe', 'iron_axe', 'golden_axe', 'stone_axe', 'wooden_axe'];
 const SHOVEL_ORDER = ['netherite_shovel', 'diamond_shovel', 'iron_shovel', 'golden_shovel', 'stone_shovel', 'wooden_shovel'];
+
+const BLOCK_TOOL_GROUPS = [
+  { keywords: ['stone', 'cobble', 'ore', 'deepslate', 'debris', 'obsidian', 'brick', 'furnace'], tools: PICKAXE_ORDER },
+  { keywords: ['log', 'wood', 'planks', 'crafting_table', 'fence', 'chest'], tools: AXE_ORDER },
+  { keywords: ['dirt', 'grass', 'sand', 'gravel', 'clay', 'mud'], tools: SHOVEL_ORDER }
+];
 
 /**
  * Select the best tool in inventory to mine a specific block
@@ -339,25 +340,14 @@ function getBestToolForBlock(bot, block) {
   const inventoryItems = bot.inventory.items();
   const blockName = block?.name || '';
 
-  if (blockName.includes('stone') || blockName.includes('cobble') || blockName.includes('ore') || blockName.includes('deepslate') || blockName.includes('debris') || blockName.includes('obsidian') || blockName.includes('brick') || blockName.includes('furnace')) {
-    for (const toolName of PICKAXE_ORDER) {
-      const toolItem = inventoryItems.find(item => item.name === toolName);
-      if (toolItem) return toolItem;
-    }
-  }
+  const matchingGroup = BLOCK_TOOL_GROUPS.find(group =>
+    group.keywords.some(keyword => blockName.includes(keyword))
+  );
+  if (!matchingGroup) return null;
 
-  if (blockName.includes('log') || blockName.includes('wood') || blockName.includes('planks') || blockName === 'crafting_table' || blockName.includes('fence') || blockName.includes('chest')) {
-    for (const toolName of AXE_ORDER) {
-      const toolItem = inventoryItems.find(item => item.name === toolName);
-      if (toolItem) return toolItem;
-    }
-  }
-
-  if (blockName.includes('dirt') || blockName.includes('grass') || blockName.includes('sand') || blockName.includes('gravel') || blockName.includes('clay') || blockName.includes('mud')) {
-    for (const toolName of SHOVEL_ORDER) {
-      const toolItem = inventoryItems.find(item => item.name === toolName);
-      if (toolItem) return toolItem;
-    }
+  for (const toolName of matchingGroup.tools) {
+    const toolItem = inventoryItems.find(item => item.name === toolName);
+    if (toolItem) return toolItem;
   }
 
   return null;

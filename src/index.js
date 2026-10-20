@@ -10,22 +10,36 @@ const { checkAdvancementMessage } = require('./utils/advancements');
 const bot = mineflayer.createBot(config.BOT_CONFIG);
 bot.loadPlugin(pathfinder);
 
-// Handle bot spawn and initial setup on server
-bot.on('spawn', () => {
-  console.log('✅ Bot connected successfully!');
+const AUTH_SUCCESS_PATTERNS = ['successful login', 'successfully registered', 'already logged in', 'connexion réussie', 'logged in!'];
+const AUTH_IGNORE_PATTERNS = ['already have registered', 'please, login', '/login'];
+let shouldResumeAfterDeath = false;
 
-  // Authenticate bot via AuthMe with safety delay
-  const pwd = config.AUTH_PASSWORD;
-  if (pwd) {
-    setTimeout(() => {
-      bot.chat(`/register ${pwd} ${pwd}`);
-      setTimeout(() => {
-        bot.chat(`/login ${pwd}`);
-        console.log(`🔑 Authentication attempt sent.`);
-      }, 1000);
-    }, 1500);
-  }
+/**
+ * Check whether a server message confirms successful authentication
+ * @param {string} text Lowercase server message
+ * @returns {boolean} True if authenticated
+ */
+function isAuthConfirmed(text) {
+  return !AUTH_IGNORE_PATTERNS.some(p => text.includes(p)) && AUTH_SUCCESS_PATTERNS.some(p => text.includes(p));
+}
 
+/**
+ * Synchronize inventory progression and start or resume autonomous survival loop
+ */
+function launchAutonomousLoop() {
+  setTimeout(() => {
+    syncObjective(bot, state);
+    state.hasStarted = true;
+    state.isSurviving = true;
+    console.log(`🚀 Autonomous mode active. Objective : ${state.currentObjective}`);
+    bot.chat("Autonomous ReAct mode ready. Objective : " + state.currentObjective);
+    void startManagerLoop(bot);
+    void handleSurvivalRequest(bot);
+  }, 600);
+}
+
+// Configure movement rules and water physics once upon initial spawn
+bot.once('spawn', () => {
   const mcData = require("minecraft-data")(bot.version);
   const defaultMove = new Movements(bot, mcData);
   defaultMove.allowFreeClear = true; // Clear tall grass during movement
@@ -47,13 +61,27 @@ bot.on('spawn', () => {
       bot.setControlState('jump', false);
     }
   });
+});
 
-  if (!pwd && !state.hasStarted) {
-    state.hasStarted = true;
-    state.isSurviving = true;
-    bot.chat("Autonomous ReAct mode ready. Objective : " + state.currentObjective);
-    void startManagerLoop(bot);
-    void handleSurvivalRequest(bot);
+// Handle bot spawn and respawn events on server
+bot.on('spawn', () => {
+  console.log('✅ Bot spawned on server!');
+
+  if (shouldResumeAfterDeath) {
+    shouldResumeAfterDeath = false;
+    launchAutonomousLoop();
+    return;
+  }
+
+  // Authenticate bot via AuthMe with safety delay
+  const pwd = config.AUTH_PASSWORD;
+  if (pwd && !state.hasStarted) {
+    setTimeout(() => {
+      bot.chat(`/login ${pwd}`);
+      console.log(`🔑 Authentication attempt sent.`);
+    }, 1500);
+  } else if (!pwd && !state.hasStarted) {
+    launchAutonomousLoop();
   }
 });
 
@@ -68,19 +96,43 @@ bot.on('messagestr', (message) => {
     bot.chat(`/login ${pwd}`);
   }
 
-  if (text.includes('successful') || text.includes('succès') || text.includes('logged in') || text.includes('registered')) {
-    if (!state.hasStarted) {
-      state.hasStarted = true;
-      state.isSurviving = true;
-      console.log("🚀 Connection confirmed by server! Launching autonomous mode.");
-      bot.chat("Autonomous ReAct mode ready. Objective : " + state.currentObjective);
-      void startManagerLoop(bot);
-      void handleSurvivalRequest(bot);
-    }
+  if (isAuthConfirmed(text) && !state.hasStarted) {
+    console.log("🚀 Connection confirmed by server! Launching autonomous mode.");
+    launchAutonomousLoop();
   }
 
   checkAdvancementMessage(bot, state, message);
 });
+
+/**
+ * Update manual or automatic objective from player chat command
+ * @param {string} message Raw chat command
+ */
+function handleGoalCommand(message) {
+  const newGoal = message.split(' ')[1]?.trim();
+  if (newGoal === 'auto') {
+    state.manualObjective = false;
+    syncObjective(bot, state);
+    bot.chat(`Automatic progression. Objective : ${state.currentObjective}`);
+  } else if (newGoal) {
+    state.manualObjective = true;
+    state.currentObjective = newGoal;
+    bot.chat(`New objective registered : ${state.currentObjective}`);
+  }
+}
+
+/**
+ * Report current bot inventory contents in chat
+ */
+function reportInventoryInChat() {
+  const items = (bot.inventory?.slots || []).filter(Boolean);
+  if (items.length === 0) {
+    bot.chat("My pockets are completely empty!");
+  } else {
+    const list = items.map(item => `${item.count}x ${item.name}`).join(', ');
+    bot.chat(`Inventory : ${list}`);
+  }
+}
 
 // Handle player control commands from chat
 bot.on('chat', async (username, message) => {
@@ -88,12 +140,12 @@ bot.on('chat', async (username, message) => {
   // Log chat messages for debugging
   console.log(`[CHAT SERVER] ${username ? username + ': ' : ''}${message}`);
 
-  if (message === 'start') {
-    if (state.isSurviving) return;
+  if (message === 'start' && !state.isSurviving) {
     state.isSurviving = true;
     bot.chat("Starting autonomous mode.");
     void startManagerLoop(bot);
     await handleSurvivalRequest(bot);
+    return;
   }
 
   if (message === 'stop') {
@@ -101,34 +153,23 @@ bot.on('chat', async (username, message) => {
     bot.pathfinder.setGoal(null);
     bot.clearControlStates();
     bot.chat("Stopping autonomous mode.");
+    return;
   }
 
   if (message.startsWith('objectif ') || message.startsWith('goal ')) {
-    const newGoal = message.split(' ')[1]?.trim();
-    if (newGoal === 'auto') {
-      state.manualObjective = false;
-      syncObjective(bot, state);
-      bot.chat(`Automatic progression. Objective : ${state.currentObjective}`);
-    } else if (newGoal) {
-      state.manualObjective = true;
-      state.currentObjective = newGoal;
-      bot.chat(`New objective registered : ${state.currentObjective}`);
-    }
+    handleGoalCommand(message);
+    return;
   }
 
   if (message === 'inventaire' || message === 'inv') {
-    const items = (bot.inventory?.slots || []).filter(Boolean);
-    if (items.length === 0) {
-      bot.chat("My pockets are completely empty!");
-    } else {
-      const list = items.map(item => `${item.count}x ${item.name}`).join(', ');
-      bot.chat(`Inventory : ${list}`);
-    }
+    reportInventoryInChat();
+    return;
   }
 
   if (message === 'coords' || message === 'pos') {
     const pos = bot.entity.position.floored();
     bot.chat(`Current coordinates : X:${pos.x}, Y:${pos.y}, Z:${pos.z}`);
+    return;
   }
 
   if (message === 'tokens' || message === 'token') {
@@ -137,10 +178,15 @@ bot.on('chat', async (username, message) => {
   }
 });
 
-// Suspend autonomous survival on bot death
+// Suspend autonomous survival on bot death and schedule respawn recovery
 bot.on('death', () => {
+  shouldResumeAfterDeath = state.isSurviving;
   state.isSurviving = false;
-  bot.chat("Bot died, autonomous mode suspended.");
+  state.activeActionId = (state.activeActionId || 0) + 1;
+  state.lastDeathPosition = bot.entity?.position ? bot.entity.position.clone() : null;
+  bot.pathfinder.setGoal(null);
+  bot.clearControlStates();
+  bot.chat("Bot died, waiting for respawn to resume progression.");
 });
 
 // Display formatted server messages
