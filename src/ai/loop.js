@@ -1,6 +1,6 @@
 const state = require('../state');
 const config = require('../config');
-const { syncObjective } = require('../utils/inventory');
+const { syncObjective, findNearbyCraftingTable } = require('../utils/inventory');
 const { scanEnvironment } = require('../utils/environment');
 const { buildReactPrompt } = require('./prompt');
 const { askOllama } = require('./ollama');
@@ -16,12 +16,7 @@ const ACTION_TIMEOUT_MS = 45000;
  * @returns {object|null} Crafting table block or null
  */
 function findAvailableCraftingTable(bot) {
-  const tableId = bot.registry.blocksByName['crafting_table']?.id;
-  const nearbyTable = tableId ? bot.findBlock({ matching: tableId, maxDistance: 48 }) : null;
-  if (nearbyTable || !state.base.crafting_table) return nearbyTable;
-
-  const baseTable = bot.blockAt(state.base.crafting_table);
-  return baseTable?.name === 'crafting_table' ? baseTable : null;
+  return findNearbyCraftingTable(bot, state);
 }
 
 /**

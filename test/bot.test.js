@@ -110,3 +110,35 @@ test('Wiki, Manager sanitization, and ReAct prompt generation work offline', () 
   assert.equal(fallbackDecision.action, 'mine');
   assert.equal(fallbackDecision.target, 'iron_ore');
 });
+
+test('Crafting table detection uses unified range, checks base coordinates, and clears missing table', () => {
+  const bot = createMockBot([
+    { name: 'oak_planks', count: 3 },
+    { name: 'stick', count: 2 }
+  ]);
+  const tablePos = { x: 20, y: 64, z: 0 };
+  state.base.crafting_table = tablePos;
+  bot.entity.position.distanceTo = (target) => Math.hypot(target.x, target.z);
+  bot.blockAt = (pos) => (pos === tablePos ? { name: 'crafting_table', position: tablePos } : { name: 'air' });
+  bot.recipesFor = (id, _meta, _count, table) => (table ? [{ id }] : []);
+
+  const table = invUtils.findNearbyCraftingTable(bot, state);
+  assert.equal(table?.name, 'crafting_table');
+
+  const sanitized = manager.sanitizeManagerOutput(bot, {
+    suggestedAction: 'craft',
+    suggestedTarget: 'wooden_pickaxe',
+    directive: 'Craft wooden pickaxe'
+  });
+  assert.equal(sanitized.suggestedAction, 'craft');
+  assert.equal(sanitized.suggestedTarget, 'wooden_pickaxe');
+
+  const farPos = { x: 40, y: 64, z: 0 };
+  state.base.crafting_table = farPos;
+  bot.blockAt = (pos) => (pos === farPos ? { name: 'crafting_table', position: farPos } : { name: 'air' });
+  assert.equal(invUtils.findNearbyCraftingTable(bot, state), null);
+
+  bot.blockAt = () => ({ name: 'air' });
+  assert.equal(invUtils.findNearbyCraftingTable(bot, state), null);
+  assert.equal(state.base.crafting_table, null);
+});

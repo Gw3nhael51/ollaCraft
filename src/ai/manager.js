@@ -45,8 +45,7 @@ function detectActionLoop(actionHistory) {
  * @returns {{ action: string, target: string, directive: string }}
  */
 function sanitizeCraftDecision(bot, target, directive) {
-  const tableId = bot.registry.blocksByName['crafting_table']?.id;
-  const table = tableId ? bot.findBlock({ matching: tableId, maxDistance: 16 }) : null;
+  const table = invUtils.findNearbyCraftingTable(bot, state);
   const available = invUtils.getAvailableCrafts(bot, table);
 
   const isPlankRequested = invUtils.isPlanks(target);

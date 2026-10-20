@@ -269,6 +269,33 @@ function getInventorySummary(bot) {
 }
 
 /**
+ * Locate a placed crafting table within reach or remembered in base state
+ * @param {object} bot Mineflayer bot instance
+ * @param {object} [state] Global bot state
+ * @param {number} [maxDistance] Maximum detection distance
+ * @returns {object|null} Located crafting table block or null
+ */
+function findNearbyCraftingTable(bot, state, maxDistance = config.CRAFTING_TABLE_RANGE) {
+  const tableId = bot.registry?.blocksByName?.crafting_table?.id;
+  const nearby = tableId ? bot.findBlock({ matching: tableId, maxDistance }) : null;
+  if (nearby || !state?.base?.crafting_table) return nearby;
+
+  const basePos = state.base.crafting_table;
+  const baseTableBlock = bot.blockAt(basePos);
+  if (!baseTableBlock) return null;
+
+  // Nettoyer : Réinitialiser la position mémorisée si l'établi a été récupéré
+  if (baseTableBlock.name !== 'crafting_table') {
+    state.base.crafting_table = null;
+    return null;
+  }
+
+  const targetPos = baseTableBlock.position || basePos;
+  const dist = bot.entity?.position?.distanceTo ? bot.entity.position.distanceTo(targetPos) : 0;
+  return dist <= maxDistance ? baseTableBlock : null;
+}
+
+/**
  * Resolve craft availability label for a single item
  * @param {object} bot Mineflayer bot instance
  * @param {string} itemName Item name to evaluate
@@ -360,6 +387,7 @@ module.exports = {
   isQuestDone,
   syncObjective,
   getInventorySummary,
+  findNearbyCraftingTable,
   getAvailableCrafts,
   getBestToolForBlock,
   isWoodLog,

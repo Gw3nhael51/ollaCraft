@@ -1,6 +1,6 @@
 const { goals } = require('mineflayer-pathfinder');
 const config = require('../config');
-const { countItem, isWoodLog, isPlanks, resolvePlankTarget } = require('../utils/inventory');
+const { countItem, isWoodLog, isPlanks, resolvePlankTarget, findNearbyCraftingTable } = require('../utils/inventory');
 
 /**
  * Validate early crafting prerequisites before looking up recipes
@@ -34,22 +34,6 @@ function checkCraftPreconditions(bot, targetName, item) {
   }
 
   return null;
-}
-
-/**
- * Locate a placed crafting table within reach or remembered in base state
- * @param {object} bot Mineflayer bot instance
- * @param {object} state Global bot state
- * @returns {object|null} Located crafting table block or null
- */
-function findNearbyCraftingTable(bot, state) {
-  const craftingTableBlockId = bot.registry.blocksByName.crafting_table?.id;
-  const nearby = craftingTableBlockId ? bot.findBlock({ matching: craftingTableBlockId, maxDistance: 24 }) : null;
-  if (nearby || !state?.base?.crafting_table) return nearby;
-
-  const baseTableBlock = bot.blockAt(state.base.crafting_table);
-  const dist = baseTableBlock ? bot.entity.position.distanceTo(baseTableBlock.position) : Infinity;
-  return baseTableBlock?.name === 'crafting_table' && dist <= 24 ? baseTableBlock : null;
 }
 
 /**

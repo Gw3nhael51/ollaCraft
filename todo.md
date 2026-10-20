@@ -10,7 +10,7 @@
 
 ## 🛠️ Priorité P1 : Corrections Gameplay & Compétences
 - [x] **Exploitation de `state.managerSubGoal` (`src/ai/loop.js` & `src/ai/manager.js`)** : Utiliser `state.managerSubGoal` (actuellement calculé mais jamais lu) dans le prompt du joueur et comme action de *fallback* si l'appel LLM du joueur échoue.
-- [ ] **Harmonisation de la portée de détection de l'établi (`src/ai/manager.js`, `src/ai/loop.js`, `src/skills/craft.js`)** : Unifier la distance de recherche de `crafting_table` et prendre en compte `state.base.crafting_table` dans `sanitizeManagerOutput`.
+- [x] **Harmonisation de la portée de détection de l'établi (`src/ai/manager.js`, `src/ai/loop.js`, `src/skills/craft.js`)** : Unifier la distance de recherche de `crafting_table` et prendre en compte `state.base.crafting_table` dans `sanitizeManagerOutput`.
 - [ ] **Ajout de l'action `"wiki"` dans le Manager (`src/ai/manager.js`)** : Autoriser `"wiki"` dans la liste des `suggestedAction` du prompt Manager.
 - [ ] **Prise en compte de `qty` dans le craft (`src/skills/dispatcher.js` & `src/skills/craft.js`)** : Transmettre le paramètre `qty` à `skillCraft` et l'utiliser dans `bot.craft(recipes[0], qty, tableToUse)`.
 - [ ] **Cuisson multiple et gestion du combustible (`src/skills/smelt.js`)** : Calculer la quantité de combustible requise selon `qty`, attendre la cuisson complète de tous les items (au lieu de s'arrêter dès le 1er item produit) et adapter le timeout dynamiquement.
