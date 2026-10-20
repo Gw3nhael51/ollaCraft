@@ -23,6 +23,97 @@ async function collectDrops(bot, position) {
 }
 
 /**
+ * Equip the optimal mining tool for a block if available in inventory
+ * @param {object} bot Mineflayer bot instance
+ * @param {object} block Target block to mine
+ */
+async function equipBestMiningTool(bot, block) {
+  const bestTool = getBestToolForBlock(bot, block);
+  if (bestTool) {
+    try {
+      await bot.equip(bestTool, 'hand');
+    } catch {
+      // Ignore equipping error if tool is already held
+    }
+  }
+}
+
+/**
+ * Locate the closest valid and reachable target block for mining
+ * @param {object} bot Mineflayer bot instance
+ * @param {string} targetName Targeted resource name
+ * @param {boolean} isOpportunistic Whether searching for any exposed ore
+ * @returns {object|null} Matching block or null
+ */
+function findMineableTargetBlock(bot, targetName, isOpportunistic) {
+  const candidateBlockNames = isOpportunistic ? VALUABLE_ORES : new Set(getBlockNamesForTarget(bot, targetName));
+  return bot.findBlock({
+    matching: (block) => {
+      if (!block?.position) return candidateBlockNames.has(block?.name);
+      if (!candidateBlockNames.has(block.name) || GLOBAL_BAD_BLOCKS.has(getPosKey(block.position))) return false;
+      return !isOpportunistic || (isBlockExposedToAir(bot, block) && canHarvestBlock(bot, block).canHarvest);
+    },
+    maxDistance: 30
+  });
+}
+
+/**
+ * Compute how many expected drop items were added to inventory after breaking a block
+ * @param {object} bot Mineflayer bot instance
+ * @param {string[]} expectedDrops List of expected drop item names
+ * @param {Map<string, number>} initialCounts Initial counts before mining
+ * @returns {{ collectedItemName: string|null, collectedQuantity: number }}
+ */
+function measureCollectedDrops(bot, expectedDrops, initialCounts) {
+  for (const dropName of expectedDrops) {
+    const difference = countItem(bot, dropName) - (initialCounts.get(dropName) || 0);
+    if (difference > 0) {
+      return { collectedItemName: dropName, collectedQuantity: difference };
+    }
+  }
+  return { collectedItemName: null, collectedQuantity: 0 };
+}
+
+/**
+ * Navigate to target block, break it, and vacuum its drops
+ * @param {object} bot Mineflayer bot instance
+ * @param {object} targetBlock Block to approach and break
+ * @param {object|null} state Global bot state
+ * @param {number} actionId Active action identifier
+ * @returns {Promise<{ cancelled: boolean, blockToBreak?: object }>}
+ */
+async function approachAndBreakBlock(bot, targetBlock, state, actionId) {
+  const { GoalNear } = goals;
+  console.log(`[MINE] Moving towards ${targetBlock.name}...`);
+  const gotoPromise = bot.pathfinder.goto(new GoalNear(targetBlock.position.x, targetBlock.position.y, targetBlock.position.z, 2));
+  const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error("Navigation timeout")), 15000));
+  await Promise.race([gotoPromise, timeoutPromise]);
+
+  if (state && state.activeActionId !== actionId) return { cancelled: true };
+
+  bot.pathfinder.setGoal(null);
+  bot.clearControlStates();
+
+  const blockToBreak = bot.blockAt(targetBlock.position);
+  await bot.lookAt(targetBlock.position.offset(0.5, 0.5, 0.5));
+  await equipBestMiningTool(bot, blockToBreak);
+
+  console.log(`[MINE] Digging ${targetBlock.name}...`);
+  const digPromise = bot.dig(blockToBreak);
+  const digTimeout = new Promise((_, reject) => setTimeout(() => reject(new Error("Digging timeout")), 10000));
+  await Promise.race([digPromise, digTimeout]);
+  console.log(`[MINE] Block broken, collecting loot...`);
+
+  if (state && state.activeActionId !== actionId) return { cancelled: true };
+
+  await bot.pathfinder.goto(new GoalNear(targetBlock.position.x, targetBlock.position.y, targetBlock.position.z, 1)).catch(() => {});
+  await collectDrops(bot, targetBlock.position);
+  await bot.waitForTicks(6);
+
+  return { cancelled: false, blockToBreak };
+}
+
+/**
  * Target, approach, and mine a single block matching requested resource
  * @param {object} bot Mineflayer bot instance
  * @param {string} targetName Targeted resource name
@@ -36,105 +127,29 @@ async function mineSingleTarget(bot, targetName, state = null, actionId = 0) {
   }
 
   const isOpportunistic = targetName === 'opportuniste' || targetName === 'ore' || targetName === 'ores';
-  const candidateBlockNames = isOpportunistic ? VALUABLE_ORES : new Set(getBlockNamesForTarget(bot, targetName));
-
-  const targetBlock = bot.findBlock({
-    matching: (block) => {
-      if (!block?.position) return candidateBlockNames.has(block?.name);
-      if (!candidateBlockNames.has(block.name) || GLOBAL_BAD_BLOCKS.has(getPosKey(block.position))) return false;
-      if (isOpportunistic) {
-        return isBlockExposedToAir(bot, block) && canHarvestBlock(bot, block).canHarvest;
-      }
-      return true;
-    },
-    maxDistance: 30
-  });
+  const targetBlock = findMineableTargetBlock(bot, targetName, isOpportunistic);
 
   if (!targetBlock) {
     const errorTarget = isOpportunistic ? 'exposed ore' : targetName;
     return { success: false, empty: true, message: `No block matching '${errorTarget}' found nearby.` };
   }
 
-  // Verify required tool according to wiki harvest rules
   const harvestCheck = canHarvestBlock(bot, targetBlock);
   if (!harvestCheck.canHarvest) {
     return { success: false, empty: false, message: harvestCheck.message };
   }
 
-  const bestTool = getBestToolForBlock(bot, targetBlock);
-  if (bestTool) {
-    try {
-      await bot.equip(bestTool, 'hand');
-    } catch {
-      // Ignore tool equipping error if already held in hand
-    }
-  }
-
+  await equipBestMiningTool(bot, targetBlock);
   const expectedDrops = getBlockDrops(bot, targetBlock.name);
   const initialCounts = new Map(expectedDrops.map(name => [name, countItem(bot, name)]));
 
   try {
-    const { GoalNear } = goals;
-
-    console.log(`[MINE] Moving towards ${targetBlock.name}...`);
-    const gotoPromise = bot.pathfinder.goto(new GoalNear(targetBlock.position.x, targetBlock.position.y, targetBlock.position.z, 2));
-    const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error("Navigation timeout")), 15000));
-    await Promise.race([gotoPromise, timeoutPromise]);
-
-    if (state && state.activeActionId !== actionId) {
+    const { cancelled, blockToBreak } = await approachAndBreakBlock(bot, targetBlock, state, actionId);
+    if (cancelled) {
       return { success: false, empty: true, message: "Action cancelled." };
     }
 
-    bot.pathfinder.setGoal(null);
-    bot.clearControlStates();
-
-    const blockToBreak = bot.blockAt(targetBlock.position);
-    await bot.lookAt(targetBlock.position.offset(0.5, 0.5, 0.5));
-
-    const finalTool = getBestToolForBlock(bot, blockToBreak);
-    if (finalTool) {
-      try {
-        await bot.equip(finalTool, 'hand');
-      } catch {
-        // Ignore equipping error
-      }
-    }
-
-    console.log(`[MINE] Digging ${targetBlock.name}...`);
-    const digPromise = bot.dig(blockToBreak);
-    const digTimeout = new Promise((_, reject) => setTimeout(() => reject(new Error("Digging timeout")), 10000));
-    await Promise.race([digPromise, digTimeout]);
-    console.log(`[MINE] Block broken, collecting loot...`);
-
-    if (state && state.activeActionId !== actionId) {
-      return { success: false, empty: true, message: "Action cancelled." };
-    }
-
-    try {
-      await bot.pathfinder.goto(new GoalNear(targetBlock.position.x, targetBlock.position.y, targetBlock.position.z, 1));
-    } catch {
-      // Continue item collection despite slight navigation offset
-    }
-
-    await collectDrops(bot, targetBlock.position);
-
-    // Wait for inventory update packets
-    await bot.waitForTicks(6);
-
-    let collectedItemName = null;
-    let collectedQuantity = 0;
-
-    for (const dropName of expectedDrops) {
-      const currentCount = countItem(bot, dropName);
-      const initialCount = initialCounts.get(dropName) || 0;
-      const difference = currentCount - initialCount;
-      if (difference > 0) {
-        collectedItemName = dropName;
-        collectedQuantity = difference;
-        break;
-      }
-    }
-
+    const { collectedItemName, collectedQuantity } = measureCollectedDrops(bot, expectedDrops, initialCounts);
     if (collectedQuantity <= 0) {
       return {
         success: false,
@@ -143,11 +158,10 @@ async function mineSingleTarget(bot, targetName, state = null, actionId = 0) {
       };
     }
 
-    // Extract immediately adjacent blocks from the same vein
-    let veinExtraCount = 0;
-    if (VALUABLE_ORES.has(blockToBreak.name) && (!state || state.activeActionId === actionId)) {
-      veinExtraCount = await harvestConnectedVein(bot, targetBlock.position, blockToBreak.name, 6, state, actionId);
-    }
+    const shouldExtractVein = VALUABLE_ORES.has(blockToBreak.name) && (!state || state.activeActionId === actionId);
+    const veinExtraCount = shouldExtractVein
+      ? await harvestConnectedVein(bot, targetBlock.position, blockToBreak.name, 6, state, actionId)
+      : 0;
 
     const totalCollected = collectedQuantity + veinExtraCount;
     const veinMsg = veinExtraCount > 0 ? ` (+${veinExtraCount} vein block(s))` : '';
@@ -207,6 +221,28 @@ async function mineVeinBlock(bot, neighborPos, neighborBlock) {
 }
 
 /**
+ * Check whether an adjacent vein block is harvestable and not touching lava
+ * @param {object} bot Mineflayer bot instance
+ * @param {object} neighborPos Position of the candidate vein block
+ * @param {string} key Position key string
+ * @param {object} veinState Vein exploration state
+ * @returns {object|null} Valid neighbor block or null
+ */
+function getSafeVeinNeighbor(bot, neighborPos, key, veinState) {
+  if (GLOBAL_BAD_BLOCKS.has(key)) return null;
+  const neighborBlock = bot.blockAt(neighborPos);
+  if (!neighborBlock || !veinState.targetTypes.has(neighborBlock.name)) return null;
+  if (!canHarvestBlock(bot, neighborBlock).canHarvest) return null;
+
+  const touchesLava = VEIN_DIRECTIONS.some(d => {
+    const checkBlock = bot.blockAt(neighborPos.plus(d));
+    return checkBlock && (checkBlock.name === 'lava' || checkBlock.name === 'flowing_lava');
+  });
+
+  return touchesLava ? null : neighborBlock;
+}
+
+/**
  * Explore directions sequentially around a vein block
  * @param {object} bot Mineflayer bot instance
  * @param {object} current Center block position
@@ -223,31 +259,15 @@ async function exploreVeinDirections(bot, current, dirIndex, veinState) {
     return veinState.harvested;
   }
 
-  const dir = VEIN_DIRECTIONS[dirIndex];
-  const neighborPos = current.plus(dir);
+  const neighborPos = current.plus(VEIN_DIRECTIONS[dirIndex]);
   const key = getPosKey(neighborPos);
 
   if (!veinState.visited.has(key)) {
     veinState.visited.add(key);
-
-    const neighborBlock = bot.blockAt(neighborPos);
-    if (neighborBlock && veinState.targetTypes.has(neighborBlock.name) && !GLOBAL_BAD_BLOCKS.has(key)) {
-      const harvestCheck = canHarvestBlock(bot, neighborBlock);
-      if (harvestCheck.canHarvest) {
-        const touchesLava = VEIN_DIRECTIONS.some(d => {
-          const checkBlock = bot.blockAt(neighborPos.plus(d));
-          return checkBlock && (checkBlock.name === 'lava' || checkBlock.name === 'flowing_lava');
-        });
-
-        if (!touchesLava) {
-          const success = await mineVeinBlock(bot, neighborPos, neighborBlock);
-          if (success) {
-            veinState.queue.push(neighborPos);
-            veinState.harvested++;
-            return exploreVeinDirections(bot, current, dirIndex + 1, veinState);
-          }
-        }
-      }
+    const neighborBlock = getSafeVeinNeighbor(bot, neighborPos, key, veinState);
+    if (neighborBlock && await mineVeinBlock(bot, neighborPos, neighborBlock)) {
+      veinState.queue.push(neighborPos);
+      veinState.harvested++;
     }
   }
 

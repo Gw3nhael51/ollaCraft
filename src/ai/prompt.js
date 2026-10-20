@@ -36,47 +36,108 @@ function getObjectiveProgressText(bot, objectiveName) {
 }
 
 /**
+ * Format a primary crafting recipe into a concise WikiCraft description
+ * @param {object} mcData Minecraft data registry
+ * @param {object} primaryRecipe Recipe definition object
+ * @param {string} targetName Target item name
+ * @returns {string} Formatted crafting summary
+ */
+function formatRecipeSummary(mcData, primaryRecipe, targetName) {
+  const needsCraftingTable = primaryRecipe.inShape && (primaryRecipe.inShape.length > 2 || primaryRecipe.inShape[0].length > 2);
+  const rawIds = primaryRecipe.inShape ? primaryRecipe.inShape.flat().filter(Boolean) : (primaryRecipe.ingredients || []);
+  const countMap = {};
+
+  for (const id of rawIds) {
+    const name = mcData.items[id]?.name;
+    if (name) countMap[name] = (countMap[name] || 0) + 1;
+  }
+
+  const ingredientsSummary = Object.entries(countMap).map(([name, count]) => `${count}x ${name}`).join(' + ');
+  return `Fiche Wiki Craft : ${ingredientsSummary} -> ${primaryRecipe.result.count}x ${targetName} (Établi requis : ${needsCraftingTable ? 'Oui' : 'Non'}).`;
+}
+
+/**
  * Extract concise technical knowledge summary from WikiCraft for target item
  * @param {object} bot Mineflayer bot instance
  * @param {string} targetName Name of target item or block
  * @returns {string} Summary craft/harvest information
  */
 function getWikiKnowledgeSummary(bot, targetName) {
-  const mcData = getMcData(bot);
-  const itemDefinition = mcData.itemsByName[targetName];
-  const blockDefinition = mcData.blocksByName[targetName];
-
   if (targetName === 'iron_ingot') {
     return "Fiche Wiki : 'iron_ingot' s'obtient en faisant fondre du 'raw_iron' dans un four ('furnace') avec du combustible (bûches, planches ou charbon).";
   }
 
-  if (itemDefinition) {
-    const recipes = mcData.recipes[itemDefinition.id];
-    if (recipes && recipes.length > 0) {
-      const primaryRecipe = recipes[0];
-      const needsCraftingTable = primaryRecipe.inShape && (primaryRecipe.inShape.length > 2 || primaryRecipe.inShape[0].length > 2);
-      const ingredientsList = [];
+  const mcData = getMcData(bot);
+  const itemDefinition = mcData.itemsByName[targetName];
+  const recipes = itemDefinition ? mcData.recipes[itemDefinition.id] : null;
 
-      if (primaryRecipe.inShape) {
-        primaryRecipe.inShape.flat().filter(Boolean).forEach(id => ingredientsList.push(mcData.items[id]?.name));
-      } else if (primaryRecipe.ingredients) {
-        primaryRecipe.ingredients.forEach(id => ingredientsList.push(mcData.items[id]?.name));
-      }
-
-      const countMap = {};
-      ingredientsList.forEach(name => { countMap[name] = (countMap[name] || 0) + 1; });
-      const ingredientsSummary = Object.entries(countMap).map(([name, count]) => `${count}x ${name}`).join(' + ');
-
-      return `Fiche Wiki Craft : ${ingredientsSummary} -> ${primaryRecipe.result.count}x ${targetName} (Établi requis : ${needsCraftingTable ? 'Oui' : 'Non'}).`;
-    }
+  if (recipes?.length > 0) {
+    return formatRecipeSummary(mcData, recipes[0], targetName);
   }
 
+  const blockDefinition = mcData.blocksByName[targetName];
   if (blockDefinition?.harvestTools) {
     const validToolNames = Object.keys(blockDefinition.harvestTools).map(id => mcData.items[id]?.name).filter(Boolean);
     return `Fiche Wiki Minage : Nécessite l'un des outils suivants : ${validToolNames.slice(0, 3).join(', ')}.`;
   }
 
   return "Consulte le WikiCraft avec l'action 'wiki' si tu as le moindre doute.";
+}
+
+/**
+ * Format base station coordinates block for the prompt
+ * @param {object} base Base station coordinates map
+ * @returns {string} Formatted base coordinates text
+ */
+function formatBaseInfo(base) {
+  if (!base.crafting_table && !base.furnace && !base.chest) return "";
+
+  const lines = ["- COORDONNÉES DE LA BASE :"];
+  if (base.crafting_table) lines.push(`  * Établi (crafting_table) en : ${base.crafting_table.x}, ${base.crafting_table.y}, ${base.crafting_table.z}`);
+  if (base.furnace) lines.push(`  * Four (furnace) en : ${base.furnace.x}, ${base.furnace.y}, ${base.furnace.z}`);
+  if (base.chest) lines.push(`  * Coffre de stockage (chest) en : ${base.chest.x}, ${base.chest.y}, ${base.chest.z}`);
+  lines.push("  -> Utilise ces informations pour y retourner si besoin.");
+  return lines.join('\n');
+}
+
+/**
+ * Format visible ore classification summary for the prompt
+ * @param {Record<string, number>} harvestable Harvestable ores map
+ * @param {Record<string, { count: number, requiredTools: string[] }>} unharvestable Unharvestable ores map
+ * @returns {string} Formatted ore summary text
+ */
+function formatOrePromptText(harvestable, unharvestable) {
+  const harvestableKeys = Object.keys(harvestable);
+  const unharvestableKeys = Object.keys(unharvestable);
+  if (harvestableKeys.length === 0 && unharvestableKeys.length === 0) return "aucun";
+
+  const parts = [];
+  if (harvestableKeys.length > 0) {
+    const harvestableList = harvestableKeys.map(k => `${harvestable[k]}x ${k}`).join(', ');
+    parts.push(`Récoltables avec tes outils : ${harvestableList}`);
+  }
+  if (unharvestableKeys.length > 0) {
+    const summary = unharvestableKeys.map(k => {
+      const toolsDesc = unharvestable[k].requiredTools.slice(0, 2).join(' ou ');
+      return `${unharvestable[k].count}x ${k} (nécessite ${toolsDesc})`;
+    }).join(', ');
+    parts.push(`Visibles mais outil insuffisant : ${summary}`);
+  }
+  return parts.join(' | ');
+}
+
+/**
+ * Determine crafting table availability status string
+ * @param {object} bot Mineflayer bot instance
+ * @param {object|null} craftingTable Placed crafting table block
+ * @returns {string} Table status description
+ */
+function getTableStatusText(bot, craftingTable) {
+  if (craftingTable) return "Oui (à proximité)";
+  if (invUtils.countItem(bot, 'crafting_table') > 0) {
+    return "Non (dans tes poches ! Utilise 'place' avec cible 'crafting_table' pour le poser)";
+  }
+  return "Non (absent ou non posé)";
 }
 
 /**
@@ -97,49 +158,17 @@ function buildReactPrompt(bot, state, environment, craftingTable) {
   const progressText = getObjectiveProgressText(bot, state.currentObjective);
   const wikiSummary = getWikiKnowledgeSummary(bot, state.currentObjective);
   const currentBiome = envUtils.getCurrentBiome ? envUtils.getCurrentBiome(bot) : 'plains';
-
-  let tableStatus = "Non (absent ou non posé)";
-  if (craftingTable) {
-    tableStatus = "Oui (à proximité)";
-  } else if (invUtils.countItem(bot, 'crafting_table') > 0) {
-    tableStatus = "Non (dans tes poches ! Utilise 'place' avec cible 'crafting_table' pour le poser)";
-  }
-
+  const tableStatus = getTableStatusText(bot, craftingTable);
   const ownedTools = invUtils.getOwnedTools(bot);
   const toolsText = ownedTools.length > 0 ? ownedTools.join(', ') : 'aucun';
-
-  let baseInfo = "";
-  if (state.base.crafting_table || state.base.furnace) {
-    baseInfo = `- COORDONNÉES DE LA BASE :\n`;
-    if (state.base.crafting_table) baseInfo += `  * Établi (crafting_table) en : ${state.base.crafting_table.x}, ${state.base.crafting_table.y}, ${state.base.crafting_table.z}\n`;
-    if (state.base.furnace) baseInfo += `  * Four (furnace) en : ${state.base.furnace.x}, ${state.base.furnace.y}, ${state.base.furnace.z}\n`;
-    if (state.base.chest) baseInfo += `  * Coffre de stockage (chest) en : ${state.base.chest.x}, ${state.base.chest.y}, ${state.base.chest.z}\n`;
-    baseInfo += `  -> Utilise ces informations pour y retourner si besoin.`;
-  }
+  const baseInfo = formatBaseInfo(state.base);
 
   const nearbyEntities = envUtils.scanNearbyEntities ? envUtils.scanNearbyEntities(bot, 20) : {};
   const entitiesText = Object.keys(nearbyEntities).length > 0 ? JSON.stringify(nearbyEntities) : "aucune";
   const exposedOres = envUtils.scanExposedOres ? envUtils.scanExposedOres(bot, 16) : {};
   const { harvestable, unharvestable } = classifyOresByHarvestability(bot, exposedOres);
   const harvestableKeys = Object.keys(harvestable);
-  const unharvestableKeys = Object.keys(unharvestable);
-
-  let orePromptText = "aucun";
-  if (harvestableKeys.length > 0 || unharvestableKeys.length > 0) {
-    const parts = [];
-    if (harvestableKeys.length > 0) {
-      const harvestableSummary = harvestableKeys.map(k => `${harvestable[k]}x ${k}`).join(', ');
-      parts.push(`Récoltables avec tes outils : ${harvestableSummary}`);
-    }
-    if (unharvestableKeys.length > 0) {
-      const unharvestableSummary = unharvestableKeys.map(k => {
-        const toolsDesc = unharvestable[k].requiredTools.slice(0, 2).join(' ou ');
-        return `${unharvestable[k].count}x ${k} (nécessite ${toolsDesc})`;
-      }).join(', ');
-      parts.push(`Visibles mais outil insuffisant : ${unharvestableSummary}`);
-    }
-    orePromptText = parts.join(' | ');
-  }
+  const orePromptText = formatOrePromptText(harvestable, unharvestable);
 
   return `
     Tu es ${bot.username || 'Herobrine'}, un agent IA autonome dans Minecraft. Tu dois raisonner et t'adapter par toi-même.

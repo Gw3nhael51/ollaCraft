@@ -11,6 +11,109 @@ const { runManagerCycle } = require('./manager');
 const ACTION_TIMEOUT_MS = 45000;
 
 /**
+ * Locate a placed crafting table nearby or at the remembered base coordinates
+ * @param {object} bot Mineflayer bot instance
+ * @returns {object|null} Crafting table block or null
+ */
+function findAvailableCraftingTable(bot) {
+  const tableId = bot.registry.blocksByName['crafting_table']?.id;
+  const nearbyTable = tableId ? bot.findBlock({ matching: tableId, maxDistance: 48 }) : null;
+  if (nearbyTable || !state.base.crafting_table) return nearbyTable;
+
+  const baseTable = bot.blockAt(state.base.crafting_table);
+  return baseTable?.name === 'crafting_table' ? baseTable : null;
+}
+
+/**
+ * Safely abort ongoing digging, pathfinding, and open windows upon action timeout
+ * @param {object} bot Mineflayer bot instance
+ * @returns {Promise<{ success: boolean, message: string }>} Recovery result
+ */
+async function recoverFromActionTimeout(bot) {
+  // Invalidate action identifier to abort background recursive tasks
+  state.activeActionId = (state.activeActionId || 0) + 1;
+
+  // Forcefully cancel pathfinding and reset controls
+  bot.pathfinder.setGoal(null);
+  bot.clearControlStates();
+  try {
+    bot.stopDigging();
+  } catch {
+    // Ignore error if bot is not currently digging
+  }
+
+  // Close open container or crafting window if active
+  if (bot.currentWindow) {
+    try {
+      bot.closeWindow(bot.currentWindow);
+    } catch {
+      // Ignore error if window is already closed by server
+    }
+  }
+
+  // Execute emergency unstuck procedure to free bot
+  try {
+    console.log("[SAFETY] Executing emergency unstuck procedure...");
+    await skillUnstuck(bot);
+  } catch (unstuckError) {
+    console.warn("[SAFETY] Emergency unstuck failure:", unstuckError.message);
+  }
+
+  return {
+    success: false,
+    message: "Action timed out after maximum safety limit. Emergency unstuck executed."
+  };
+}
+
+/**
+ * Execute the selected skill with a safety timeout guard
+ * @param {object} bot Mineflayer bot instance
+ * @param {object} decision Validated AI decision
+ * @returns {Promise<{ success: boolean, message: string }>} Execution result
+ */
+async function executeDecisionWithTimeout(bot, decision) {
+  let actionTimer = null;
+  state.activeActionId = (state.activeActionId || 0) + 1;
+
+  const timeoutPromise = new Promise((_, reject) => {
+    actionTimer = setTimeout(() => {
+      reject(new Error("Action execution timeout exceeded"));
+    }, ACTION_TIMEOUT_MS);
+  });
+
+  try {
+    return await Promise.race([
+      dispatchSkill(bot, state, decision.action, decision.target, decision.qty || 1),
+      timeoutPromise
+    ]);
+  } catch (error) {
+    console.warn(`[TIMEOUT / ERROR] Action '${decision.action}' aborted:`, error.message);
+    return recoverFromActionTimeout(bot);
+  } finally {
+    if (actionTimer) clearTimeout(actionTimer);
+  }
+}
+
+/**
+ * Record action execution result into state memory and bounded history
+ * @param {object} decision Executed AI decision
+ * @param {{ success: boolean, message: string }} executionResult Skill result
+ */
+function recordActionResult(decision, executionResult) {
+  const entry = {
+    action: decision.action,
+    target: decision.target || 'none',
+    success: executionResult.success,
+    message: executionResult.message
+  };
+  state.lastActionResult = entry;
+  state.actionHistory.push({ ...entry });
+  if (state.actionHistory.length > 8) {
+    state.actionHistory.shift();
+  }
+}
+
+/**
  * Execute a complete ReAct thought and action cycle for autonomous survival
  * @param {object} bot Mineflayer bot instance
  * @returns {Promise<void>}
@@ -22,16 +125,9 @@ async function handleSurvivalRequest(bot) {
     syncObjective(bot, state);
 
     const environment = scanEnvironment(bot, 20);
-    const tableId = bot.registry.blocksByName['crafting_table']?.id;
-    let craftingTable = tableId ? bot.findBlock({ matching: tableId, maxDistance: 48 }) : null;
-    if (!craftingTable && state.base.crafting_table) {
-      const baseTable = bot.blockAt(state.base.crafting_table);
-      if (baseTable?.name === 'crafting_table') {
-        craftingTable = baseTable;
-      }
-    }
-
+    const craftingTable = findAvailableCraftingTable(bot);
     const prompt = buildReactPrompt(bot, state, environment, craftingTable);
+
     console.log(`\n=== REACT THINKING CYCLE (objective : ${state.currentObjective}) ===`);
     const decision = await askOllama(prompt);
 
@@ -47,85 +143,10 @@ async function handleSurvivalRequest(bot) {
     }
     bot.chat(`Action : ${decision.action} (${decision.target || 'none'})`);
 
-    let executionResult;
-    let actionTimer = null;
-
-    // Increment active action identifier to track current execution
-    state.activeActionId = (state.activeActionId || 0) + 1;
-
-    // Safety timeout promise to prevent infinite execution hangs
-    const timeoutPromise = new Promise((_, reject) => {
-      actionTimer = setTimeout(() => {
-        reject(new Error("Action execution timeout exceeded"));
-      }, ACTION_TIMEOUT_MS);
-    });
-
-    try {
-      executionResult = await Promise.race([
-        dispatchSkill(bot, state, decision.action, decision.target, decision.qty || 1),
-        timeoutPromise
-      ]);
-    } catch (error) {
-      console.warn(`[TIMEOUT / ERROR] Action '${decision.action}' aborted:`, error.message);
-
-      // Invalidate action identifier to abort background recursive tasks
-      state.activeActionId = (state.activeActionId || 0) + 1;
-
-      // Forcefully cancel pathfinding and reset controls
-      bot.pathfinder.setGoal(null);
-      bot.clearControlStates();
-      try {
-        bot.stopDigging();
-      } catch {
-        // Ignore error if bot is not currently digging
-      }
-
-      // Close open container or crafting window if active
-      if (bot.currentWindow) {
-        try {
-          bot.closeWindow(bot.currentWindow);
-        } catch {
-          // Ignore error if window is already closed by server
-        }
-      }
-
-      // Execute emergency unstuck procedure to free bot
-      try {
-        console.log("[SAFETY] Executing emergency unstuck procedure...");
-        await skillUnstuck(bot);
-      } catch (unstuckError) {
-        console.warn("[SAFETY] Emergency unstuck failure:", unstuckError.message);
-      }
-
-      executionResult = {
-        success: false,
-        message: "Action timed out after maximum safety limit. Emergency unstuck executed."
-      };
-    } finally {
-      if (actionTimer) {
-        clearTimeout(actionTimer);
-      }
-    }
-
+    const executionResult = await executeDecisionWithTimeout(bot, decision);
     console.log(`[RESULT] ${executionResult.success ? '✅' : '❌'} ${executionResult.message}`);
 
-    state.lastActionResult = {
-      action: decision.action,
-      target: decision.target || 'none',
-      success: executionResult.success,
-      message: executionResult.message
-    };
-
-    state.actionHistory.push({
-      action: decision.action,
-      target: decision.target || 'none',
-      success: executionResult.success,
-      message: executionResult.message
-    });
-    if (state.actionHistory.length > 8) {
-      state.actionHistory.shift();
-    }
-
+    recordActionResult(decision, executionResult);
     syncObjective(bot, state);
 
     // Evaluate supervisor strategy with exact player state after action
