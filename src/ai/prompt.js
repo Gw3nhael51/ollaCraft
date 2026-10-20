@@ -168,7 +168,7 @@ function buildReactPrompt(bot, state, environment, craftingTable) {
 
   const nearbyEntities = envUtils.scanNearbyEntities ? envUtils.scanNearbyEntities(bot, 20) : {};
   const entitiesText = Object.keys(nearbyEntities).length > 0 ? JSON.stringify(nearbyEntities) : "aucune";
-  const exposedOres = envUtils.scanExposedOres ? envUtils.scanExposedOres(bot, 16) : {};
+  const exposedOres = environment?.exposedOres || (envUtils.scanExposedOres ? envUtils.scanExposedOres(bot, 16) : {});
   const { harvestable, unharvestable } = classifyOresByHarvestability(bot, exposedOres);
   const harvestableKeys = Object.keys(harvestable);
   const orePromptText = formatOrePromptText(harvestable, unharvestable);
