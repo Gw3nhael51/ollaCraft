@@ -4,7 +4,7 @@
 module.exports = {
   isSurviving: false,
   hasStarted: false,
-  currentObjective: 'wooden_axe',
+  currentObjective: 'wooden_pickaxe',
   manualObjective: false,
   unlockedAdvancements: [],
   currentAdvancement: 'Stone Age',

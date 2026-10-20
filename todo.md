@@ -1,9 +1,9 @@
 # Roadmap & Backlog Technique — ollaCraft (Bot Autonome Minecraft)
 
 ## 🚨 Priorité P0 : Corrections d'Incohérences & Bugs Critiques
-- [ ] **Bug du saut infini hors de l'eau (`src/index.js`)** : Remettre `bot.setControlState('jump', false)` lorsque `bot.entity.isInWater` repasse à `false` dans `physicsTick` pour éviter l'épuisement de la faim et le blocage du pathfinder.
-- [ ] **Incohérence de l'objectif initial (`src/state.js` & `src/config.js`)** : Aligner `currentObjective` initial (`'wooden_pickaxe'` au lieu de `'wooden_axe'`) avec `QUEST_CHAIN` pour éviter que `'wooden_axe'` soit marquée comme complétée sans avoir été fabriquée.
-- [ ] **Recette `blaze_powder` manquante (`src/utils/inventory.js` & `src/config.js`)** : Ajouter `'blaze_powder'` dans `getAvailableCrafts` (et/ou `QUEST_CHAIN`) afin de débloquer la fabrication de `'ender_eye'`.
+- [x] **Bug du saut infini hors de l'eau (`src/index.js`)** : Remettre `bot.setControlState('jump', false)` lorsque `bot.entity.isInWater` repasse à `false` dans `physicsTick` pour éviter l'épuisement de la faim et le blocage du pathfinder.
+- [x] **Incohérence de l'objectif initial (`src/state.js` & `src/config.js`)** : Aligner `currentObjective` initial (`'wooden_pickaxe'` au lieu de `'wooden_axe'`) avec `QUEST_CHAIN` pour éviter que `'wooden_axe'` soit marquée comme complétée sans avoir été fabriquée.
+- [x] **Recette `blaze_powder` manquante (`src/utils/inventory.js` & `src/config.js`)** : Ajouter `'blaze_powder'` dans `getAvailableCrafts` (et/ou `QUEST_CHAIN`) afin de débloquer la fabrication de `'ender_eye'`.
 - [ ] **Conservation du gravier et matériaux clés (`src/skills/storage.js`)** : Aligner `maxToKeep` dans `skillChest` avec `isItemToStore` et conserver `gravel`/`flint` (requis pour `flint_and_steel`), `blaze_rod`, `ender_pearl` et `obsidian`.
 - [ ] **Condition erronée du succès `Diamonds!` (`src/utils/advancements.js`)** : Retirer `hasItem('bucket')`, `hasItem('water_bucket')` et `hasItem('flint_and_steel')` de la validation du jalon `'Diamonds!'`.
 
