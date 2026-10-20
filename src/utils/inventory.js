@@ -56,15 +56,18 @@ function getPlankForLog(logName) {
 }
 
 /**
- * Return carried inventory items excluding crafting grid slots when supported
+ * Return carried inventory items including equipped armor (5..8) and off-hand (45) while excluding 2x2 crafting grid (0..4)
  * @param {object} bot Mineflayer bot instance
- * @returns {Array<object>} List of inventory items
+ * @returns {Array<object>} List of inventory and equipped items
  */
 function getCarriedItems(bot) {
+  if (Array.isArray(bot.inventory?.slots)) {
+    return bot.inventory.slots.slice(5).filter(Boolean);
+  }
   if (typeof bot.inventory?.items === 'function') {
     return bot.inventory.items();
   }
-  return (bot.inventory?.slots || []).filter(Boolean);
+  return [];
 }
 
 /**
@@ -151,12 +154,17 @@ function getOwnedTools(bot) {
 const TOOL_TIERS = {
   pickaxe: ['wooden_pickaxe', 'stone_pickaxe', 'iron_pickaxe', 'diamond_pickaxe', 'netherite_pickaxe'],
   axe: ['wooden_axe', 'stone_axe', 'iron_axe', 'diamond_axe', 'netherite_axe'],
-  sword: ['wooden_sword', 'stone_sword', 'iron_sword', 'diamond_sword', 'netherite_sword']
+  sword: ['wooden_sword', 'stone_sword', 'iron_sword', 'diamond_sword', 'netherite_sword'],
+  helmet: ['iron_helmet', 'diamond_helmet', 'netherite_helmet'],
+  chestplate: ['iron_chestplate', 'diamond_chestplate', 'netherite_chestplate'],
+  leggings: ['iron_leggings', 'diamond_leggings', 'netherite_leggings'],
+  boots: ['iron_boots', 'diamond_boots', 'netherite_boots']
 };
 
 // Quests requiring the item (or a higher tool tier) to remain in inventory
 const PERSISTENT_GEAR_QUESTS = new Set([
-  'wooden_pickaxe', 'stone_pickaxe', 'iron_pickaxe', 'iron_sword', 'shield'
+  'wooden_pickaxe', 'stone_pickaxe', 'iron_pickaxe', 'iron_sword', 'shield',
+  'iron_helmet', 'iron_chestplate', 'iron_leggings', 'iron_boots'
 ]);
 
 // Equivalent items or conditions that directly satisfy a specific quest

@@ -1,6 +1,9 @@
 const { goals } = require('mineflayer-pathfinder');
 const config = require('../config');
 const { countItem, isWoodLog, isPlanks, resolvePlankTarget, findNearbyCraftingTable } = require('../utils/inventory');
+const { autoEquipArmorAndShield } = require('./equip');
+
+const AUTO_EQUIP_SUFFIXES = ['_helmet', '_chestplate', '_leggings', '_boots', 'shield'];
 
 /**
  * Validate early crafting prerequisites before looking up recipes
@@ -290,6 +293,9 @@ async function skillCraft(bot, state, targetName, qty = 1) {
 
   if (countAfter > countBefore) {
     const craftedAmount = countAfter - countBefore;
+    if (AUTO_EQUIP_SUFFIXES.some(suffix => normalizedTarget.endsWith(suffix))) {
+      await autoEquipArmorAndShield(bot);
+    }
     const substitutionNote = normalizedTarget !== targetName ? ` (adapted substitute for '${targetName}')` : '';
     return { success: true, message: `Successfully crafted ${craftedAmount}x '${normalizedTarget}'${substitutionNote}.` };
   }

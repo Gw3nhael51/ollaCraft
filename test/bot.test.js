@@ -77,6 +77,16 @@ test('Progression resumes at current stage when keeping advanced gear', () => {
     { name: 'shield', count: 1 }
   ]);
   invUtils.syncObjective(botMidGame, state);
+  assert.equal(state.currentObjective, 'iron_helmet');
+
+  botMidGame.inventory.slots[5] = { name: 'iron_helmet', count: 1 };
+  botMidGame.inventory.slots[6] = { name: 'iron_chestplate', count: 1 };
+  botMidGame.inventory.slots[7] = { name: 'iron_leggings', count: 1 };
+  botMidGame.inventory.slots[8] = { name: 'iron_boots', count: 1 };
+  botMidGame.inventory.slots[45] = { name: 'shield', count: 1 };
+  botMidGame.inventory.slots[11] = null;
+
+  invUtils.syncObjective(botMidGame, state);
   assert.equal(state.currentObjective, 'bucket');
 });
 
@@ -434,4 +444,26 @@ test('Water bucket scooping via mine/place and solid block placement on tree log
 
   const placeRes = await dispatchSkill(bot, state, 'place', 'crafting_table', 1);
   assert.equal(placeRes.success, true);
+
+  const equipOrder = [];
+  const armorBot = createMockBot([
+    { name: 'iron_helmet', count: 1 },
+    { name: 'iron_chestplate', count: 1 },
+    { name: 'iron_leggings', count: 1 },
+    { name: 'iron_boots', count: 1 },
+    { name: 'shield', count: 1 }
+  ]);
+  armorBot.equip = async (item, dest) => {
+    equipOrder.push(`${item.name}->${dest}`);
+  };
+
+  const equipRes = await dispatchSkill(armorBot, state, 'equip', 'armor', 1);
+  assert.equal(equipRes.success, true);
+  assert.deepEqual(equipOrder, [
+    'iron_helmet->head',
+    'iron_chestplate->torso',
+    'iron_leggings->legs',
+    'iron_boots->feet',
+    'shield->off-hand'
+  ]);
 });

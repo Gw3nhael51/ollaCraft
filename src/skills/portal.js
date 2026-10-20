@@ -2,6 +2,7 @@ const { Vec3 } = require('vec3');
 const { goals } = require('mineflayer-pathfinder');
 const config = require('../config');
 const { countItem, getBestToolForBlock } = require('../utils/inventory');
+const { autoEquipArmorAndShield } = require('./equip');
 
 const NON_SOLID_BLOCKS = new Set([
   'air', 'cave_air', 'void_air', 'water', 'flowing_water', 'lava', 'flowing_lava', 'fire', 'soul_fire'
@@ -494,6 +495,8 @@ async function buildObsidianFrame(bot) {
  * @returns {Promise<{ success: boolean, message: string }>}
  */
 async function skillPortal(bot) {
+  await autoEquipArmorAndShield(bot);
+
   if (bot.game?.dimension === 'the_nether') {
     return {
       success: true,
