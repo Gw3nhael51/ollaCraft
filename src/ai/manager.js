@@ -152,6 +152,9 @@ function sanitizeManagerOutput(bot, rawDecision) {
     ({ action, target, directive } = sanitizeSmeltDecision(bot, target, directive));
   } else if (action === 'chest') {
     ({ action, target, directive } = sanitizeChestDecision(bot, target, directive));
+  } else if (action === 'wiki' && target === 'none') {
+    // Default wiki target to current objective when omitted
+    target = state.currentObjective;
   }
 
   return { directive, suggestedAction: action, suggestedTarget: target };
@@ -198,7 +201,7 @@ async function runManagerCycle(bot) {
       {
         "thought": "Diagnostic rapide de la situation",
         "directive": "Consigne impérative et courte pour le joueur",
-        "suggestedAction": "mine" | "craft" | "place" | "smelt" | "explore" | "unstuck" | "eat" | "chest" | "equip" | "portal" | "fight" | "hunt",
+        "suggestedAction": "mine" | "craft" | "place" | "smelt" | "explore" | "unstuck" | "wiki" | "eat" | "chest" | "equip" | "portal" | "fight" | "hunt",
         "suggestedTarget": "nom_cible"
       }
     `;

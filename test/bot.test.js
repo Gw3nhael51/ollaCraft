@@ -142,3 +142,24 @@ test('Crafting table detection uses unified range, checks base coordinates, and 
   assert.equal(invUtils.findNearbyCraftingTable(bot, state), null);
   assert.equal(state.base.crafting_table, null);
 });
+
+test('Manager supports wiki action and defaults missing target to currentObjective', () => {
+  const bot = createMockBot();
+  state.currentObjective = 'iron_pickaxe';
+
+  const explicitWiki = manager.sanitizeManagerOutput(bot, {
+    suggestedAction: 'wiki',
+    suggestedTarget: 'furnace',
+    directive: 'Check furnace recipe in wiki'
+  });
+  assert.equal(explicitWiki.suggestedAction, 'wiki');
+  assert.equal(explicitWiki.suggestedTarget, 'furnace');
+
+  const fallbackTargetWiki = manager.sanitizeManagerOutput(bot, {
+    suggestedAction: 'wiki',
+    suggestedTarget: 'none',
+    directive: 'Check current objective recipe'
+  });
+  assert.equal(fallbackTargetWiki.suggestedAction, 'wiki');
+  assert.equal(fallbackTargetWiki.suggestedTarget, 'iron_pickaxe');
+});
