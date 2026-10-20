@@ -51,5 +51,6 @@ module.exports = {
     ender_pearl: 12,
     ender_eye: 12
   },
-  TOOL_SUFFIXES: ['_pickaxe', '_axe', '_shovel', '_sword', '_hoe', '_helmet', '_chestplate', '_leggings', '_boots', 'shield']
+  TOOL_SUFFIXES: ['_pickaxe', '_axe', '_shovel', '_sword', '_hoe', '_helmet', '_chestplate', '_leggings', '_boots', 'shield'],
+  CRAFTING_TABLE_RANGE: 32
 };
