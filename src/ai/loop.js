@@ -69,11 +69,14 @@ async function recoverFromActionTimeout(bot) {
 async function executeDecisionWithTimeout(bot, decision) {
   let actionTimer = null;
   state.activeActionId = (state.activeActionId || 0) + 1;
+  const timeoutLimitMs = decision.action === 'smelt'
+    ? Math.max(ACTION_TIMEOUT_MS, (decision.qty || 1) * 12000 + 20000)
+    : ACTION_TIMEOUT_MS;
 
   const timeoutPromise = new Promise((_, reject) => {
     actionTimer = setTimeout(() => {
       reject(new Error("Action execution timeout exceeded"));
-    }, ACTION_TIMEOUT_MS);
+    }, timeoutLimitMs);
   });
 
   try {
