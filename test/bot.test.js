@@ -8,6 +8,8 @@ const storage = require('../src/skills/storage');
 const manager = require('../src/ai/manager');
 const { resolvePlayerDecision } = require('../src/ai/loop');
 const { skillWiki } = require('../src/skills/wiki');
+const { dispatchSkill } = require('../src/skills/dispatcher');
+const { computeCraftOperations } = require('../src/skills/craft');
 const { buildReactPrompt } = require('../src/ai/prompt');
 
 /**
@@ -162,4 +164,38 @@ test('Manager supports wiki action and defaults missing target to currentObjecti
   });
   assert.equal(fallbackTargetWiki.suggestedAction, 'wiki');
   assert.equal(fallbackTargetWiki.suggestedTarget, 'iron_pickaxe');
+});
+
+test('Craft skill forwards qty from dispatcher, bounds by available ingredients, and caps tools to 1', async () => {
+  const bot = createMockBot([
+    { name: 'ender_pearl', count: 7 },
+    { name: 'blaze_powder', count: 10 }
+  ]);
+  const pearlId = mcData.itemsByName.ender_pearl.id;
+  const powderId = mcData.itemsByName.blaze_powder.id;
+  const eyeId = mcData.itemsByName.ender_eye.id;
+  const mockRecipe = {
+    id: eyeId,
+    delta: [
+      { id: pearlId, count: -1 },
+      { id: powderId, count: -1 },
+      { id: eyeId, count: 1 }
+    ]
+  };
+
+  assert.equal(computeCraftOperations(bot, mockRecipe, 'ender_eye', 12), 7);
+  assert.equal(computeCraftOperations(bot, mockRecipe, 'iron_pickaxe', 5), 1);
+
+  let executedCount = 0;
+  bot.recipesFor = () => [mockRecipe];
+  bot.waitForTicks = async () => {};
+  bot.craft = async (_recipe, count) => {
+    executedCount = count;
+    bot.inventory.slots[20] = { name: 'ender_eye', count, type: eyeId };
+  };
+
+  const result = await dispatchSkill(bot, state, 'craft', 'ender_eye', 12);
+  assert.equal(result.success, true);
+  assert.equal(executedCount, 7);
+  assert.ok(result.message.includes("7x 'ender_eye'"));
 });
