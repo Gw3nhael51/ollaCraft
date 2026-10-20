@@ -4,7 +4,7 @@
   "description": "Autonomous Minecraft AI Agent powered by ReAct and local Ollama LLMs",
   "main": "src/index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "node --test test/bot.test.js"
   },
   "keywords": [],
   "author": "Gw3nhael51",
