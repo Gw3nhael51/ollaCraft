@@ -53,6 +53,29 @@ async function fillBucketFromSource(bot, liquidName) {
 }
 
 /**
+ * Strike flint and steel against the bottom obsidian block of a portal frame
+ * @param {object} bot Mineflayer bot instance
+ * @param {object} flint Flint and steel item
+ * @param {object} portalBasePos Bottom-left inner coordinate of the portal frame
+ * @param {number|undefined} existingPortalId Nether portal block ID
+ * @returns {Promise<object|null>} Newly created portal block or null
+ */
+async function strikePortalFrame(bot, flint, portalBasePos, existingPortalId) {
+  const bottomObsidian = bot.blockAt(portalBasePos.offset(0, -1, 0));
+  if (!bottomObsidian) return null;
+
+  await bot.equip(flint, 'hand');
+  await bot.lookAt(bottomObsidian.position.offset(0.5, 1, 0.5), true);
+  try {
+    await bot.placeBlock(bottomObsidian, new Vec3(0, 1, 0));
+  } catch {
+    await bot.activateBlock(bottomObsidian).catch(() => {});
+  }
+  await bot.waitForTicks(10);
+  return existingPortalId ? bot.findBlock({ matching: existingPortalId, maxDistance: 12 }) : null;
+}
+
+/**
  * Ignite a portal frame and stand inside until transported to the Nether
  * @param {object} bot Mineflayer bot instance
  * @param {object} portalBasePos Bottom-left inner coordinate of the portal frame
@@ -67,23 +90,7 @@ async function igniteAndEnterPortal(bot, portalBasePos) {
     if (!flint) {
       return { success: false, message: "Missing 'flint_and_steel' to ignite the Nether portal. Craft one first." };
     }
-
-    const bottomObsidian = bot.blockAt(portalBasePos.offset(0, -1, 0));
-    if (bottomObsidian) {
-      await bot.equip(flint, 'hand');
-      await bot.lookAt(bottomObsidian.position.offset(0.5, 1, 0.5), true);
-      try {
-        await bot.placeBlock(bottomObsidian, new Vec3(0, 1, 0));
-      } catch {
-        try {
-          await bot.activateBlock(bottomObsidian);
-        } catch {
-          // Ignore error if block activation is rejected by server
-        }
-      }
-      await bot.waitForTicks(10);
-      portalBlock = existingPortalId ? bot.findBlock({ matching: existingPortalId, maxDistance: 12 }) : null;
-    }
+    portalBlock = await strikePortalFrame(bot, flint, portalBasePos, existingPortalId);
   }
 
   if (!portalBlock) {
@@ -166,6 +173,35 @@ async function castObsidianAtLavaPool(bot) {
 }
 
 /**
+ * Clear obstructing block and place a single obsidian block at target position
+ * @param {object} bot Mineflayer bot instance
+ * @param {object} targetPos Target block coordinates
+ * @returns {Promise<boolean>} False if out of obsidian, true otherwise
+ */
+async function placeSingleObsidianAt(bot, targetPos) {
+  const currentBlock = bot.blockAt(targetPos);
+  if (currentBlock?.name === 'obsidian') return true;
+
+  if (currentBlock && currentBlock.name !== 'air' && currentBlock.name !== 'cave_air') {
+    const tool = getBestToolForBlock(bot, currentBlock);
+    if (tool) await bot.equip(tool, 'hand').catch(() => {});
+    await bot.dig(currentBlock).catch(() => {});
+  }
+
+  const obsItem = bot.inventory.items().find(i => i.name === 'obsidian');
+  if (!obsItem) return false;
+
+  const below = bot.blockAt(targetPos.offset(0, -1, 0));
+  if (below && below.name !== 'air') {
+    await bot.equip(obsItem, 'hand');
+    await bot.lookAt(below.position.offset(0.5, 1, 0.5), true);
+    await bot.placeBlock(below, new Vec3(0, 1, 0)).catch(() => {});
+    await bot.waitForTicks(4);
+  }
+  return true;
+}
+
+/**
  * Place obsidian frame blocks recursively without await-in-loop
  * @param {object} bot Mineflayer bot instance
  * @param {object} base Origin position vector of the portal frame
@@ -176,28 +212,8 @@ async function castObsidianAtLavaPool(bot) {
 async function placePortalFrameStep(bot, base, frameOffsets, index) {
   if (index >= frameOffsets.length) return;
 
-  const offset = frameOffsets[index];
-  const targetPos = base.plus(offset);
-  const currentBlock = bot.blockAt(targetPos);
-
-  if (currentBlock?.name !== 'obsidian') {
-    if (currentBlock && currentBlock.name !== 'air' && currentBlock.name !== 'cave_air') {
-      const tool = getBestToolForBlock(bot, currentBlock);
-      if (tool) await bot.equip(tool, 'hand').catch(() => {});
-      await bot.dig(currentBlock).catch(() => {});
-    }
-
-    const obsItem = bot.inventory.items().find(i => i.name === 'obsidian');
-    if (!obsItem) return;
-
-    const below = bot.blockAt(targetPos.offset(0, -1, 0));
-    if (below && below.name !== 'air') {
-      await bot.equip(obsItem, 'hand');
-      await bot.lookAt(below.position.offset(0.5, 1, 0.5), true);
-      await bot.placeBlock(below, new Vec3(0, 1, 0)).catch(() => {});
-      await bot.waitForTicks(4);
-    }
-  }
+  const canContinue = await placeSingleObsidianAt(bot, base.plus(frameOffsets[index]));
+  if (!canContinue) return;
 
   return placePortalFrameStep(bot, base, frameOffsets, index + 1);
 }

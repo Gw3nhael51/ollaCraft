@@ -1,6 +1,55 @@
 const { goals } = require('mineflayer-pathfinder');
 
 /**
+ * Locate an accessible furnace block nearby or from base memory
+ * @param {object} bot Mineflayer bot instance
+ * @param {object} state Global bot state
+ * @returns {object|null} Located furnace block or null
+ */
+function findTargetFurnace(bot, state) {
+  const nearby = bot.findBlock({
+    matching: bot.registry.blocksByName.furnace.id,
+    maxDistance: 32
+  });
+  if (nearby || !state.base.furnace) return nearby;
+
+  const rememberedFurnace = bot.blockAt(state.base.furnace);
+  if (!rememberedFurnace) return null;
+
+  if (rememberedFurnace.name !== 'furnace') {
+    state.base.furnace = null;
+    return null;
+  }
+
+  const dist = bot.entity.position.distanceTo(rememberedFurnace.position);
+  return dist <= 24 ? rememberedFurnace : null;
+}
+
+/**
+ * Wait until the furnace produces at least one output item or times out
+ * @param {object} furnace Open Mineflayer furnace instance
+ * @returns {Promise<void>}
+ */
+function waitForFurnaceOutput(furnace) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      furnace.removeListener('update', onUpdate);
+      reject(new Error("Smelting time limit exceeded"));
+    }, 25000);
+
+    function onUpdate() {
+      if (furnace.outputItem()) {
+        clearTimeout(timer);
+        furnace.removeListener('update', onUpdate);
+        resolve();
+      }
+    }
+
+    furnace.on('update', onUpdate);
+  });
+}
+
+/**
  * Smelt an ore or cook food in a furnace using available fuel
  * @param {object} bot Mineflayer bot instance
  * @param {object} state Global bot state
@@ -13,27 +62,15 @@ async function skillSmelt(bot, state, targetName, qty) {
     return { success: false, message: "Specify the item to smelt in 'target'." };
   }
 
-  let furnaceBlock = bot.findBlock({
-    matching: bot.registry.blocksByName.furnace.id,
-    maxDistance: 32
-  });
-
-  if (!furnaceBlock && state.base.furnace) {
-    const rememberedFurnace = bot.blockAt(state.base.furnace);
-    const dist = rememberedFurnace ? bot.entity.position.distanceTo(rememberedFurnace.position) : Infinity;
-    if (rememberedFurnace?.name === 'furnace' && dist <= 24) {
-      furnaceBlock = rememberedFurnace;
-    } else if (rememberedFurnace && rememberedFurnace.name !== 'furnace') {
-      state.base.furnace = null;
-    }
-  }
-
+  const furnaceBlock = findTargetFurnace(bot, state);
   if (!furnaceBlock) {
     const hasInPocket = bot.inventory.items().some(i => i.name === 'furnace');
-    if (hasInPocket) {
-      return { success: false, message: "No furnace placed nearby. Use 'place' with target 'furnace' to set down the furnace from your inventory." };
-    }
-    return { success: false, message: "No furnace found nearby. Craft one ('craft furnace') and place it down ('place furnace') first." };
+    return {
+      success: false,
+      message: hasInPocket
+        ? "No furnace placed nearby. Use 'place' with target 'furnace' to set down the furnace from your inventory."
+        : "No furnace found nearby. Craft one ('craft furnace') and place it down ('place furnace') first."
+    };
   }
 
   const targetItem = bot.inventory.items().find(i => i.name === targetName);
@@ -55,30 +92,12 @@ async function skillSmelt(bot, state, targetName, qty) {
     }
 
     furnace = await bot.openFurnace(furnaceBlock);
-
     if (furnace.fuelItem() == null) {
       await furnace.putFuel(fuelItem.type, null, 1);
     }
 
     await furnace.putInput(targetItem.type, null, qty || 1);
-
-    await new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        furnace.removeListener('update', onUpdate);
-        reject(new Error("Smelting time limit exceeded"));
-      }, 25000);
-
-      function onUpdate() {
-        if (furnace.outputItem()) {
-          clearTimeout(timer);
-          furnace.removeListener('update', onUpdate);
-          resolve();
-        }
-      }
-
-      furnace.on('update', onUpdate);
-    });
-
+    await waitForFurnaceOutput(furnace);
     await furnace.takeOutput();
 
     return { success: true, message: `Successfully smelted '${targetName}'.` };

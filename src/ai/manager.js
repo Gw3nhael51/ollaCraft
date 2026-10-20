@@ -38,6 +38,97 @@ function detectActionLoop(actionHistory) {
 }
 
 /**
+ * Validate and adjust a craft suggestion according to inventory and nearby crafting table
+ * @param {object} bot Mineflayer bot instance
+ * @param {string} target Suggested craft target
+ * @param {string} directive Current directive message
+ * @returns {{ action: string, target: string, directive: string }}
+ */
+function sanitizeCraftDecision(bot, target, directive) {
+  const tableId = bot.registry.blocksByName['crafting_table']?.id;
+  const table = tableId ? bot.findBlock({ matching: tableId, maxDistance: 16 }) : null;
+  const available = invUtils.getAvailableCrafts(bot, table);
+
+  const isPlankRequested = invUtils.isPlanks(target);
+  const hasAvailablePlanks = available.some(item => invUtils.isPlanks(item));
+  const isCraftPossible = available.includes(target) || (isPlankRequested && hasAvailablePlanks);
+
+  if (isCraftPossible) {
+    if (isPlankRequested && !available.includes(target)) {
+      const specificPlank = available.find(item => invUtils.isPlanks(item) && item !== 'planks');
+      if (specificPlank) return { action: 'craft', target: specificPlank, directive };
+    }
+    return { action: 'craft', target, directive };
+  }
+
+  if (target === 'crafting_table') {
+    const hasLogs = bot.inventory.items().some(i => invUtils.isWoodLog(i.name));
+    return hasLogs
+      ? { action: 'craft', target: 'planks', directive: "Fabriquer des planches à partir des bûches pour créer un établi." }
+      : { action: 'mine', target: 'log', directive: "Couper du bois pour obtenir des planches et un établi." };
+  }
+
+  if (!table && invUtils.countItem(bot, 'crafting_table') > 0) {
+    return { action: 'place', target: 'crafting_table', directive: `Poser l'établi au sol pour pouvoir fabriquer ${target}.` };
+  }
+
+  return { action: 'explore', target, directive: `Ressources manquantes pour fabriquer ${target}, explorer pour trouver des composants.` };
+}
+
+/**
+ * Validate and adjust a smelt suggestion according to available furnace and ores
+ * @param {object} bot Mineflayer bot instance
+ * @param {string} target Suggested smelt target
+ * @param {string} directive Current directive message
+ * @returns {{ action: string, target: string, directive: string }}
+ */
+function sanitizeSmeltDecision(bot, target, directive) {
+  if (target === 'furnace') {
+    const hasFurnace = invUtils.countItem(bot, 'furnace') > 0;
+    return {
+      action: hasFurnace ? 'place' : 'craft',
+      target: 'furnace',
+      directive: hasFurnace ? "Poser le fourneau au sol pour fondre les minerais." : "Fabriquer un fourneau à l'établi pour fondre les minerais."
+    };
+  }
+
+  if (target === 'iron_ingot') {
+    const hasOre = invUtils.countItem(bot, 'raw_iron') > 0 || invUtils.countItem(bot, 'iron_ore') > 0;
+    if (!hasOre) {
+      return { action: 'mine', target: 'iron_ore', directive: "Miner du minerai de fer avant de pouvoir fabriquer des lingots." };
+    }
+    return { action: 'smelt', target, directive };
+  }
+
+  if (invUtils.countItem(bot, target) === 0) {
+    return { action: 'mine', target, directive: `Miner la ressource requise avant de pouvoir faire fondre ${target}.` };
+  }
+
+  return { action: 'smelt', target, directive };
+}
+
+/**
+ * Validate and adjust a chest storage suggestion according to nearby or owned chest
+ * @param {object} bot Mineflayer bot instance
+ * @param {string} target Suggested target
+ * @param {string} directive Current directive message
+ * @returns {{ action: string, target: string, directive: string }}
+ */
+function sanitizeChestDecision(bot, target, directive) {
+  const chestId = bot.registry.blocksByName['chest']?.id;
+  const nearbyChest = chestId ? bot.findBlock({ matching: chestId, maxDistance: 24 }) : null;
+  if (nearbyChest) {
+    return { action: 'chest', target, directive };
+  }
+
+  if (invUtils.countItem(bot, 'chest') > 0) {
+    return { action: 'place', target: 'chest', directive: "Poser le coffre ('chest') au sol avant de pouvoir y ranger les surplus." };
+  }
+
+  return { action: 'craft', target: 'chest', directive: "Fabriquer un coffre ('chest') pour pouvoir trier et vider l'inventaire." };
+}
+
+/**
  * Sanitize and validate manager directives against game state to prevent hallucinations
  * @param {object} bot Mineflayer bot instance
  * @param {object} rawDecision Parsed JSON output from supervisor model
@@ -52,90 +143,16 @@ function sanitizeManagerOutput(bot, rawDecision) {
     };
   }
 
-  let action = rawDecision.suggestedAction || 'explore';
+  let action = config.VALID_ACTIONS.has(rawDecision.suggestedAction) ? rawDecision.suggestedAction : 'explore';
   let target = rawDecision.suggestedTarget || 'none';
   let directive = rawDecision.directive || "Poursuivre l'objectif en cours.";
 
-  if (!config.VALID_ACTIONS.has(action)) {
-    action = 'explore';
-  }
-
   if (action === 'craft') {
-    const tableId = bot.registry.blocksByName['crafting_table']?.id;
-    const table = tableId ? bot.findBlock({ matching: tableId, maxDistance: 16 }) : null;
-    const available = invUtils.getAvailableCrafts(bot, table);
-
-    // Accept planks if any wood variety is craftable
-    const isPlankRequested = invUtils.isPlanks(target);
-    const hasAvailablePlanks = available.some(item => invUtils.isPlanks(item));
-    const isCraftPossible = available.includes(target) || (isPlankRequested && hasAvailablePlanks);
-
-    if (!isCraftPossible) {
-      if (target === 'crafting_table') {
-        const hasLogs = bot.inventory.items().some(i => invUtils.isWoodLog(i.name));
-        if (hasLogs) {
-          action = 'craft';
-          target = 'planks';
-          directive = "Fabriquer des planches à partir des bûches pour créer un établi.";
-        } else {
-          action = 'mine';
-          target = 'log';
-          directive = "Couper du bois pour obtenir des planches et un établi.";
-        }
-      } else {
-        const hasTableInPocket = invUtils.countItem(bot, 'crafting_table') > 0;
-        if (!table && hasTableInPocket) {
-          action = 'place';
-          target = 'crafting_table';
-          directive = `Poser l'établi au sol pour pouvoir fabriquer ${target}.`;
-        } else {
-          action = 'explore';
-          directive = `Ressources manquantes pour fabriquer ${target}, explorer pour trouver des composants.`;
-        }
-      }
-    } else if (isPlankRequested && !available.includes(target)) {
-      // Target the specific wood plank variety directly craftable
-      const specificPlank = available.find(item => invUtils.isPlanks(item) && item !== 'planks');
-      if (specificPlank) {
-        target = specificPlank;
-      }
-    }
-  }
-
-  // Adjust smelt action according to targeted resource
-  if (action === 'smelt') {
-    if (target === 'furnace') {
-      const hasFurnace = invUtils.countItem(bot, 'furnace') > 0;
-      action = hasFurnace ? 'place' : 'craft';
-      directive = hasFurnace ? "Poser le fourneau au sol pour fondre les minerais." : "Fabriquer un fourneau à l'établi pour fondre les minerais.";
-    } else if (target === 'iron_ingot') {
-      const hasOre = invUtils.countItem(bot, 'raw_iron') > 0 || invUtils.countItem(bot, 'iron_ore') > 0;
-      if (!hasOre) {
-        action = 'mine';
-        target = 'iron_ore';
-        directive = "Miner du minerai de fer avant de pouvoir fabriquer des lingots.";
-      }
-    } else if (invUtils.countItem(bot, target) === 0) {
-      action = 'mine';
-      directive = `Miner la ressource requise avant de pouvoir faire fondre ${target}.`;
-    }
-  }
-
-  // Validate chest sorting prerequisites (placed chest nearby or craft/place chest first)
-  if (action === 'chest') {
-    const chestId = bot.registry.blocksByName['chest']?.id;
-    const nearbyChest = chestId ? bot.findBlock({ matching: chestId, maxDistance: 24 }) : null;
-    if (!nearbyChest) {
-      if (invUtils.countItem(bot, 'chest') > 0) {
-        action = 'place';
-        target = 'chest';
-        directive = "Poser le coffre ('chest') au sol avant de pouvoir y ranger les surplus.";
-      } else {
-        action = 'craft';
-        target = 'chest';
-        directive = "Fabriquer un coffre ('chest') pour pouvoir trier et vider l'inventaire.";
-      }
-    }
+    ({ action, target, directive } = sanitizeCraftDecision(bot, target, directive));
+  } else if (action === 'smelt') {
+    ({ action, target, directive } = sanitizeSmeltDecision(bot, target, directive));
+  } else if (action === 'chest') {
+    ({ action, target, directive } = sanitizeChestDecision(bot, target, directive));
   }
 
   return { directive, suggestedAction: action, suggestedTarget: target };

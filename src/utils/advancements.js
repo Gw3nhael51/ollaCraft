@@ -84,59 +84,49 @@ function checkAdvancementMessage(bot, state, rawServerMessage) {
   }
 }
 
+const ADVANCEMENT_INVENTORY_RULES = [
+  { name: 'Stone Age', items: ['cobblestone', 'furnace'], suffixes: ['pickaxe'] },
+  { name: 'Getting an Upgrade', items: ['stone_pickaxe', 'iron_pickaxe', 'diamond_pickaxe'] },
+  { name: 'Acquire Hardware', items: ['iron_ingot', 'iron_pickaxe', 'iron_sword', 'iron_chestplate', 'shield'] },
+  { name: 'Suit Up', items: ['shield'], suffixes: ['helmet', 'chestplate', 'leggings', 'boots'] },
+  { name: "Isn't It Iron Pick", items: ['iron_pickaxe', 'diamond_pickaxe'] },
+  { name: 'Diamonds!', items: ['diamond', 'diamond_pickaxe', 'bucket', 'water_bucket', 'flint_and_steel'] },
+  { name: 'Ice Bucket Challenge', items: ['obsidian', 'blaze_rod'], inNether: true },
+  { name: 'We Need to Go Deeper', items: ['blaze_rod'], inNether: true },
+  { name: 'Eye Spy', items: ['ender_eye'] }
+];
+
+/**
+ * Evaluate whether a declarative advancement rule is satisfied by current inventory or dimension
+ * @param {object} bot Mineflayer bot instance
+ * @param {Set<string>} ownedNames Set of item names currently in inventory
+ * @param {object} rule Advancement rule definition
+ * @returns {boolean} True if rule is satisfied
+ */
+function isAdvancementRuleMet(bot, ownedNames, rule) {
+  if (rule.inNether && bot.game?.dimension === 'the_nether') return true;
+  if (rule.items?.some(name => ownedNames.has(name))) return true;
+  if (rule.suffixes) {
+    for (const itemName of ownedNames) {
+      if (rule.suffixes.some(suffix => itemName.endsWith(suffix))) return true;
+    }
+  }
+  return false;
+}
+
 /**
  * Synchronize unlocked advancements based on items already acquired in inventory
- * @param {object} bot Instance Mineflayer du bot
+ * @param {object} bot Mineflayer bot instance
  * @param {object} state Global bot state
  */
 function syncAdvancementsWithInventory(bot, state) {
   const allSlots = (bot.inventory?.slots || []).filter(Boolean);
-  const hasItem = name => allSlots.some(item => item.name === name);
-  const hasItemMatching = suffix => allSlots.some(item => item.name.endsWith(suffix));
-
-  const rules = [
-    {
-      name: 'Stone Age',
-      condition: () => hasItem('cobblestone') || hasItem('furnace') || hasItemMatching('pickaxe')
-    },
-    {
-      name: 'Getting an Upgrade',
-      condition: () => hasItem('stone_pickaxe') || hasItem('iron_pickaxe') || hasItem('diamond_pickaxe')
-    },
-    {
-      name: 'Acquire Hardware',
-      condition: () => hasItem('iron_ingot') || hasItem('iron_pickaxe') || hasItem('iron_sword') || hasItem('iron_chestplate') || hasItem('shield')
-    },
-    {
-      name: 'Suit Up',
-      condition: () => hasItem('shield') || hasItemMatching('helmet') || hasItemMatching('chestplate') || hasItemMatching('leggings') || hasItemMatching('boots')
-    },
-    {
-      name: "Isn't It Iron Pick",
-      condition: () => hasItem('iron_pickaxe') || hasItem('diamond_pickaxe')
-    },
-    {
-      name: 'Diamonds!',
-      condition: () => hasItem('diamond') || hasItem('diamond_pickaxe') || hasItem('bucket') || hasItem('water_bucket') || hasItem('flint_and_steel')
-    },
-    {
-      name: 'Ice Bucket Challenge',
-      condition: () => hasItem('obsidian') || hasItem('blaze_rod') || bot.game?.dimension === 'the_nether'
-    },
-    {
-      name: 'We Need to Go Deeper',
-      condition: () => bot.game?.dimension === 'the_nether' || hasItem('blaze_rod')
-    },
-    {
-      name: 'Eye Spy',
-      condition: () => hasItem('ender_eye')
-    }
-  ];
+  const ownedNames = new Set(allSlots.map(item => item.name));
 
   let changed = false;
-  for (const { name, condition } of rules) {
-    if (!state.unlockedAdvancements.includes(name) && condition()) {
-      state.unlockedAdvancements.push(name);
+  for (const rule of ADVANCEMENT_INVENTORY_RULES) {
+    if (!state.unlockedAdvancements.includes(rule.name) && isAdvancementRuleMet(bot, ownedNames, rule)) {
+      state.unlockedAdvancements.push(rule.name);
       changed = true;
     }
   }
