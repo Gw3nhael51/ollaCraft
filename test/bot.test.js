@@ -6,6 +6,7 @@ const invUtils = require('../src/utils/inventory');
 const advUtils = require('../src/utils/advancements');
 const storage = require('../src/skills/storage');
 const manager = require('../src/ai/manager');
+const { resolvePlayerDecision } = require('../src/ai/loop');
 const { skillWiki } = require('../src/skills/wiki');
 const { buildReactPrompt } = require('../src/ai/prompt');
 
@@ -100,6 +101,12 @@ test('Wiki, Manager sanitization, and ReAct prompt generation work offline', () 
   assert.equal(sanitized.suggestedAction, 'mine');
   assert.equal(sanitized.suggestedTarget, 'iron_ore');
 
+  state.managerSubGoal = { action: 'mine', target: 'iron_ore' };
   const prompt = buildReactPrompt(bot, state, { stone: 10 }, null);
   assert.ok(prompt.includes(state.currentObjective));
+  assert.ok(prompt.includes('{"action": "mine", "target": "iron_ore"}'));
+
+  const fallbackDecision = resolvePlayerDecision(null);
+  assert.equal(fallbackDecision.action, 'mine');
+  assert.equal(fallbackDecision.target, 'iron_ore');
 });
