@@ -9,8 +9,12 @@ const ESSENTIAL_ITEMS = new Set([
   'diamond_helmet', 'diamond_chestplate', 'diamond_leggings', 'diamond_boots',
   'torch', 'bucket', 'water_bucket', 'flint_and_steel',
   'cooked_beef', 'cooked_porkchop', 'cooked_mutton', 'cooked_chicken', 'bread', 'apple',
-  'diamond', 'raw_iron', 'iron_ingot', 'raw_gold', 'gold_ingot', 'lapis_lazuli'
+  'diamond', 'raw_iron', 'iron_ingot', 'raw_gold', 'gold_ingot', 'lapis_lazuli',
+  'flint', 'blaze_rod', 'blaze_powder', 'ender_pearl', 'ender_eye', 'obsidian'
 ]);
+
+// Retain limited terrain and utility blocks for bridging and flint harvesting
+const BULK_MATERIALS = new Set(['dirt', 'cobblestone', 'granite', 'diorite', 'andesite', 'cobbled_deepslate', 'gravel', 'sand']);
 
 /**
  * Determine whether an inventory item should be deposited into storage
@@ -21,8 +25,7 @@ function isItemToStore(item) {
   if (ESSENTIAL_ITEMS.has(item.name)) return false;
 
   // Retain limited terrain blocks for bridging
-  const bulkMaterials = ['dirt', 'cobblestone', 'granite', 'diorite', 'andesite', 'cobbled_deepslate', 'gravel', 'sand'];
-  if (bulkMaterials.includes(item.name)) {
+  if (BULK_MATERIALS.has(item.name)) {
     return item.count > 32; // Retain at most 32 blocks for bridging
   }
 
@@ -64,37 +67,70 @@ async function depositItems(chest, deposits) {
 }
 
 /**
+ * Locate an accessible chest block nearby or from base memory
+ * @param {object} bot Mineflayer bot instance
+ * @param {object} state Global bot state
+ * @returns {object|null} Located chest block or null
+ */
+function findTargetChest(bot, state) {
+  const chestBlockId = bot.registry.blocksByName.chest?.id;
+  const nearbyChest = chestBlockId ? bot.findBlock({ matching: chestBlockId, maxDistance: 24 }) : null;
+  if (nearbyChest || !state.base.chest) return nearbyChest;
+
+  const rememberedChest = bot.blockAt(state.base.chest);
+  if (!rememberedChest) return null;
+
+  if (rememberedChest.name !== 'chest') {
+    state.base.chest = null;
+    return null;
+  }
+
+  const dist = bot.entity.position.distanceTo(rememberedChest.position);
+  return dist <= 24 ? rememberedChest : null;
+}
+
+/**
+ * Compute the list of inventory items and quantities to deposit into storage
+ * @param {Array<object>} items Current inventory items
+ * @returns {Array<{ item: object, amountToDeposit: number }>} Planned deposits
+ */
+function buildDepositPlan(items) {
+  const keptCounts = {};
+  const deposits = [];
+
+  for (const item of items) {
+    const isBulk = BULK_MATERIALS.has(item.name);
+    if (!isBulk && !isItemToStore(item)) continue;
+
+    const maxToKeep = isBulk ? 32 : 0;
+    const alreadyKept = keptCounts[item.name] || 0;
+    const keepFromThisStack = Math.min(item.count, Math.max(0, maxToKeep - alreadyKept));
+    keptCounts[item.name] = alreadyKept + keepFromThisStack;
+
+    const amountToDeposit = item.count - keepFromThisStack;
+    if (amountToDeposit > 0) {
+      deposits.push({ item, amountToDeposit });
+    }
+  }
+
+  return deposits;
+}
+
+/**
  * Manage automatic inventory organization into a nearby chest
  * @param {object} bot Mineflayer bot instance
  * @param {object} state Global bot state
  * @returns {Promise<{ success: boolean, message: string }>} Result of the chest sorting operation
  */
 async function skillChest(bot, state) {
-  const chestBlockId = bot.registry.blocksByName.chest?.id;
-  let chestBlock = chestBlockId ? bot.findBlock({ matching: chestBlockId, maxDistance: 24 }) : null;
-
-  if (!chestBlock && state.base.chest) {
-    const rememberedChest = bot.blockAt(state.base.chest);
-    const dist = rememberedChest ? bot.entity.position.distanceTo(rememberedChest.position) : Infinity;
-    if (rememberedChest?.name === 'chest' && dist <= 24) {
-      chestBlock = rememberedChest;
-    } else if (rememberedChest && rememberedChest.name !== 'chest') {
-      state.base.chest = null;
-    }
-  }
+  const chestBlock = findTargetChest(bot, state);
 
   if (!chestBlock) {
     const hasInPocket = bot.inventory.items().some(i => i.name === 'chest');
-    if (hasInPocket) {
-      return {
-        success: false,
-        message: "No chest placed nearby. Use 'place' with target 'chest' to place your chest on the ground first."
-      };
-    }
-    return {
-      success: false,
-      message: "No chest found nearby. Craft and place a chest ('craft chest' then 'place chest') first."
-    };
+    const message = hasInPocket
+      ? "No chest placed nearby. Use 'place' with target 'chest' to place your chest on the ground first."
+      : "No chest found nearby. Craft and place a chest ('craft chest' then 'place chest') first.";
+    return { success: false, message };
   }
 
   let chest = null;
@@ -106,35 +142,17 @@ async function skillChest(bot, state) {
     }
 
     chest = await bot.openChest(chestBlock);
-    const items = bot.inventory.items();
-    const keptCounts = {};
-    const deposits = [];
-
-    for (const item of items) {
-      if (isItemToStore(item)) {
-        const maxToKeep = ['dirt', 'cobblestone', 'cobbled_deepslate'].includes(item.name) ? 32 : 0;
-        const alreadyKept = keptCounts[item.name] || 0;
-        const remainingToKeep = Math.max(0, maxToKeep - alreadyKept);
-
-        const keepFromThisStack = Math.min(item.count, remainingToKeep);
-        keptCounts[item.name] = alreadyKept + keepFromThisStack;
-
-        const amountToDeposit = item.count - keepFromThisStack;
-        if (amountToDeposit > 0) {
-          deposits.push({ item, amountToDeposit });
-        }
-      }
-    }
-
+    const deposits = buildDepositPlan(bot.inventory.items());
     const { depositedCount, depositedNames } = await depositItems(chest, deposits);
 
     if (depositedCount === 0) {
       return { success: true, message: "Inventory already clean; no bulky items to deposit." };
     }
 
+    const suffix = depositedNames.length > 4 ? '...' : '';
     return {
       success: true,
-      message: `Chest sorting complete; deposited ${depositedNames.slice(0, 4).join(', ')}${depositedNames.length > 4 ? '...' : ''}.`
+      message: `Chest sorting complete; deposited ${depositedNames.slice(0, 4).join(', ')}${suffix}.`
     };
   } catch (error) {
     console.warn("Chest error:", error.message);
@@ -156,7 +174,7 @@ function isInventoryCluttered(bot) {
 
   // Trigger storage if occupied main inventory slots exceed threshold or bulk count is high
   const bulkCount = items
-    .filter(item => ['dirt', 'cobblestone', 'granite', 'diorite', 'andesite', 'cobbled_deepslate', 'gravel'].includes(item.name))
+    .filter(item => BULK_MATERIALS.has(item.name))
     .reduce((sum, item) => sum + item.count, 0);
 
   return items.length >= 24 || bulkCount >= 256;
