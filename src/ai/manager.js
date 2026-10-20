@@ -161,6 +161,26 @@ function sanitizeManagerOutput(bot, rawDecision) {
   return { directive, suggestedAction: action, suggestedTarget: target };
 }
 
+const MANAGER_HEARTBEAT_INTERVAL = 3;
+
+/**
+ * Determine whether the supervisor model needs to be consulted after a player cycle
+ * @param {object} bot Mineflayer bot instance
+ * @param {object} currentState Global bot state
+ * @param {boolean} [objectiveChanged] True if currentObjective changed during the cycle
+ * @returns {boolean} True if manager cycle should run
+ */
+function shouldRunManager(bot, currentState = state, objectiveChanged = false) {
+  if (objectiveChanged || !currentState.managerSubGoal) return true;
+  if (currentState.lastActionResult && !currentState.lastActionResult.success) return true;
+  if (detectActionLoop(currentState.actionHistory || [])) return true;
+
+  const { isInventoryCluttered } = require('../skills/storage');
+  if (isInventoryCluttered(bot)) return true;
+
+  return (currentState.cyclesSinceLastManager || 0) + 1 >= MANAGER_HEARTBEAT_INTERVAL;
+}
+
 /**
  * Execute supervisor reasoning cycle to steer the autonomous player
  * @param {object} bot Mineflayer bot instance
@@ -170,6 +190,7 @@ async function runManagerCycle(bot) {
   if (!state.isSurviving || state.isManagerThinking) return;
 
   state.isManagerThinking = true;
+  state.cyclesSinceLastManager = 0;
   try {
     const tools = invUtils.getOwnedTools(bot).join(', ') || 'aucun';
     const inventory = invUtils.getInventorySummary(bot);
@@ -238,6 +259,7 @@ async function startManagerLoop(bot) {
 module.exports = {
   runManagerCycle,
   startManagerLoop,
+  shouldRunManager,
   detectActionLoop,
   sanitizeManagerOutput
 };

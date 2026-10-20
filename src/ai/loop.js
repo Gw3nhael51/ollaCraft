@@ -6,7 +6,7 @@ const { buildReactPrompt } = require('./prompt');
 const { askOllama } = require('./ollama');
 const { dispatchSkill } = require('../skills/dispatcher');
 const { skillUnstuck } = require('../skills/navigate');
-const { runManagerCycle } = require('./manager');
+const { runManagerCycle, shouldRunManager } = require('./manager');
 
 const ACTION_TIMEOUT_MS = 45000;
 
@@ -123,6 +123,19 @@ function resolvePlayerDecision(rawDecision) {
 }
 
 /**
+ * Trigger manager cycle on relevant events or increment cycle counter
+ * @param {object} bot Mineflayer bot instance
+ * @param {boolean} objectiveChanged Whether quest objective changed during this cycle
+ * @returns {Promise<void>}
+ */
+async function evaluateManagerTrigger(bot, objectiveChanged) {
+  if (shouldRunManager(bot, state, objectiveChanged)) {
+    await runManagerCycle(bot);
+  } else {
+    state.cyclesSinceLastManager = (state.cyclesSinceLastManager || 0) + 1;
+  }
+}
+/**
  * Check whether autonomous mode is active and matches the given session identifier
  * @param {number} sessionId Session identifier to check
  * @returns {boolean} True if session is still active
@@ -168,12 +181,14 @@ async function handleSurvivalRequest(bot, sessionId = state.survivalSessionId) {
     if (!isSessionActive(sessionId)) return;
     console.log(`[RESULT] ${executionResult.success ? '✅' : '❌'} ${executionResult.message}`);
 
+    const objectiveBeforeAction = state.currentObjective;
     recordActionResult(decision, executionResult);
     syncObjective(bot, state);
+    const objectiveChanged = state.currentObjective !== objectiveBeforeAction;
 
-    // Evaluate supervisor strategy with exact player state after action
+    // Evaluate supervisor strategy on key events or periodic heartbeat
     if (isSessionActive(sessionId)) {
-      await runManagerCycle(bot);
+      await evaluateManagerTrigger(bot, objectiveChanged);
     }
 
     if (isSessionActive(sessionId)) {

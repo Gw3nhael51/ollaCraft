@@ -25,6 +25,7 @@ module.exports = {
   managerDirective: "Récolter du bois pour fabriquer les premiers outils.",
   managerSubGoal: null,
   isManagerThinking: false,
+  cyclesSinceLastManager: 0,
   activeActionId: 0,
   survivalSessionId: 0,
   tokenStats: {

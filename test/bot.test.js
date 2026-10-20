@@ -467,3 +467,25 @@ test('Water bucket scooping via mine/place and solid block placement on tree log
     'shield->off-hand'
   ]);
 });
+
+test('Event-driven Manager skips intermediate successes and triggers on failures, loops, objectives, or heartbeat', () => {
+  const bot = createMockBot([{ name: 'oak_log', count: 2 }]);
+  const mockState = {
+    managerSubGoal: { action: 'mine', target: 'log' },
+    lastActionResult: { action: 'mine', target: 'log', success: true, message: 'OK' },
+    actionHistory: [{ action: 'mine', target: 'log', success: true }],
+    cyclesSinceLastManager: 0
+  };
+
+  assert.equal(manager.shouldRunManager(bot, mockState, false), false);
+  mockState.cyclesSinceLastManager = 1;
+  assert.equal(manager.shouldRunManager(bot, mockState, false), false);
+  mockState.cyclesSinceLastManager = 2;
+  assert.equal(manager.shouldRunManager(bot, mockState, false), true);
+
+  mockState.cyclesSinceLastManager = 0;
+  assert.equal(manager.shouldRunManager(bot, mockState, true), true);
+
+  mockState.lastActionResult = { action: 'craft', target: 'planks', success: false, message: 'Failed' };
+  assert.equal(manager.shouldRunManager(bot, mockState, false), true);
+});
