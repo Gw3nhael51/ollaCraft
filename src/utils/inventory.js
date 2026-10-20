@@ -328,8 +328,10 @@ function getAvailableCrafts(bot, craftingTable) {
   const targetItemsToCheck = [
     'oak_planks', 'birch_planks', 'spruce_planks', 'jungle_planks', 'acacia_planks', 'dark_oak_planks', 'mangrove_planks', 'cherry_planks', 'bamboo_planks',
     'stick', 'crafting_table', 'chest', 'furnace', 'torch', 'bucket',
-    'wooden_pickaxe', 'stone_pickaxe', 'stone_axe', 'stone_sword',
-    'iron_pickaxe', 'iron_axe', 'iron_sword', 'shield',
+    'wooden_pickaxe', 'wooden_axe', 'wooden_sword', 'wooden_shovel',
+    'stone_pickaxe', 'stone_axe', 'stone_sword', 'stone_shovel',
+    'iron_pickaxe', 'iron_axe', 'iron_sword', 'iron_shovel', 'shield',
+    'iron_helmet', 'iron_chestplate', 'iron_leggings', 'iron_boots',
     'flint_and_steel', 'blaze_powder', 'ender_eye'
   ];
   const hasTableInInv = countItem(bot, 'crafting_table') > 0;

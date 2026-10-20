@@ -11,6 +11,7 @@ const { skillWiki } = require('../src/skills/wiki');
 const { dispatchSkill } = require('../src/skills/dispatcher');
 const { computeCraftOperations } = require('../src/skills/craft');
 const { computeSmeltPlan } = require('../src/skills/smelt');
+const { skillHunt, isPositionSafeForLoot } = require('../src/skills/combat');
 const { buildReactPrompt } = require('../src/ai/prompt');
 
 /**
@@ -254,4 +255,50 @@ test('Smelt skill calculates fuel requirements and waits for full batch output',
   assert.equal(inputAdded, 3);
   assert.equal(outputCount, 3);
   assert.ok(smeltRes.message.includes("3x 'raw_iron'"));
+});
+
+test('Combat collects drops at actual death position instead of initial position and avoids lava', async () => {
+  const bot = createMockBot([{ name: 'iron_sword', count: 1 }]);
+  let lookedAtPos = null;
+  bot.lookAt = async (pos) => { lookedAtPos = pos; };
+  bot.setControlState = () => {};
+  bot.clearControlStates = () => {};
+  bot.waitForTicks = async () => {};
+  bot.equip = async () => {};
+
+  const makeVec = (x, y, z) => ({
+    x,
+    y,
+    z,
+    clone() { return makeVec(this.x, this.y, this.z); },
+    offset(dx, dy, dz) { return makeVec(this.x + dx, this.y + dy, this.z + dz); }
+  });
+
+  const cowEntity = {
+    name: 'cow',
+    isValid: true,
+    health: 10,
+    height: 1.4,
+    position: makeVec(5, 64, 0)
+  };
+  bot.entities = { 1: cowEntity };
+  bot.entity.position.distanceTo = () => 2.5;
+  bot.attack = (target) => {
+    target.position = makeVec(18, 64, 4);
+    target.health = 0;
+    target.isValid = false;
+  };
+
+  const huntRes = await skillHunt(bot, 'cow');
+  assert.equal(huntRes.success, true);
+  assert.equal(lookedAtPos.x, 18);
+  assert.equal(lookedAtPos.z, 4);
+
+  bot.blockAt = () => ({ name: 'lava' });
+  assert.equal(isPositionSafeForLoot(bot, makeVec(18, 64, 4)), false);
+
+  bot.recipesFor = (id, _meta, _count, table) => (table ? [{ id }] : []);
+  const allCrafts = invUtils.getAvailableCrafts(bot, { name: 'crafting_table' });
+  assert.ok(allCrafts.includes('iron_shovel'));
+  assert.ok(allCrafts.includes('iron_chestplate'));
 });

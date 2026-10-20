@@ -1,6 +1,7 @@
 const config = require('../config');
 const state = require('../state');
 const invUtils = require('../utils/inventory');
+const { scanNearbyEntities } = require('../utils/environment');
 const { askOllama } = require('./ollama');
 
 /**
@@ -179,6 +180,8 @@ async function runManagerCycle(bot) {
     const progressSummary = `${currentAmount}/${requiredAmount}`;
     const { isInventoryCluttered } = require('../skills/storage');
     const cluttered = isInventoryCluttered(bot);
+    const nearbyEntities = scanNearbyEntities(bot, 20);
+    const entitiesText = Object.keys(nearbyEntities).length > 0 ? JSON.stringify(nearbyEntities) : 'aucune';
 
     const prompt = `
       Tu es le Manager Stratège du bot Minecraft.
@@ -190,6 +193,7 @@ async function runManagerCycle(bot) {
       - IMPORTANT : Ne demande PAS au joueur d'arrêter tant que le palier (${requiredAmount}) n'est pas atteint !
       - Outils possédés : ${tools}
       - Inventaire : ${inventory}
+      - Entités/Créatures proches : ${entitiesText}
       - Encombrement de l'inventaire : ${cluttered ? 'OUI (ATTENTION : inventaire saturé de blocs en surplus, suggère de fabriquer/poser un coffre ou utiliser "chest")' : 'NON'}
       - Santé : ${Math.round(bot.health)}/20 | Faim : ${Math.round(bot.food)}/20
       - Historique des actions récentes : ${recentHistory}
