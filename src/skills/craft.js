@@ -86,15 +86,47 @@ function resolveCraftRecipes(bot, item, normalizedTarget, tableToUse) {
   return { recipes, normalizedTarget };
 }
 
+const SINGLE_CRAFT_ITEMS = new Set(['crafting_table', 'furnace', 'chest']);
+
+/**
+ * Compute safe number of recipe executions bounded by target type and inventory ingredients
+ * @param {object} bot Mineflayer bot instance
+ * @param {object} recipe Selected recipe object
+ * @param {string} targetName Target item name
+ * @param {number} requestedQty Requested quantity
+ * @returns {number} Number of craft operations to execute
+ */
+function computeCraftOperations(bot, recipe, targetName, requestedQty) {
+  const normalizedQty = Math.max(1, Number.parseInt(requestedQty, 10) || 1);
+  const isSingleCraft = SINGLE_CRAFT_ITEMS.has(targetName) || config.TOOL_SUFFIXES.some(s => targetName.endsWith(s));
+  if (isSingleCraft || normalizedQty === 1) return 1;
+
+  if (!Array.isArray(recipe?.delta)) return normalizedQty;
+
+  const consumedEntries = recipe.delta.filter(entry => entry.count < 0);
+  if (consumedEntries.length === 0) return normalizedQty;
+
+  let maxPossible = normalizedQty;
+  for (const entry of consumedEntries) {
+    const itemName = bot.registry.items?.[entry.id]?.name;
+    const availableCount = itemName ? countItem(bot, itemName) : 0;
+    const possibleWithIngredient = Math.floor(availableCount / Math.abs(entry.count));
+    maxPossible = Math.min(maxPossible, possibleWithIngredient);
+  }
+
+  return Math.max(1, maxPossible);
+}
+
 /**
  * Execute Mineflayer craft call with a 10-second safety timeout and window cleanup
  * @param {object} bot Mineflayer bot instance
  * @param {object} recipe Recipe to execute
  * @param {object|null} tableToUse Crafting table block or null
  * @param {string} normalizedTarget Item name being crafted
+ * @param {number} [craftCount] Number of recipe executions
  * @returns {Promise<{ success: boolean, message?: string }>}
  */
-async function performCraftWithTimeout(bot, recipe, tableToUse, normalizedTarget) {
+async function performCraftWithTimeout(bot, recipe, tableToUse, normalizedTarget, craftCount = 1) {
   let timeoutId;
   const timeoutPromise = new Promise((_, reject) => {
     timeoutId = setTimeout(() => {
@@ -112,8 +144,8 @@ async function performCraftWithTimeout(bot, recipe, tableToUse, normalizedTarget
   });
 
   try {
-    bot.chat(`Crafting ${normalizedTarget}...`);
-    await Promise.race([bot.craft(recipe, 1, tableToUse), timeoutPromise]);
+    bot.chat(`Crafting ${normalizedTarget} (x${craftCount})...`);
+    await Promise.race([bot.craft(recipe, craftCount, tableToUse), timeoutPromise]);
     return { success: true };
   } catch (error) {
     console.warn("Error during craft :", error.message);
@@ -191,9 +223,10 @@ async function prepareCraftingStation(bot, state, item, targetName) {
  * @param {object} bot Mineflayer bot instance
  * @param {object} state Global bot state
  * @param {string} targetName Name of the item to craft
+ * @param {number} [qty] Requested quantity of craft operations
  * @returns {Promise<{ success: boolean, message: string }>} Result of the crafting operation
  */
-async function skillCraft(bot, state, targetName) {
+async function skillCraft(bot, state, targetName, qty = 1) {
   if (isWoodLog(targetName)) {
     return { success: false, message: "Raw logs and wood cannot be crafted: harvest them with 'mine' on trees." };
   }
@@ -212,8 +245,9 @@ async function skillCraft(bot, state, targetName) {
     return { success: false, message: `Missing required components in inventory to craft '${targetName}'.` };
   }
 
+  const craftCount = computeCraftOperations(bot, recipes[0], normalizedTarget, qty);
   const countBefore = countItem(bot, normalizedTarget);
-  const craftExec = await performCraftWithTimeout(bot, recipes[0], station.tableToUse, normalizedTarget);
+  const craftExec = await performCraftWithTimeout(bot, recipes[0], station.tableToUse, normalizedTarget, craftCount);
   if (!craftExec.success) return craftExec;
 
   await bot.waitForTicks(8);
@@ -222,11 +256,12 @@ async function skillCraft(bot, state, targetName) {
     : await collectDroppedCraftItem(bot, normalizedTarget);
 
   if (countAfter > countBefore) {
+    const craftedAmount = countAfter - countBefore;
     const substitutionNote = normalizedTarget !== targetName ? ` (adapted substitute for '${targetName}')` : '';
-    return { success: true, message: `Successfully crafted '${normalizedTarget}'${substitutionNote}.` };
+    return { success: true, message: `Successfully crafted ${craftedAmount}x '${normalizedTarget}'${substitutionNote}.` };
   }
 
   return { success: false, message: `Crafting completed but '${normalizedTarget}' was not found in inventory.` };
 }
 
-module.exports = { skillCraft };
+module.exports = { skillCraft, computeCraftOperations };
