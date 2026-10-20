@@ -9,6 +9,23 @@ const HOSTILE_MOBS = new Set([
   'zombie', 'skeleton', 'spider', 'creeper', 'enderman', 'witch', 'blaze', 'drowned', 'husk', 'stray'
 ]);
 
+const HAZARDOUS_LOOT_BLOCKS = new Set([
+  'lava', 'flowing_lava', 'fire', 'soul_fire', 'magma_block'
+]);
+
+/**
+ * Check whether a target position is safe from lava and fire hazards before looting
+ * @param {object} bot Mineflayer bot instance
+ * @param {object} position Position vector to inspect
+ * @returns {boolean} True if safe to approach
+ */
+function isPositionSafeForLoot(bot, position) {
+  if (!position || typeof bot.blockAt !== 'function') return true;
+  const blockAtPos = bot.blockAt(position);
+  const blockBelow = typeof position.offset === 'function' ? bot.blockAt(position.offset(0, -1, 0)) : null;
+  return !HAZARDOUS_LOOT_BLOCKS.has(blockAtPos?.name) && !HAZARDOUS_LOOT_BLOCKS.has(blockBelow?.name);
+}
+
 /**
  * Select the best weapon available in inventory
  * @param {object} bot Mineflayer bot instance
@@ -35,6 +52,7 @@ function getBestWeapon(bot) {
  * @param {object} position Defeated entity position
  */
 async function collectDrops(bot, position) {
+  if (!position || !isPositionSafeForLoot(bot, position)) return;
   try {
     await bot.lookAt(position.offset(0, 0.5, 0));
     bot.setControlState('forward', true);
@@ -101,15 +119,18 @@ async function strikeTargetStep(bot, targetEntity) {
  * @param {object} targetEntity Target entity to combat
  * @param {number} startTime Combat start timestamp
  * @param {number} maxDurationMs Maximum allocated duration in milliseconds
- * @returns {Promise<void>}
+ * @param {object|null} [lastValidPos] Last recorded valid position of target entity
+ * @returns {Promise<object|null>} Final valid position of target entity
  */
-async function combatLoop(bot, targetEntity, startTime, maxDurationMs) {
+async function combatLoop(bot, targetEntity, startTime, maxDurationMs, lastValidPos = null) {
+  const currentPos = targetEntity?.position?.clone ? targetEntity.position.clone() : (targetEntity?.position || lastValidPos);
   if (!targetEntity.isValid || targetEntity.health <= 0 || Date.now() - startTime >= maxDurationMs) {
-    return;
+    return currentPos;
   }
 
   await strikeTargetStep(bot, targetEntity);
-  await combatLoop(bot, targetEntity, startTime, maxDurationMs);
+  const postStrikePos = targetEntity?.position?.clone ? targetEntity.position.clone() : (targetEntity?.position || currentPos);
+  return combatLoop(bot, targetEntity, startTime, maxDurationMs, postStrikePos);
 }
 
 /**
@@ -147,14 +168,14 @@ async function executeCombat(bot, targetEntity) {
   try {
     bot.pathfinder.setGoal(new GoalFollow(targetEntity, 2), true);
 
-    await combatLoop(bot, targetEntity, startTime, maxDurationMs);
+    const deathPos = await combatLoop(bot, targetEntity, startTime, maxDurationMs, startPos);
 
     bot.pathfinder.setGoal(null);
     bot.clearControlStates();
 
     if (!targetEntity.isValid || targetEntity.health <= 0) {
-      console.log(`[COMBAT] Target eliminated, collecting drops...`);
-      await collectDrops(bot, startPos);
+      console.log(`[COMBAT] Target eliminated, collecting drops from ${ entityName }...`);
+      await collectDrops(bot, deathPos || startPos);
       return { success: true, message: `Target '${entityName}' eliminated successfully.` };
     }
 
@@ -173,7 +194,8 @@ async function executeCombat(bot, targetEntity) {
  * @returns {Promise<{ success: boolean, message: string }>} Result of the hunt
  */
 async function skillHunt(bot, targetName) {
-  const target = findTargetEntity(bot, targetName, PASSIVE_MOBS);
+  const cleanTarget = targetName && targetName !== 'none' && targetName !== 'animal' ? targetName : null;
+  const target = findTargetEntity(bot, cleanTarget, PASSIVE_MOBS) || findTargetEntity(bot, null, PASSIVE_MOBS);
   if (!target) {
     return { success: false, message: `No passive animal (${targetName || 'cow, pig, chicken...'}) found nearby.` };
   }
@@ -194,4 +216,4 @@ async function skillFight(bot, targetName) {
   return executeCombat(bot, target);
 }
 
-module.exports = { skillHunt, skillFight };
+module.exports = { skillHunt, skillFight, combatLoop, collectDrops, isPositionSafeForLoot };
