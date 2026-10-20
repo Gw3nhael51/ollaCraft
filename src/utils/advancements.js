@@ -33,10 +33,18 @@ const ADVANCEMENT_ICONS = {
 /**
  * Determine the next story advancement remaining to unlock
  * @param {object} state Global bot state
- * @returns {object|null} Définition du prochain progrès ou null si terminé
+ * @returns {object|null} Next story advancement definition or null if completed
  */
 function updateCurrentAdvancement(state) {
-  const currentAdvancement = STORY_ADVANCEMENTS.find(advancement => !state.unlockedAdvancements.includes(advancement.name));
+  let lastUnlockedIndex = -1;
+  for (let i = 0; i < STORY_ADVANCEMENTS.length; i++) {
+    if (state.unlockedAdvancements.includes(STORY_ADVANCEMENTS[i].name)) {
+      lastUnlockedIndex = i;
+    }
+  }
+
+  const nextCandidates = STORY_ADVANCEMENTS.slice(lastUnlockedIndex + 1);
+  const currentAdvancement = nextCandidates.find(adv => adv.name !== 'Diamonds!') || nextCandidates[0] || null;
   state.currentAdvancement = currentAdvancement ? currentAdvancement.name : 'Free the End (Terminé)';
   return currentAdvancement;
 }
@@ -90,7 +98,7 @@ const ADVANCEMENT_INVENTORY_RULES = [
   { name: 'Acquire Hardware', items: ['iron_ingot', 'iron_pickaxe', 'iron_sword', 'iron_chestplate', 'shield'] },
   { name: 'Suit Up', items: ['shield'], suffixes: ['helmet', 'chestplate', 'leggings', 'boots'] },
   { name: "Isn't It Iron Pick", items: ['iron_pickaxe', 'diamond_pickaxe'] },
-  { name: 'Diamonds!', items: ['diamond', 'diamond_pickaxe', 'bucket', 'water_bucket', 'flint_and_steel'] },
+  { name: 'Diamonds!', items: ['diamond', 'diamond_pickaxe'] },
   { name: 'Ice Bucket Challenge', items: ['obsidian', 'blaze_rod'], inNether: true },
   { name: 'We Need to Go Deeper', items: ['blaze_rod'], inNether: true },
   { name: 'Eye Spy', items: ['ender_eye'] }

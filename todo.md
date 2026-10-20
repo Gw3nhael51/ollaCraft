@@ -6,7 +6,7 @@
 - [x] **Recette `blaze_powder` manquante (`src/utils/inventory.js` & `src/config.js`)** : Ajouter `'blaze_powder'` dans `getAvailableCrafts` (et/ou `QUEST_CHAIN`) afin de débloquer la fabrication de `'ender_eye'`.
 - [x] **Conservation du gravier et matériaux clés (`src/skills/storage.js`)** : Aligner `maxToKeep` dans `skillChest` avec `isItemToStore` et conserver `gravel`/`flint` (requis pour `flint_and_steel`), `blaze_rod`, `ender_pearl` et `obsidian`.
 - [x] **Reprise de progression après mort/reconnexion et faux positif AuthMe (`src/index.js` & `src/utils/inventory.js`)** : Ignorer `"already have registered"` pour le lancement initial, reprendre la survie au respawn et valider les paliers antérieurs si un équipement supérieur est possédé.
-- [ ] **Condition erronée du succès `Diamonds!` (`src/utils/advancements.js`)** : Retirer `hasItem('bucket')`, `hasItem('water_bucket')` et `hasItem('flint_and_steel')` de la validation du jalon `'Diamonds!'`.
+- [x] **Condition erronée du succès `Diamonds!` (`src/utils/advancements.js`)** : Retirer `hasItem('bucket')`, `hasItem('water_bucket')` et `hasItem('flint_and_steel')` de la validation du jalon `'Diamonds!'`.
 
 ## 🛠️ Priorité P1 : Corrections Gameplay & Compétences
 - [ ] **Exploitation de `state.managerSubGoal` (`src/ai/loop.js` & `src/ai/manager.js`)** : Utiliser `state.managerSubGoal` (actuellement calculé mais jamais lu) dans le prompt du joueur et comme action de *fallback* si l'appel LLM du joueur échoue.
