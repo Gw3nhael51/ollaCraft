@@ -22,23 +22,65 @@ function findTargetFurnace(bot, state) {
   }
 
   const dist = bot.entity.position.distanceTo(rememberedFurnace.position);
-  return dist <= 24 ? rememberedFurnace : null;
+  return dist <= 32 ? rememberedFurnace : null;
 }
 
 /**
- * Wait until the furnace produces at least one output item or times out
+ * Return how many items a single unit of the given fuel can smelt
+ * @param {string} fuelName Fuel item name
+ * @returns {number} Smelted items per fuel unit
+ */
+function getFuelSmeltCapacity(fuelName) {
+  if (fuelName === 'coal' || fuelName === 'charcoal') return 8;
+  if (fuelName.includes('log') || fuelName.includes('planks')) return 1.5;
+  return 1;
+}
+
+/**
+ * Compute optimal input quantity, required fuel quantity, and dynamic timeout for smelting
+ * @param {number} requestedQty Quantity requested by AI decision
+ * @param {number} availableInputCount Available raw items in inventory
+ * @param {{ name: string, count: number }} fuelItem Selected fuel stack in inventory
+ * @returns {{ inputCount: number, fuelCount: number, timeoutMs: number }} Smelting execution plan
+ */
+function computeSmeltPlan(requestedQty, availableInputCount, fuelItem) {
+  const normalizedQty = Math.max(1, Number.parseInt(requestedQty, 10) || 1);
+  const desiredInput = Math.min(normalizedQty, availableInputCount);
+  const capacityPerFuel = getFuelSmeltCapacity(fuelItem.name);
+  const maxSmeltableByFuel = Math.max(1, Math.floor(fuelItem.count * capacityPerFuel));
+  const inputCount = Math.min(desiredInput, maxSmeltableByFuel);
+  const fuelCount = Math.min(fuelItem.count, Math.ceil(inputCount / capacityPerFuel));
+  const timeoutMs = inputCount * 12000 + 5000;
+
+  return { inputCount, fuelCount, timeoutMs };
+}
+
+/**
+ * Wait until the furnace finishes smelting the expected output quantity or times out
  * @param {object} furnace Open Mineflayer furnace instance
+ * @param {number} [expectedCount] Target number of smelted output items
+ * @param {number} [timeoutMs] Maximum wait duration in milliseconds
  * @returns {Promise<void>}
  */
-function waitForFurnaceOutput(furnace) {
+function waitForFurnaceOutput(furnace, expectedCount = 1, timeoutMs = 25000) {
   return new Promise((resolve, reject) => {
+    const isComplete = () => {
+      const outputCount = furnace.outputItem()?.count || 0;
+      return outputCount >= expectedCount || (!furnace.inputItem() && outputCount > 0);
+    };
+
+    if (isComplete()) {
+      resolve();
+      return;
+    }
+
     const timer = setTimeout(() => {
       furnace.removeListener('update', onUpdate);
       reject(new Error("Smelting time limit exceeded"));
-    }, 25000);
+    }, timeoutMs);
 
     function onUpdate() {
-      if (furnace.outputItem()) {
+      if (isComplete()) {
         clearTimeout(timer);
         furnace.removeListener('update', onUpdate);
         resolve();
@@ -84,29 +126,41 @@ async function skillSmelt(bot, state, targetName, qty) {
   }
 
   let furnace = null;
+  let navTimer = null;
+
   try {
     if (bot.entity.position.distanceTo(furnaceBlock.position) > 3) {
       const gotoPromise = bot.pathfinder.goto(new goals.GoalGetToBlock(furnaceBlock.position.x, furnaceBlock.position.y, furnaceBlock.position.z));
-      const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error("Navigation timeout towards furnace")), 15000));
+      const timeoutPromise = new Promise((_, reject) => {
+        navTimer = setTimeout(() => reject(new Error("Navigation timeout towards furnace")), 15000);
+      });
       await Promise.race([gotoPromise, timeoutPromise]);
     }
 
     furnace = await bot.openFurnace(furnaceBlock);
-    if (furnace.fuelItem() == null) {
-      await furnace.putFuel(fuelItem.type, null, 1);
+
+    const { inputCount, fuelCount, timeoutMs } = computeSmeltPlan(qty, targetItem.count, fuelItem);
+    const existingFuelCount = furnace.fuelItem()?.count || 0;
+    const neededFuel = Math.max(0, fuelCount - existingFuelCount);
+
+    if (neededFuel > 0) {
+      await furnace.putFuel(fuelItem.type, null, neededFuel);
     }
 
-    await furnace.putInput(targetItem.type, null, qty || 1);
-    await waitForFurnaceOutput(furnace);
-    await furnace.takeOutput();
+    await furnace.putInput(targetItem.type, null, inputCount);
+    await waitForFurnaceOutput(furnace, inputCount, timeoutMs);
+    
+    const smeltedOutput = await furnace.takeOutput();
+    const smeltedCount = smeltedOutput?.count || inputCount;
 
-    return { success: true, message: `Successfully smelted '${targetName}'.` };
+    return { success: true, message: `Successfully smelted ${smeltedCount}x '${targetName}'.` };
   } catch (error) {
     console.warn("Smelting error :", error.message);
     return { success: false, message: `Smelting failed : ${error.message}` };
   } finally {
+    if (navTimer) clearTimeout(navTimer);
     if (furnace) furnace.close();
   }
 }
 
-module.exports = { skillSmelt };
+module.exports = { skillSmelt, computeSmeltPlan, waitForFurnaceOutput };

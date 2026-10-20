@@ -10,6 +10,7 @@ const { resolvePlayerDecision } = require('../src/ai/loop');
 const { skillWiki } = require('../src/skills/wiki');
 const { dispatchSkill } = require('../src/skills/dispatcher');
 const { computeCraftOperations } = require('../src/skills/craft');
+const { computeSmeltPlan } = require('../src/skills/smelt');
 const { buildReactPrompt } = require('../src/ai/prompt');
 
 /**
@@ -50,6 +51,7 @@ function createMockBot(itemsList = [], dimension = 'overworld') {
     findBlock() { return null; },
     blockAt() { return { name: 'air', boundingBox: 'empty' }; },
     recipesFor() { return []; },
+    pathfinder: { goto: async () => {}, setGoal: () => {} },
     chat() {}
   };
 }
@@ -198,4 +200,58 @@ test('Craft skill forwards qty from dispatcher, bounds by available ingredients,
   assert.equal(result.success, true);
   assert.equal(executedCount, 7);
   assert.ok(result.message.includes("7x 'ender_eye'"));
+});
+
+test('Smelt skill calculates fuel requirements and waits for full batch output', async () => {
+  const planWithPlanks = computeSmeltPlan(3, 3, { name: 'oak_planks', count: 4 });
+  assert.equal(planWithPlanks.inputCount, 3);
+  assert.equal(planWithPlanks.fuelCount, 2);
+  assert.equal(planWithPlanks.timeoutMs, 41000);
+
+  const planWithCoal = computeSmeltPlan(6, 6, { name: 'coal', count: 2 });
+  assert.equal(planWithCoal.inputCount, 6);
+  assert.equal(planWithCoal.fuelCount, 1);
+
+  const planFuelLimited = computeSmeltPlan(5, 5, { name: 'oak_log', count: 2 });
+  assert.equal(planFuelLimited.inputCount, 3);
+  assert.equal(planFuelLimited.fuelCount, 2);
+
+  const bot = createMockBot([
+    { name: 'raw_iron', count: 3 },
+    { name: 'oak_planks', count: 4 }
+  ]);
+  const furnacePos = { x: 2, y: 64, z: 0 };
+  bot.findBlock = () => ({ name: 'furnace', position: furnacePos });
+
+  let fuelAdded = 0;
+  let inputAdded = 0;
+  let outputCount = 0;
+  let updateListener = null;
+
+  bot.openFurnace = async () => ({
+    fuelItem: () => null,
+    inputItem: () => (outputCount < inputAdded ? { count: inputAdded - outputCount } : null),
+    outputItem: () => (outputCount > 0 ? { name: 'iron_ingot', count: outputCount } : null),
+    putFuel: async (_type, _meta, count) => { fuelAdded = count; },
+    putInput: async (_type, _meta, count) => {
+      inputAdded = count;
+      setImmediate(() => {
+        outputCount = 1;
+        if (updateListener) updateListener();
+        outputCount = 3;
+        if (updateListener) updateListener();
+      });
+    },
+    on: (_event, cb) => { updateListener = cb; },
+    removeListener: () => { updateListener = null; },
+    takeOutput: async () => ({ name: 'iron_ingot', count: outputCount }),
+    close: () => {}
+  });
+
+  const smeltRes = await dispatchSkill(bot, state, 'smelt', 'raw_iron', 3);
+  assert.equal(smeltRes.success, true);
+  assert.equal(fuelAdded, 2);
+  assert.equal(inputAdded, 3);
+  assert.equal(outputCount, 3);
+  assert.ok(smeltRes.message.includes("3x 'raw_iron'"));
 });
