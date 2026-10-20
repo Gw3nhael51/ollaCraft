@@ -6,6 +6,7 @@ const invUtils = require('../src/utils/inventory');
 const advUtils = require('../src/utils/advancements');
 const storage = require('../src/skills/storage');
 const manager = require('../src/ai/manager');
+
 const { resolvePlayerDecision } = require('../src/ai/loop');
 const { skillWiki } = require('../src/skills/wiki');
 const { dispatchSkill } = require('../src/skills/dispatcher');
@@ -86,8 +87,15 @@ test('Progression resumes at current stage when keeping advanced gear', () => {
   botMidGame.inventory.slots[45] = { name: 'shield', count: 1 };
   botMidGame.inventory.slots[11] = null;
 
+  state.base.furnace = null;
+  state.managerDirective = "Récolter du bois pour fabriquer les premiers outils.";
+  const furnacePos = { x: 4, y: 64, z: 2 };
+  botMidGame.findBlock = ({ matching }) => (matching === mcData.blocksByName.furnace.id ? { name: 'furnace', position: furnacePos } : null);
+
   invUtils.syncObjective(botMidGame, state);
   assert.equal(state.currentObjective, 'bucket');
+  assert.deepEqual(state.base.furnace, furnacePos);
+  assert.ok(state.managerDirective.includes('bucket'));
 });
 
 test('Diamonds! advancement requires actual diamond items and speedrun skips to Ice Bucket Challenge', () => {

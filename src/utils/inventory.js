@@ -223,6 +223,26 @@ function isQuestDone(bot, questName, state) {
   return config.QUEST_CHAIN.slice(questIndex + 1).some(laterQuest => isQuestDirectlyMet(bot, laterQuest, state));
 }
 
+const BASE_STATION_NAMES = ['crafting_table', 'furnace', 'chest'];
+
+/**
+ * Discover and memorize nearby placed base stations if not already recorded in state
+ * @param {object} bot Mineflayer bot instance
+ * @param {object} state Global bot state
+ */
+function syncBaseStations(bot, state) {
+  if (!state?.base || typeof bot.findBlock !== 'function') return;
+
+  for (const stationName of BASE_STATION_NAMES) {
+    if (state.base[stationName]) continue;
+    const stationId = bot.registry?.blocksByName?.[stationName]?.id;
+    const found = stationId ? bot.findBlock({ matching: stationId, maxDistance: config.CRAFTING_TABLE_RANGE }) : null;
+    if (found?.position) {
+      state.base[stationName] = found.position.clone ? found.position.clone() : found.position;
+    }
+  }
+}
+
 /**
  * Update the bot's current objective following the progression chain
  * @param {object} bot Mineflayer bot instance
@@ -230,6 +250,7 @@ function isQuestDone(bot, questName, state) {
  */
 function syncObjective(bot, state) {
   syncAdvancementsWithInventory(bot, state);
+  syncBaseStations(bot, state);
 
   if (state.manualObjective) return;
 
@@ -259,6 +280,13 @@ function syncObjective(bot, state) {
       };
     }
   }
+
+  if (
+    state.currentObjective !== 'wooden_pickaxe' &&
+    state.managerDirective === "Récolter du bois pour fabriquer les premiers outils."
+  ) {
+    state.managerDirective = `Progresser vers l'objectif '${state.currentObjective}' en utilisant l'équipement déjà possédé.`;
+  }
 }
 
 /**
@@ -287,7 +315,13 @@ function getInventorySummary(bot) {
 function findNearbyCraftingTable(bot, state, maxDistance = config.CRAFTING_TABLE_RANGE) {
   const tableId = bot.registry?.blocksByName?.crafting_table?.id;
   const nearby = tableId ? bot.findBlock({ matching: tableId, maxDistance }) : null;
-  if (nearby || !state?.base?.crafting_table) return nearby;
+  if (nearby) {
+    if (state?.base && !state.base.crafting_table && nearby.position) {
+      state.base.crafting_table = nearby.position.clone ? nearby.position.clone() : nearby.position;
+    }
+    return nearby;
+  }
+  if (!state?.base?.crafting_table) return null;
 
   const basePos = state.base.crafting_table;
   const baseTableBlock = bot.blockAt(basePos);
