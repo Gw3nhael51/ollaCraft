@@ -37,9 +37,14 @@ bot.on('spawn', () => {
   bot.pathfinder.setMovements(defaultMove);
 
   // Keep bot at surface if falling into water
+  let wasInWater = false;
   bot.on('physicsTick', () => {
     if (bot.entity.isInWater) {
+      wasInWater = true;
       bot.setControlState('jump', true);
+    } else if (wasInWater) {
+      wasInWater = false;
+      bot.setControlState('jump', false);
     }
   });
 
@@ -47,7 +52,7 @@ bot.on('spawn', () => {
     state.hasStarted = true;
     state.isSurviving = true;
     bot.chat("Autonomous ReAct mode ready. Objective : " + state.currentObjective);
-    startManagerLoop(bot);
+    void startManagerLoop(bot);
     void handleSurvivalRequest(bot);
   }
 });
@@ -69,7 +74,7 @@ bot.on('messagestr', (message) => {
       state.isSurviving = true;
       console.log("🚀 Connection confirmed by server! Launching autonomous mode.");
       bot.chat("Autonomous ReAct mode ready. Objective : " + state.currentObjective);
-      startManagerLoop(bot);
+      void startManagerLoop(bot);
       void handleSurvivalRequest(bot);
     }
   }
@@ -87,7 +92,7 @@ bot.on('chat', async (username, message) => {
     if (state.isSurviving) return;
     state.isSurviving = true;
     bot.chat("Starting autonomous mode.");
-    startManagerLoop(bot);
+    void startManagerLoop(bot);
     await handleSurvivalRequest(bot);
   }
 

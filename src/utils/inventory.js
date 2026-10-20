@@ -201,7 +201,20 @@ function isQuestDone(bot, questName, state) {
 
   // Validate nether_portal quest once inside the Nether or holding blaze rods
   if (questName === 'nether_portal') {
-    return bot.game?.dimension === 'the_nether' || countItem(bot, 'blaze_rod') > 0;
+    return bot.game?.dimension === 'the_nether' || countItem(bot, 'blaze_rod') > 0 || countItem(bot, 'blaze_powder') > 0 || countItem(bot, 'ender_eye') > 0;
+  }
+
+  // Validate blaze_rod quest even after rods are crafted into powder or eyes
+  if (questName === 'blaze_rod') {
+    const required = config.QUEST_AMOUNT.blaze_rod || 7;
+    const equivalentRods = countItem(bot, 'blaze_rod') + Math.ceil((countItem(bot, 'blaze_powder') + countItem(bot, 'ender_eye')) / 2);
+    return equivalentRods >= required;
+  }
+
+  // Validate blaze_powder quest even after powder is crafted into ender eyes
+  if (questName === 'blaze_powder') {
+    const required = config.QUEST_AMOUNT.blaze_powder || 12;
+    return (countItem(bot, 'blaze_powder') + countItem(bot, 'ender_eye')) >= required;
   }
 
   return countItem(bot, questName) >= (config.QUEST_AMOUNT[questName] || 1);
@@ -275,7 +288,7 @@ function getAvailableCrafts(bot, craftingTable) {
     'stick', 'crafting_table', 'chest', 'furnace', 'torch', 'bucket',
     'wooden_pickaxe', 'stone_pickaxe', 'stone_axe', 'stone_sword',
     'iron_pickaxe', 'iron_axe', 'iron_sword', 'shield',
-    'flint_and_steel', 'ender_eye'
+    'flint_and_steel', 'blaze_powder', 'ender_eye'
   ];
   const availableCrafts = [];
   const hasCraftingTableInInventory = countItem(bot, 'crafting_table') > 0;

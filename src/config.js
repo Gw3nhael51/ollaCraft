@@ -33,6 +33,7 @@ module.exports = {
     'flint_and_steel',
     'nether_portal',
     'blaze_rod',
+    'blaze_powder',
     'ender_pearl',
     'ender_eye'
   ],
@@ -46,6 +47,7 @@ module.exports = {
     flint_and_steel: 1,
     nether_portal: 1,
     blaze_rod: 7,
+    blaze_powder: 12,
     ender_pearl: 12,
     ender_eye: 12
   },
