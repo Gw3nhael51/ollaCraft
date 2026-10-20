@@ -52,6 +52,7 @@ function checkTerrainSituation(bot) {
   ];
 
   let solidSides = 0;
+  
   for (const dir of directions) {
     const feetBlock = bot.blockAt(pos.plus(dir));
     const sideEyeBlock = bot.blockAt(pos.plus(dir).offset(0, 1, 0));

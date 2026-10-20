@@ -266,6 +266,7 @@ async function castSingleLavaFrameBlock(bot, targetPos) {
     0.5 + faceVector.y * 0.5,
     0.5 + faceVector.z * 0.5
   );
+  
   await bot.equip(lavaItem, 'hand');
   await bot.lookAt(clickPos, true);
   await bot.activateItem();
