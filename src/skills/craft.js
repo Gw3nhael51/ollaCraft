@@ -67,12 +67,17 @@ async function approachCraftingTable(bot, tableToUse) {
  * @param {object} item Initial registry item
  * @param {string} normalizedTarget Current target name
  * @param {object|null} tableToUse Crafting table block or null
+ * @param {number} [requestedQty] Requested quantity of craft operations
  * @returns {{ recipes: Array<object>, normalizedTarget: string }}
  */
-function resolveCraftRecipes(bot, item, normalizedTarget, tableToUse) {
+function resolveCraftRecipes(bot, item, normalizedTarget, tableToUse, requestedQty = 1) {
+  const sortBestRecipes = (list, target) => [...list].sort(
+    (a, b) => computeCraftOperations(bot, b, target, requestedQty) - computeCraftOperations(bot, a, target, requestedQty)
+  );
+
   const recipes = bot.recipesFor(item.id, null, 1, tableToUse);
   if (recipes.length > 0 || !isPlanks(normalizedTarget)) {
-    return { recipes, normalizedTarget };
+    return { recipes: sortBestRecipes(recipes, normalizedTarget), normalizedTarget };
   }
 
   const alternatePlank = resolvePlankTarget(bot, 'planks');
@@ -81,7 +86,7 @@ function resolveCraftRecipes(bot, item, normalizedTarget, tableToUse) {
 
   const alternateRecipes = bot.recipesFor(alternateItem.id, null, 1, tableToUse);
   if (alternateRecipes.length > 0) {
-    return { recipes: alternateRecipes, normalizedTarget: alternatePlank };
+    return { recipes: sortBestRecipes(alternateRecipes, alternatePlank), normalizedTarget: alternatePlank };
   }
   return { recipes, normalizedTarget };
 }
@@ -103,18 +108,41 @@ function computeCraftOperations(bot, recipe, targetName, requestedQty) {
 
   if (!Array.isArray(recipe?.delta)) return normalizedQty;
 
-  const consumedEntries = recipe.delta.filter(entry => entry.count < 0);
-  if (consumedEntries.length === 0) return normalizedQty;
+  const consumedByItemId = new Map();
+  for (const entry of recipe.delta) {
+    if (entry.count < 0) {
+      consumedByItemId.set(entry.id, (consumedByItemId.get(entry.id) || 0) + Math.abs(entry.count));
+    }
+  }
+  if (consumedByItemId.size === 0) return normalizedQty;
 
   let maxPossible = normalizedQty;
-  for (const entry of consumedEntries) {
-    const itemName = bot.registry.items?.[entry.id]?.name;
+  for (const [id, requiredPerCraft] of consumedByItemId.entries()) {
+    const itemName = bot.registry.items?.[id]?.name;
     const availableCount = itemName ? countItem(bot, itemName) : 0;
-    const possibleWithIngredient = Math.floor(availableCount / Math.abs(entry.count));
+    const possibleWithIngredient = Math.floor(availableCount / requiredPerCraft);
     maxPossible = Math.min(maxPossible, possibleWithIngredient);
   }
 
   return Math.max(1, maxPossible);
+}
+
+/**
+ * Reclaim any items left in the 2x2 personal crafting grid slots (1..4) recursively
+ * @param {object} bot Mineflayer bot instance
+ * @param {number} [slotIndex] Current crafting grid slot index
+ * @returns {Promise<void>}
+ */
+async function reclaimPersonalCraftingGrid(bot, slotIndex = 1) {
+  if (slotIndex > 4 || typeof bot.putAway !== 'function') return;
+  if (bot.inventory?.slots?.[slotIndex]) {
+    try {
+      await bot.putAway(slotIndex);
+    } catch {
+      // Ignore slot cleanup error if inventory is full
+    }
+  }
+  await reclaimPersonalCraftingGrid(bot, slotIndex + 1);
 }
 
 /**
@@ -130,11 +158,11 @@ async function performCraftWithTimeout(bot, recipe, tableToUse, normalizedTarget
   let timeoutId;
   const timeoutPromise = new Promise((_, reject) => {
     timeoutId = setTimeout(() => {
-      const activeWindow = bot.currentWindow;
-      if (activeWindow) {
+      const activeWindow = bot.currentWindow || bot.inventory;
+      if (activeWindow?.emit) {
         try {
           activeWindow.emit('updateSlot:0', null);
-          bot.closeWindow(activeWindow);
+          if (bot.currentWindow) bot.closeWindow(bot.currentWindow);
         } catch (err) {
           console.debug("Crafting window cleanup error:", err.message);
         }
@@ -158,6 +186,8 @@ async function performCraftWithTimeout(bot, recipe, tableToUse, normalizedTarget
       } catch (err) {
         console.debug("Crafting window cleanup error:", err.message);
       }
+    } else if (!tableToUse) {
+      await reclaimPersonalCraftingGrid(bot);
     }
   }
 }
@@ -240,7 +270,7 @@ async function skillCraft(bot, state, targetName, qty = 1) {
   const station = await prepareCraftingStation(bot, state, item, targetName);
   if (!station.ok) return station.errorResult;
 
-  const { recipes, normalizedTarget } = resolveCraftRecipes(bot, item, initialTarget, station.tableToUse);
+  const { recipes, normalizedTarget } = resolveCraftRecipes(bot, item, initialTarget, station.tableToUse, qty);
   if (recipes.length === 0) {
     return { success: false, message: `Missing required components in inventory to craft '${targetName}'.` };
   }

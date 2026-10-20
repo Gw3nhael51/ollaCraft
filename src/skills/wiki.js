@@ -1,4 +1,5 @@
 const { getMcData } = require('../utils/wikiData');
+const { isPlanks } = require('../utils/inventory');
 
 /**
  * Format block properties and harvest tool requirements for Wiki output
@@ -49,7 +50,8 @@ function formatItemWikiSection(mcData, item, isAlsoBlock) {
 
   const ingredientCounts = {};
   for (const id of rawIds) {
-    const name = mcData.items[id]?.name;
+    const rawName = mcData.items[id]?.name;
+    const name = isPlanks(rawName) && !isPlanks(item.name) ? 'planks' : rawName;
     if (name) ingredientCounts[name] = (ingredientCounts[name] || 0) + 1;
   }
 

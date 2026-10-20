@@ -75,10 +75,11 @@ function canHarvestBlock(bot, block) {
  * @returns {string[]} Liste des blocs minables correspondants
  */
 function getBlockNamesForTarget(bot, targetItemName) {
-  const { isWoodLog, isPlanks } = require('./inventory');
+  const { GENERIC_LOG_NAMES, GENERIC_PLANK_NAMES, isWoodLog, isPlanks } = require('./inventory');
+  const clean = typeof targetItemName === 'string' ? targetItemName.toLowerCase().trim() : '';
   let cacheKey = targetItemName;
-  if (isWoodLog(targetItemName)) cacheKey = '__log__';
-  else if (isPlanks(targetItemName)) cacheKey = '__planks__';
+  if (GENERIC_LOG_NAMES.has(clean)) cacheKey = '__log__';
+  else if (GENERIC_PLANK_NAMES.has(clean)) cacheKey = '__planks__';
 
   if (targetBlocksCache.has(cacheKey)) {
     return targetBlocksCache.get(cacheKey);

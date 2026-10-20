@@ -2,7 +2,18 @@ const crypto = require('node:crypto');
 const { Vec3 } = require('vec3');
 const { goals } = require('mineflayer-pathfinder');
 const config = require('../config');
-const { getBestToolForBlock } = require('../utils/inventory');
+const { getBestToolForBlock, isWoodLog } = require('../utils/inventory');
+
+/**
+ * Check whether an adjacent block can be dug quickly during an unstuck maneuver
+ * @param {object|null} block Candidate block
+ * @returns {boolean} True if block can be broken to escape
+ */
+function isDiggableObstacle(block) {
+  if (!block?.name) return false;
+  if (config.SOFT_BLOCKS.has(block.name)) return true;
+  return block.name.endsWith('_leaves') || isWoodLog(block.name);
+}
 
 /**
  * Swim upwards recursively to reach water surface
@@ -37,14 +48,14 @@ async function findAndDigEscapeRoute(bot, cardinals, index) {
   const sideEyeBlock = bot.blockAt(bot.entity.position.plus(dir).offset(0, 1, 0));
   const sideFeetBlock = bot.blockAt(bot.entity.position.plus(dir));
 
-  if (sideEyeBlock && config.SOFT_BLOCKS.has(sideEyeBlock.name)) {
+  if (isDiggableObstacle(sideEyeBlock)) {
     console.log(`[UNSTUCK] Passable wall found in direction (${dir.x}, ${dir.y}, ${dir.z}) : ${sideEyeBlock.name}. Digging escape path...`);
     try {
       const eyeTool = getBestToolForBlock(bot, sideEyeBlock);
       if (eyeTool) await bot.equip(eyeTool, 'hand').catch(() => {});
       await bot.dig(sideEyeBlock);
 
-      if (sideFeetBlock && config.SOFT_BLOCKS.has(sideFeetBlock.name)) {
+      if (isDiggableObstacle(sideFeetBlock)) {
         const feetTool = getBestToolForBlock(bot, sideFeetBlock);
         if (feetTool) await bot.equip(feetTool, 'hand').catch(() => {});
         await bot.dig(sideFeetBlock);
@@ -155,4 +166,4 @@ async function skillExplore(bot) {
   }
 }
 
-module.exports = { skillUnstuck, skillExplore };
+module.exports = { skillUnstuck, skillExplore, isDiggableObstacle };

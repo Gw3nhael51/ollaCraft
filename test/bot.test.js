@@ -16,6 +16,7 @@ const { buildObsidianFrame, PORTAL_BUILD_STEPS } = require('../src/skills/portal
 const { scanEnvironment } = require('../src/utils/environment');
 const { getBlockNamesForTarget, getOreBlockNames } = require('../src/utils/wikiData');
 const { buildReactPrompt } = require('../src/ai/prompt');
+const { isDiggableObstacle } = require('../src/skills/navigate');
 
 /**
  * Create a lightweight offline mock of a Mineflayer bot instance
@@ -367,8 +368,30 @@ test('Unified 3D scan collects blocks and exposed ores in one pass and wikiData 
   assert.ok(prompt.includes('1x iron_ore'));
   assert.equal(blockAtCalls, callsAfterScan + 11);
 
-  const logsFirst = getBlockNamesForTarget(bot, 'oak_log');
-  const logsSecond = getBlockNamesForTarget(bot, 'birch_log');
+  const logsFirst = getBlockNamesForTarget(bot, 'log');
+  const logsSecond = getBlockNamesForTarget(bot, 'wood');
   assert.equal(logsFirst, logsSecond);
+  assert.deepEqual(getBlockNamesForTarget(bot, 'oak_log'), ['oak_log']);
   assert.equal(getOreBlockNames(bot), getOreBlockNames(bot));
+});
+
+test('Wood species isolation, generic plank wiki recipes, and foliage unstuck prevent early-game loops', () => {
+  const bot = createMockBot([
+    { name: 'jungle_log', count: 40 },
+    { name: 'jungle_planks', count: 5 }
+  ]);
+
+  assert.equal(invUtils.countItem(bot, 'oak_log'), 0);
+  assert.equal(invUtils.countItem(bot, 'jungle_log'), 40);
+  assert.equal(invUtils.countItem(bot, 'log'), 40);
+  assert.equal(invUtils.countItem(bot, 'oak_planks'), 0);
+  assert.equal(invUtils.countItem(bot, 'planks'), 5);
+
+  const wikiPickaxe = skillWiki(bot, 'wooden_pickaxe');
+  assert.ok(wikiPickaxe.message.includes('3x planks'));
+  assert.ok(!wikiPickaxe.message.includes('oak_planks'));
+
+  assert.equal(isDiggableObstacle({ name: 'jungle_leaves' }), true);
+  assert.equal(isDiggableObstacle({ name: 'jungle_log' }), true);
+  assert.equal(isDiggableObstacle({ name: 'bedrock' }), false);
 });

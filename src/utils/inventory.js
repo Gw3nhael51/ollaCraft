@@ -56,13 +56,25 @@ function getPlankForLog(logName) {
 }
 
 /**
+ * Return carried inventory items excluding crafting grid slots when supported
+ * @param {object} bot Mineflayer bot instance
+ * @returns {Array<object>} List of inventory items
+ */
+function getCarriedItems(bot) {
+  if (typeof bot.inventory?.items === 'function') {
+    return bot.inventory.items();
+  }
+  return (bot.inventory?.slots || []).filter(Boolean);
+}
+
+/**
  * Resolve target plank name according to logs currently carried in inventory
  * @param {object} bot Mineflayer bot instance
  * @param {string} requestedTarget Requested plank target
  * @returns {string} Optimal craftable plank item name
  */
 function resolvePlankTarget(bot, requestedTarget) {
-  const inventoryItems = (bot.inventory?.slots || []).filter(Boolean);
+  const inventoryItems = getCarriedItems(bot);
   const logsInInventory = inventoryItems.filter(i => isWoodLog(i.name));
 
   // Fallback to existing planks if no logs in inventory
@@ -95,32 +107,21 @@ function resolvePlankTarget(bot, requestedTarget) {
  * @returns {number} Cumulative quantity of the item
  */
 function countItem(bot, name) {
-  const allSlots = (bot.inventory?.slots || []).filter(Boolean);
+  if (!name || typeof name !== 'string') return 0;
+  const clean = name.toLowerCase().trim();
+  const allSlots = getCarriedItems(bot);
 
   // Sum all logs for generic wood query
-  if (name === 'log' || name === 'logs' || name === 'wood' || name === 'bois') {
+  if (GENERIC_LOG_NAMES.has(clean)) {
     return allSlots.filter(item => isWoodLog(item.name)).reduce((sum, item) => sum + item.count, 0);
   }
 
   // Sum all planks for generic plank query
-  if (name === 'planks' || name === 'plank' || name === 'planche' || name === 'planches') {
+  if (GENERIC_PLANK_NAMES.has(clean)) {
     return allSlots.filter(item => isPlanks(item.name)).reduce((sum, item) => sum + item.count, 0);
   }
 
-  const exactCount = allSlots.filter(item => item.name === name).reduce((sum, item) => sum + item.count, 0);
-  if (exactCount > 0) return exactCount;
-
-  // Substitute matching logs if specific wood type is missing
-  if (isWoodLog(name)) {
-    return allSlots.filter(item => isWoodLog(item.name)).reduce((sum, item) => sum + item.count, 0);
-  }
-
-  // Substitute matching planks if specific plank type is missing
-  if (isPlanks(name)) {
-    return allSlots.filter(item => isPlanks(item.name)).reduce((sum, item) => sum + item.count, 0);
-  }
-
-  return 0;
+  return allSlots.filter(item => item.name === clean).reduce((sum, item) => sum + item.count, 0);
 }
 
 /**
@@ -130,7 +131,7 @@ function countItem(bot, name) {
  * @returns {boolean} True if matching tool is owned
  */
 function hasToolType(bot, suffix) {
-  const allSlots = (bot.inventory?.slots || []).filter(Boolean);
+  const allSlots = getCarriedItems(bot);
   return allSlots.some(item => item.name.endsWith(suffix));
 }
 
@@ -140,7 +141,7 @@ function hasToolType(bot, suffix) {
  * @returns {string[]} List of owned tool names
  */
 function getOwnedTools(bot) {
-  const allSlots = (bot.inventory?.slots || []).filter(Boolean);
+  const allSlots = getCarriedItems(bot);
   const tools = allSlots
     .filter(item => config.TOOL_SUFFIXES.some(suffix => item.name.endsWith(suffix)))
     .map(item => item.name);
@@ -258,7 +259,7 @@ function syncObjective(bot, state) {
  * @returns {string} Textual representation of inventory
  */
 function getInventorySummary(bot) {
-  const inventoryItems = (bot.inventory?.slots || []).filter(Boolean);
+  const inventoryItems = getCarriedItems(bot);
   if (inventoryItems.length === 0) return "Inventaire vide";
 
   const summary = {};
@@ -383,6 +384,8 @@ function getBestToolForBlock(bot, block) {
 }
 
 module.exports = {
+  GENERIC_LOG_NAMES,
+  GENERIC_PLANK_NAMES,
   countItem,
   hasToolType,
   getOwnedTools,

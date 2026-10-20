@@ -48,7 +48,8 @@ function formatRecipeSummary(mcData, primaryRecipe, targetName) {
   const countMap = {};
 
   for (const id of rawIds) {
-    const name = mcData.items[id]?.name;
+    const rawName = mcData.items[id]?.name;
+    const name = invUtils.isPlanks(rawName) && !invUtils.isPlanks(targetName) ? 'planks' : rawName;
     if (name) countMap[name] = (countMap[name] || 0) + 1;
   }
 
