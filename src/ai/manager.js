@@ -39,6 +39,18 @@ function detectActionLoop(actionHistory) {
 }
 
 /**
+ * Resolve exact craftable item name when requested target or plank variant is available
+ * @param {string} target Requested craft target
+ * @param {string[]} available Available craft entries
+ * @returns {string|null} Resolved target name or null
+ */
+function resolveAvailableCraftTarget(target, available) {
+  if (available.includes(target)) return target;
+  if (!invUtils.isPlanks(target)) return null;
+  return available.find(item => invUtils.isPlanks(item) && item !== 'planks') || (available.some(item => invUtils.isPlanks(item)) ? target : null);
+}
+
+/**
  * Validate and adjust a craft suggestion according to inventory and nearby crafting table
  * @param {object} bot Mineflayer bot instance
  * @param {string} target Suggested craft target
@@ -49,16 +61,9 @@ function sanitizeCraftDecision(bot, target, directive) {
   const table = invUtils.findNearbyCraftingTable(bot, state);
   const available = invUtils.getAvailableCrafts(bot, table);
 
-  const isPlankRequested = invUtils.isPlanks(target);
-  const hasAvailablePlanks = available.some(item => invUtils.isPlanks(item));
-  const isCraftPossible = available.includes(target) || (isPlankRequested && hasAvailablePlanks);
-
-  if (isCraftPossible) {
-    if (isPlankRequested && !available.includes(target)) {
-      const specificPlank = available.find(item => invUtils.isPlanks(item) && item !== 'planks');
-      if (specificPlank) return { action: 'craft', target: specificPlank, directive };
-    }
-    return { action: 'craft', target, directive };
+  const craftableTarget = resolveAvailableCraftTarget(target, available);
+  if (craftableTarget) {
+    return { action: 'craft', target: craftableTarget, directive };
   }
 
   if (target === 'crafting_table') {
@@ -70,6 +75,11 @@ function sanitizeCraftDecision(bot, target, directive) {
 
   if (!table && invUtils.countItem(bot, 'crafting_table') > 0) {
     return { action: 'place', target: 'crafting_table', directive: `Poser l'établi au sol pour pouvoir fabriquer ${target}.` };
+  }
+
+  const needsOnlyTable = available.some(entry => entry.startsWith(`${target} (`));
+  if (needsOnlyTable && available.includes('crafting_table')) {
+    return { action: 'craft', target: 'crafting_table', directive: `Fabriquer un établi ('crafting_table') pour assembler ${target}.` };
   }
 
   return { action: 'explore', target, directive: `Ressources manquantes pour fabriquer ${target}, explorer pour trouver des composants.` };
@@ -161,6 +171,26 @@ function sanitizeManagerOutput(bot, rawDecision) {
   return { directive, suggestedAction: action, suggestedTarget: target };
 }
 
+const MANAGER_HEARTBEAT_INTERVAL = 3;
+
+/**
+ * Determine whether the supervisor model needs to be consulted after a player cycle
+ * @param {object} bot Mineflayer bot instance
+ * @param {object} currentState Global bot state
+ * @param {boolean} [objectiveChanged] True if currentObjective changed during the cycle
+ * @returns {boolean} True if manager cycle should run
+ */
+function shouldRunManager(bot, currentState = state, objectiveChanged = false) {
+  if (objectiveChanged || !currentState.managerSubGoal) return true;
+  if (currentState.lastActionResult && !currentState.lastActionResult.success) return true;
+  if (detectActionLoop(currentState.actionHistory || [])) return true;
+
+  const { isInventoryCluttered } = require('../skills/storage');
+  if (isInventoryCluttered(bot)) return true;
+
+  return (currentState.cyclesSinceLastManager || 0) + 1 >= MANAGER_HEARTBEAT_INTERVAL;
+}
+
 /**
  * Execute supervisor reasoning cycle to steer the autonomous player
  * @param {object} bot Mineflayer bot instance
@@ -170,7 +200,9 @@ async function runManagerCycle(bot) {
   if (!state.isSurviving || state.isManagerThinking) return;
 
   state.isManagerThinking = true;
+  state.cyclesSinceLastManager = 0;
   try {
+    invUtils.syncObjective(bot, state);
     const tools = invUtils.getOwnedTools(bot).join(', ') || 'aucun';
     const inventory = invUtils.getInventorySummary(bot);
     const loopDetected = detectActionLoop(state.actionHistory);
@@ -238,6 +270,7 @@ async function startManagerLoop(bot) {
 module.exports = {
   runManagerCycle,
   startManagerLoop,
+  shouldRunManager,
   detectActionLoop,
   sanitizeManagerOutput
 };

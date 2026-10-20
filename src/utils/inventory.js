@@ -56,13 +56,28 @@ function getPlankForLog(logName) {
 }
 
 /**
+ * Return carried inventory items including equipped armor (5..8) and off-hand (45) while excluding 2x2 crafting grid (0..4)
+ * @param {object} bot Mineflayer bot instance
+ * @returns {Array<object>} List of inventory and equipped items
+ */
+function getCarriedItems(bot) {
+  if (Array.isArray(bot.inventory?.slots)) {
+    return bot.inventory.slots.slice(5).filter(Boolean);
+  }
+  if (typeof bot.inventory?.items === 'function') {
+    return bot.inventory.items();
+  }
+  return [];
+}
+
+/**
  * Resolve target plank name according to logs currently carried in inventory
  * @param {object} bot Mineflayer bot instance
  * @param {string} requestedTarget Requested plank target
  * @returns {string} Optimal craftable plank item name
  */
 function resolvePlankTarget(bot, requestedTarget) {
-  const inventoryItems = (bot.inventory?.slots || []).filter(Boolean);
+  const inventoryItems = getCarriedItems(bot);
   const logsInInventory = inventoryItems.filter(i => isWoodLog(i.name));
 
   // Fallback to existing planks if no logs in inventory
@@ -95,32 +110,21 @@ function resolvePlankTarget(bot, requestedTarget) {
  * @returns {number} Cumulative quantity of the item
  */
 function countItem(bot, name) {
-  const allSlots = (bot.inventory?.slots || []).filter(Boolean);
+  if (!name || typeof name !== 'string') return 0;
+  const clean = name.toLowerCase().trim();
+  const allSlots = getCarriedItems(bot);
 
   // Sum all logs for generic wood query
-  if (name === 'log' || name === 'logs' || name === 'wood' || name === 'bois') {
+  if (GENERIC_LOG_NAMES.has(clean)) {
     return allSlots.filter(item => isWoodLog(item.name)).reduce((sum, item) => sum + item.count, 0);
   }
 
   // Sum all planks for generic plank query
-  if (name === 'planks' || name === 'plank' || name === 'planche' || name === 'planches') {
+  if (GENERIC_PLANK_NAMES.has(clean)) {
     return allSlots.filter(item => isPlanks(item.name)).reduce((sum, item) => sum + item.count, 0);
   }
 
-  const exactCount = allSlots.filter(item => item.name === name).reduce((sum, item) => sum + item.count, 0);
-  if (exactCount > 0) return exactCount;
-
-  // Substitute matching logs if specific wood type is missing
-  if (isWoodLog(name)) {
-    return allSlots.filter(item => isWoodLog(item.name)).reduce((sum, item) => sum + item.count, 0);
-  }
-
-  // Substitute matching planks if specific plank type is missing
-  if (isPlanks(name)) {
-    return allSlots.filter(item => isPlanks(item.name)).reduce((sum, item) => sum + item.count, 0);
-  }
-
-  return 0;
+  return allSlots.filter(item => item.name === clean).reduce((sum, item) => sum + item.count, 0);
 }
 
 /**
@@ -130,7 +134,7 @@ function countItem(bot, name) {
  * @returns {boolean} True if matching tool is owned
  */
 function hasToolType(bot, suffix) {
-  const allSlots = (bot.inventory?.slots || []).filter(Boolean);
+  const allSlots = getCarriedItems(bot);
   return allSlots.some(item => item.name.endsWith(suffix));
 }
 
@@ -140,7 +144,7 @@ function hasToolType(bot, suffix) {
  * @returns {string[]} List of owned tool names
  */
 function getOwnedTools(bot) {
-  const allSlots = (bot.inventory?.slots || []).filter(Boolean);
+  const allSlots = getCarriedItems(bot);
   const tools = allSlots
     .filter(item => config.TOOL_SUFFIXES.some(suffix => item.name.endsWith(suffix)))
     .map(item => item.name);
@@ -150,12 +154,17 @@ function getOwnedTools(bot) {
 const TOOL_TIERS = {
   pickaxe: ['wooden_pickaxe', 'stone_pickaxe', 'iron_pickaxe', 'diamond_pickaxe', 'netherite_pickaxe'],
   axe: ['wooden_axe', 'stone_axe', 'iron_axe', 'diamond_axe', 'netherite_axe'],
-  sword: ['wooden_sword', 'stone_sword', 'iron_sword', 'diamond_sword', 'netherite_sword']
+  sword: ['wooden_sword', 'stone_sword', 'iron_sword', 'diamond_sword', 'netherite_sword'],
+  helmet: ['iron_helmet', 'diamond_helmet', 'netherite_helmet'],
+  chestplate: ['iron_chestplate', 'diamond_chestplate', 'netherite_chestplate'],
+  leggings: ['iron_leggings', 'diamond_leggings', 'netherite_leggings'],
+  boots: ['iron_boots', 'diamond_boots', 'netherite_boots']
 };
 
 // Quests requiring the item (or a higher tool tier) to remain in inventory
 const PERSISTENT_GEAR_QUESTS = new Set([
-  'wooden_pickaxe', 'stone_pickaxe', 'iron_pickaxe', 'iron_sword', 'shield'
+  'wooden_pickaxe', 'stone_pickaxe', 'iron_pickaxe', 'iron_sword', 'shield',
+  'iron_helmet', 'iron_chestplate', 'iron_leggings', 'iron_boots'
 ]);
 
 // Equivalent items or conditions that directly satisfy a specific quest
@@ -214,6 +223,26 @@ function isQuestDone(bot, questName, state) {
   return config.QUEST_CHAIN.slice(questIndex + 1).some(laterQuest => isQuestDirectlyMet(bot, laterQuest, state));
 }
 
+const BASE_STATION_NAMES = ['crafting_table', 'furnace', 'chest'];
+
+/**
+ * Discover and memorize nearby placed base stations if not already recorded in state
+ * @param {object} bot Mineflayer bot instance
+ * @param {object} state Global bot state
+ */
+function syncBaseStations(bot, state) {
+  if (!state?.base || typeof bot.findBlock !== 'function') return;
+
+  for (const stationName of BASE_STATION_NAMES) {
+    if (state.base[stationName]) continue;
+    const stationId = bot.registry?.blocksByName?.[stationName]?.id;
+    const found = stationId ? bot.findBlock({ matching: stationId, maxDistance: config.CRAFTING_TABLE_RANGE }) : null;
+    if (found?.position) {
+      state.base[stationName] = found.position.clone ? found.position.clone() : found.position;
+    }
+  }
+}
+
 /**
  * Update the bot's current objective following the progression chain
  * @param {object} bot Mineflayer bot instance
@@ -221,6 +250,7 @@ function isQuestDone(bot, questName, state) {
  */
 function syncObjective(bot, state) {
   syncAdvancementsWithInventory(bot, state);
+  syncBaseStations(bot, state);
 
   if (state.manualObjective) return;
 
@@ -250,6 +280,13 @@ function syncObjective(bot, state) {
       };
     }
   }
+
+  if (
+    state.currentObjective !== 'wooden_pickaxe' &&
+    state.managerDirective === "Récolter du bois pour fabriquer les premiers outils."
+  ) {
+    state.managerDirective = `Progresser vers l'objectif '${state.currentObjective}' en utilisant l'équipement déjà possédé.`;
+  }
 }
 
 /**
@@ -258,7 +295,7 @@ function syncObjective(bot, state) {
  * @returns {string} Textual representation of inventory
  */
 function getInventorySummary(bot) {
-  const inventoryItems = (bot.inventory?.slots || []).filter(Boolean);
+  const inventoryItems = getCarriedItems(bot);
   if (inventoryItems.length === 0) return "Inventaire vide";
 
   const summary = {};
@@ -278,7 +315,13 @@ function getInventorySummary(bot) {
 function findNearbyCraftingTable(bot, state, maxDistance = config.CRAFTING_TABLE_RANGE) {
   const tableId = bot.registry?.blocksByName?.crafting_table?.id;
   const nearby = tableId ? bot.findBlock({ matching: tableId, maxDistance }) : null;
-  if (nearby || !state?.base?.crafting_table) return nearby;
+  if (nearby) {
+    if (state?.base && !state.base.crafting_table && nearby.position) {
+      state.base.crafting_table = nearby.position.clone ? nearby.position.clone() : nearby.position;
+    }
+    return nearby;
+  }
+  if (!state?.base?.crafting_table) return null;
 
   const basePos = state.base.crafting_table;
   const baseTableBlock = bot.blockAt(basePos);
@@ -383,6 +426,8 @@ function getBestToolForBlock(bot, block) {
 }
 
 module.exports = {
+  GENERIC_LOG_NAMES,
+  GENERIC_PLANK_NAMES,
   countItem,
   hasToolType,
   getOwnedTools,

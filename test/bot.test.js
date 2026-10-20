@@ -6,6 +6,7 @@ const invUtils = require('../src/utils/inventory');
 const advUtils = require('../src/utils/advancements');
 const storage = require('../src/skills/storage');
 const manager = require('../src/ai/manager');
+
 const { resolvePlayerDecision } = require('../src/ai/loop');
 const { skillWiki } = require('../src/skills/wiki');
 const { dispatchSkill } = require('../src/skills/dispatcher');
@@ -16,6 +17,7 @@ const { buildObsidianFrame, PORTAL_BUILD_STEPS } = require('../src/skills/portal
 const { scanEnvironment } = require('../src/utils/environment');
 const { getBlockNamesForTarget, getOreBlockNames } = require('../src/utils/wikiData');
 const { buildReactPrompt } = require('../src/ai/prompt');
+const { isDiggableObstacle } = require('../src/skills/navigate');
 
 /**
  * Create a lightweight offline mock of a Mineflayer bot instance
@@ -76,7 +78,24 @@ test('Progression resumes at current stage when keeping advanced gear', () => {
     { name: 'shield', count: 1 }
   ]);
   invUtils.syncObjective(botMidGame, state);
+  assert.equal(state.currentObjective, 'iron_helmet');
+
+  botMidGame.inventory.slots[5] = { name: 'iron_helmet', count: 1 };
+  botMidGame.inventory.slots[6] = { name: 'iron_chestplate', count: 1 };
+  botMidGame.inventory.slots[7] = { name: 'iron_leggings', count: 1 };
+  botMidGame.inventory.slots[8] = { name: 'iron_boots', count: 1 };
+  botMidGame.inventory.slots[45] = { name: 'shield', count: 1 };
+  botMidGame.inventory.slots[11] = null;
+
+  state.base.furnace = null;
+  state.managerDirective = "Récolter du bois pour fabriquer les premiers outils.";
+  const furnacePos = { x: 4, y: 64, z: 2 };
+  botMidGame.findBlock = ({ matching }) => (matching === mcData.blocksByName.furnace.id ? { name: 'furnace', position: furnacePos } : null);
+
+  invUtils.syncObjective(botMidGame, state);
   assert.equal(state.currentObjective, 'bucket');
+  assert.deepEqual(state.base.furnace, furnacePos);
+  assert.ok(state.managerDirective.includes('bucket'));
 });
 
 test('Diamonds! advancement requires actual diamond items and speedrun skips to Ice Bucket Challenge', () => {
@@ -367,8 +386,114 @@ test('Unified 3D scan collects blocks and exposed ores in one pass and wikiData 
   assert.ok(prompt.includes('1x iron_ore'));
   assert.equal(blockAtCalls, callsAfterScan + 11);
 
-  const logsFirst = getBlockNamesForTarget(bot, 'oak_log');
-  const logsSecond = getBlockNamesForTarget(bot, 'birch_log');
+  const logsFirst = getBlockNamesForTarget(bot, 'log');
+  const logsSecond = getBlockNamesForTarget(bot, 'wood');
   assert.equal(logsFirst, logsSecond);
+  assert.deepEqual(getBlockNamesForTarget(bot, 'oak_log'), ['oak_log']);
   assert.equal(getOreBlockNames(bot), getOreBlockNames(bot));
+});
+
+test('Wood species isolation, generic plank wiki recipes, and foliage unstuck prevent early-game loops', () => {
+  const bot = createMockBot([
+    { name: 'jungle_log', count: 40 },
+    { name: 'jungle_planks', count: 5 }
+  ]);
+
+  assert.equal(invUtils.countItem(bot, 'oak_log'), 0);
+  assert.equal(invUtils.countItem(bot, 'jungle_log'), 40);
+  assert.equal(invUtils.countItem(bot, 'log'), 40);
+  assert.equal(invUtils.countItem(bot, 'oak_planks'), 0);
+  assert.equal(invUtils.countItem(bot, 'planks'), 5);
+
+  const wikiPickaxe = skillWiki(bot, 'wooden_pickaxe');
+  assert.ok(wikiPickaxe.message.includes('3x planks'));
+  assert.ok(!wikiPickaxe.message.includes('oak_planks'));
+
+  assert.equal(isDiggableObstacle({ name: 'jungle_leaves' }), true);
+  assert.equal(isDiggableObstacle({ name: 'jungle_log' }), true);
+  assert.equal(isDiggableObstacle({ name: 'bedrock' }), false);
+});
+
+test('Water bucket scooping via mine/place and solid block placement on tree logs work offline', async () => {
+  const { Vec3 } = require('vec3');
+  const bot = createMockBot([
+    { name: 'bucket', count: 1 },
+    { name: 'crafting_table', count: 1 }
+  ]);
+  bot.entity.position = new Vec3(0, 64, 0);
+  bot.clearControlStates = () => {};
+  bot.equip = async () => {};
+  bot.lookAt = async () => {};
+  bot.waitForTicks = async () => {};
+
+  const wikiWater = skillWiki(bot, 'water_bucket');
+  assert.ok(wikiWater.message.includes("Fill an empty 'bucket'"));
+
+  const waterId = mcData.blocksByName.water.id;
+  const waterPos = new Vec3(2, 64, 0);
+  bot.findBlock = ({ matching }) => {
+    const candidate = { name: 'water', type: waterId, metadata: 0, position: waterPos };
+    return matching(candidate) ? candidate : null;
+  };
+  bot.activateItem = async () => {
+    bot.inventory.slots[9] = { name: 'water_bucket', count: 1, type: mcData.itemsByName.water_bucket.id };
+  };
+
+  const scoopRes = await dispatchSkill(bot, state, 'mine', 'water', 1);
+  assert.equal(scoopRes.success, true);
+  assert.equal(invUtils.countItem(bot, 'water_bucket'), 1);
+
+  const logPos = new Vec3(1, 63, 0);
+  bot.findBlock = ({ matching }) => {
+    const candidate = { name: 'oak_log', boundingBox: 'block', position: logPos };
+    return matching(candidate) ? candidate : null;
+  };
+  bot.placeBlock = async () => {};
+
+  const placeRes = await dispatchSkill(bot, state, 'place', 'crafting_table', 1);
+  assert.equal(placeRes.success, true);
+
+  const equipOrder = [];
+  const armorBot = createMockBot([
+    { name: 'iron_helmet', count: 1 },
+    { name: 'iron_chestplate', count: 1 },
+    { name: 'iron_leggings', count: 1 },
+    { name: 'iron_boots', count: 1 },
+    { name: 'shield', count: 1 }
+  ]);
+  armorBot.equip = async (item, dest) => {
+    equipOrder.push(`${item.name}->${dest}`);
+  };
+
+  const equipRes = await dispatchSkill(armorBot, state, 'equip', 'armor', 1);
+  assert.equal(equipRes.success, true);
+  assert.deepEqual(equipOrder, [
+    'iron_helmet->head',
+    'iron_chestplate->torso',
+    'iron_leggings->legs',
+    'iron_boots->feet',
+    'shield->off-hand'
+  ]);
+});
+
+test('Event-driven Manager skips intermediate successes and triggers on failures, loops, objectives, or heartbeat', () => {
+  const bot = createMockBot([{ name: 'oak_log', count: 2 }]);
+  const mockState = {
+    managerSubGoal: { action: 'mine', target: 'log' },
+    lastActionResult: { action: 'mine', target: 'log', success: true, message: 'OK' },
+    actionHistory: [{ action: 'mine', target: 'log', success: true }],
+    cyclesSinceLastManager: 0
+  };
+
+  assert.equal(manager.shouldRunManager(bot, mockState, false), false);
+  mockState.cyclesSinceLastManager = 1;
+  assert.equal(manager.shouldRunManager(bot, mockState, false), false);
+  mockState.cyclesSinceLastManager = 2;
+  assert.equal(manager.shouldRunManager(bot, mockState, false), true);
+
+  mockState.cyclesSinceLastManager = 0;
+  assert.equal(manager.shouldRunManager(bot, mockState, true), true);
+
+  mockState.lastActionResult = { action: 'craft', target: 'planks', success: false, message: 'Failed' };
+  assert.equal(manager.shouldRunManager(bot, mockState, false), true);
 });

@@ -46,29 +46,38 @@ function getBestArmorForSlot(bot, slot) {
 }
 
 /**
+ * Equip best available armor piece for each slot sequentially via recursion
+ * @param {object} bot Mineflayer bot instance
+ * @param {string[]} slots Armor slot names
+ * @param {number} index Current slot index
+ * @param {string[]} equipped Accumulated equipped item names
+ * @returns {Promise<string[]>} Equipped armor item names
+ */
+async function equipArmorSlotsStep(bot, slots, index, equipped) {
+  if (index >= slots.length) return equipped;
+
+  const slot = slots[index];
+  const bestItem = getBestArmorForSlot(bot, slot);
+  if (bestItem) {
+    try {
+      await bot.equip(bestItem, slot);
+      equipped.push(bestItem.name);
+    } catch {
+      // Tolerate equipment error if rejected by server
+    }
+  }
+
+  return equipArmorSlotsStep(bot, slots, index + 1, equipped);
+}
+
+/**
  * Equip all best available armor pieces and off-hand shield
  * @param {object} bot Mineflayer bot instance
  * @returns {Promise<string[]>} Array of equipped item names
  */
 async function autoEquipArmorAndShield(bot) {
-  const equipped = [];
   const slots = ['head', 'torso', 'legs', 'feet'];
-
-  // Equip best available upgrade for each armor slot
-  const equipResults = await Promise.all(slots.map(async slot => {
-    const bestItem = getBestArmorForSlot(bot, slot);
-    if (bestItem) {
-      try {
-        await bot.equip(bestItem, slot);
-        return bestItem.name;
-      } catch {
-        // Tolerate equipment error if rejected by server
-      }
-    }
-    return null;
-  }));
-
-  equipped.push(...equipResults.filter(Boolean));
+  const equipped = await equipArmorSlotsStep(bot, slots, 0, []);
 
   // Equip shield to off-hand if not already holding one
   const currentOffHand = bot.inventory.slots[45];

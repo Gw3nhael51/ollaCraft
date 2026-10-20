@@ -3,6 +3,7 @@ const { pathfinder, Movements } = require('mineflayer-pathfinder');
 const config = require('./config');
 const state = require('./state');
 const { syncObjective } = require('./utils/inventory');
+const { autoEquipArmorAndShield } = require('./skills/equip');
 const { handleSurvivalRequest } = require('./ai/loop');
 const { startManagerLoop } = require('./ai/manager');
 const { checkAdvancementMessage } = require('./utils/advancements');
@@ -24,18 +25,34 @@ function isAuthConfirmed(text) {
 }
 
 /**
+ * Wait briefly after authentication for server plugins (e.g. AuthMe) to restore inventory slots
+ * @param {number} [retriesLeft] Remaining polling attempts
+ * @returns {Promise<void>}
+ */
+async function waitForInventoryRestore(retriesLeft = 8) {
+  const hasItems = (bot.inventory?.slots || []).slice(5).some(Boolean);
+  if (hasItems || retriesLeft <= 0) return;
+  await new Promise(resolve => setTimeout(resolve, 250));
+  return waitForInventoryRestore(retriesLeft - 1);
+}
+
+/**
  * Synchronize inventory progression and start or resume autonomous survival loop
  */
 function launchAutonomousLoop() {
-  setTimeout(() => {
+  setTimeout(async () => {
+    await waitForInventoryRestore();
+    await autoEquipArmorAndShield(bot);
     syncObjective(bot, state);
     state.hasStarted = true;
     state.isSurviving = true;
+    state.survivalSessionId = (state.survivalSessionId || 0) + 1;
+    const sessionId = state.survivalSessionId;
     console.log(`🚀 Autonomous mode active. Objective : ${state.currentObjective}`);
     bot.chat("Autonomous ReAct mode ready. Objective : " + state.currentObjective);
-    void startManagerLoop(bot);
-    void handleSurvivalRequest(bot);
-  }, 600);
+    await startManagerLoop(bot);
+    void handleSurvivalRequest(bot, sessionId);
+  }, 800);
 }
 
 // Configure movement rules and water physics once upon initial spawn
@@ -141,15 +158,21 @@ bot.on('chat', async (username, message) => {
   console.log(`[CHAT SERVER] ${username ? username + ': ' : ''}${message}`);
 
   if (message === 'start' && !state.isSurviving) {
+    await autoEquipArmorAndShield(bot);
+    syncObjective(bot, state);
     state.isSurviving = true;
-    bot.chat("Starting autonomous mode.");
-    void startManagerLoop(bot);
-    await handleSurvivalRequest(bot);
+    state.survivalSessionId = (state.survivalSessionId || 0) + 1;
+    const sessionId = state.survivalSessionId;
+    bot.chat(`Starting autonomous mode. Objective : ${state.currentObjective}`);
+    await startManagerLoop(bot);
+    await handleSurvivalRequest(bot, sessionId);
     return;
   }
 
   if (message === 'stop') {
     state.isSurviving = false;
+    state.survivalSessionId = (state.survivalSessionId || 0) + 1;
+    state.activeActionId = (state.activeActionId || 0) + 1;
     bot.pathfinder.setGoal(null);
     bot.clearControlStates();
     bot.chat("Stopping autonomous mode.");

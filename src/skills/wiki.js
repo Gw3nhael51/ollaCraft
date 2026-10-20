@@ -1,4 +1,5 @@
 const { getMcData } = require('../utils/wikiData');
+const { isPlanks } = require('../utils/inventory');
 
 /**
  * Format block properties and harvest tool requirements for Wiki output
@@ -40,6 +41,10 @@ function formatItemWikiSection(mcData, item, isAlsoBlock) {
   const recipes = mcData.recipes[item.id];
 
   if (!recipes || recipes.length === 0) {
+    if (item.name === 'water_bucket' || item.name === 'lava_bucket') {
+      const liquid = item.name === 'water_bucket' ? 'water' : 'lava';
+      return `${section}Crafting: Fill an empty 'bucket' on a '${liquid}' source block (use action 'portal' or 'mine' with target '${liquid}').\n`;
+    }
     return `${section}Crafting: Not craftable (or special recipe).\n`;
   }
 
@@ -49,7 +54,8 @@ function formatItemWikiSection(mcData, item, isAlsoBlock) {
 
   const ingredientCounts = {};
   for (const id of rawIds) {
-    const name = mcData.items[id]?.name;
+    const rawName = mcData.items[id]?.name;
+    const name = isPlanks(rawName) && !isPlanks(item.name) ? 'planks' : rawName;
     if (name) ingredientCounts[name] = (ingredientCounts[name] || 0) + 1;
   }
 

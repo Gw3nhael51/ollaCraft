@@ -48,7 +48,8 @@ function formatRecipeSummary(mcData, primaryRecipe, targetName) {
   const countMap = {};
 
   for (const id of rawIds) {
-    const name = mcData.items[id]?.name;
+    const rawName = mcData.items[id]?.name;
+    const name = invUtils.isPlanks(rawName) && !invUtils.isPlanks(targetName) ? 'planks' : rawName;
     if (name) countMap[name] = (countMap[name] || 0) + 1;
   }
 
@@ -65,6 +66,12 @@ function formatRecipeSummary(mcData, primaryRecipe, targetName) {
 function getWikiKnowledgeSummary(bot, targetName) {
   if (targetName === 'iron_ingot') {
     return "Fiche Wiki : 'iron_ingot' s'obtient en faisant fondre du 'raw_iron' dans un four ('furnace') avec du combustible (bûches, planches ou charbon).";
+  }
+  if (targetName === 'water_bucket') {
+    return "Fiche Wiki : 'water_bucket' ne se mine pas à la pioche : il s'obtient en remplissant un 'bucket' vide sur une source d'eau ('water') via l'action 'portal' ou 'mine' (cible 'water').";
+  }
+  if (targetName === 'lava_bucket') {
+    return "Fiche Wiki : 'lava_bucket' s'obtient en remplissant un 'bucket' vide sur une source de lave ('lava') via l'action 'portal' ou 'mine' (cible 'lava').";
   }
 
   const mcData = getMcData(bot);

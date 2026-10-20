@@ -1,9 +1,20 @@
 const { goals } = require('mineflayer-pathfinder');
 const { Vec3 } = require('vec3');
 const GLOBAL_BAD_BLOCKS = new Set();
-const { getBestToolForBlock, countItem, getInventorySummary } = require('../utils/inventory');
+const { getBestToolForBlock, countItem, getInventorySummary, isWoodLog, GENERIC_LOG_NAMES } = require('../utils/inventory');
 const { getBlockDrops, canHarvestBlock, getBlockNamesForTarget } = require('../utils/wikiData');
 const { isBlockExposedToAir, VALUABLE_ORES } = require('../utils/environment');
+const { fillBucketFromSource } = require('./portal');
+
+const LIQUID_TARGETS = new Map([
+  ['water', 'water'],
+  ['flowing_water', 'water'],
+  ['water_bucket', 'water'],
+  ['water_source', 'water'],
+  ['lava', 'lava'],
+  ['flowing_lava', 'lava'],
+  ['lava_bucket', 'lava']
+]);
 
 /**
  * Move briefly towards destroyed block position to vacuum item drops
@@ -46,15 +57,24 @@ async function equipBestMiningTool(bot, block) {
  * @returns {object|null} Matching block or null
  */
 function findMineableTargetBlock(bot, targetName, isOpportunistic) {
-  const candidateBlockNames = isOpportunistic ? VALUABLE_ORES : new Set(getBlockNamesForTarget(bot, targetName));
-  return bot.findBlock({
+  const searchWithCandidates = (candidateSet) => bot.findBlock({
     matching: (block) => {
-      if (!block?.position) return candidateBlockNames.has(block?.name);
-      if (!candidateBlockNames.has(block.name) || GLOBAL_BAD_BLOCKS.has(getPosKey(block.position))) return false;
+      if (!block?.position) return candidateSet.has(block?.name);
+      if (!candidateSet.has(block.name) || GLOBAL_BAD_BLOCKS.has(getPosKey(block.position))) return false;
       return !isOpportunistic || (isBlockExposedToAir(bot, block) && canHarvestBlock(bot, block).canHarvest);
     },
     maxDistance: 30
   });
+
+  const primarySet = isOpportunistic ? VALUABLE_ORES : new Set(getBlockNamesForTarget(bot, targetName));
+  const primaryMatch = searchWithCandidates(primarySet);
+  if (primaryMatch || isOpportunistic) return primaryMatch;
+
+  const clean = typeof targetName === 'string' ? targetName.toLowerCase().trim() : '';
+  if (isWoodLog(clean) && !GENERIC_LOG_NAMES.has(clean)) {
+    return searchWithCandidates(new Set(getBlockNamesForTarget(bot, 'log')));
+  }
+  return null;
 }
 
 /**
@@ -401,6 +421,11 @@ async function runMiningSteps(bot, state, targetName, remaining, successfullyMin
  * @returns {Promise<{ success: boolean, message: string }>}
  */
 async function skillMine(bot, state, targetName, count) {
+  const cleanTarget = typeof targetName === 'string' ? targetName.toLowerCase().trim() : '';
+  if (LIQUID_TARGETS.has(cleanTarget)) {
+    return fillBucketFromSource(bot, LIQUID_TARGETS.get(cleanTarget));
+  }
+
   const actionId = state.activeActionId;
   // Cap per-cycle block count to prevent safety timeout overflows
   const targetQuantity = Math.min(3, Math.max(1, count || 1));
