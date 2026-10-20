@@ -284,7 +284,7 @@ function findNearbyCraftingTable(bot, state, maxDistance = config.CRAFTING_TABLE
   const baseTableBlock = bot.blockAt(basePos);
   if (!baseTableBlock) return null;
 
-  // Nettoyer : Réinitialiser la position mémorisée si l'établi a été récupéré
+  // Clear remembered base coordinate if crafting table is no longer present
   if (baseTableBlock.name !== 'crafting_table') {
     state.base.crafting_table = null;
     return null;
