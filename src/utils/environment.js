@@ -2,29 +2,56 @@ const { Vec3 } = require('vec3');
 const { isOreBlock } = require('./wikiData');
 
 /**
- * Scan cubic blocks in a given radius around the bot's current position
+ * Record a single scanned block and check whether it is an exposed ore within oreRadius
+ * @param {object} bot Mineflayer bot instance
+ * @param {Record<string, number>} blocks Aggregated block counts
+ * @param {Record<string, number>} exposedOres Aggregated exposed ore counts
+ * @param {Vec3} targetPos Coordinates of scanned block
+ * @param {boolean} withinOreRadius Whether position falls within ore detection radius
+ */
+function recordScannedBlock(bot, blocks, exposedOres, targetPos, withinOreRadius) {
+  const block = bot.blockAt(targetPos);
+  if (!block || AIR_BLOCK_NAMES.has(block.name)) return;
+
+  blocks[block.name] = (blocks[block.name] || 0) + 1;
+  if (!withinOreRadius || !isOreBlock(block.name)) return;
+
+  const blockWithPos = block.position ? block : { ...block, position: targetPos.clone() };
+  if (isBlockExposedToAir(bot, blockWithPos)) {
+    exposedOres[block.name] = (exposedOres[block.name] || 0) + 1;
+  }
+}
+
+/**
+ * Scan cubic blocks and exposed ores in a single pass around the bot's current position
  * @param {object} bot Mineflayer bot instance
  * @param {number} radius Scanning radius in blocks
- * @returns {Record<string, number>} Dictionary of block types and occurrence counts
+ * @param {number} [oreRadius] Sub-radius for exposed ore inspection
+ * @returns {Record<string, number>} Dictionary of block types and occurrence counts (with non-enumerable exposedOres)
  */
-function scanEnvironment(bot, radius) {
+function scanEnvironment(bot, radius, oreRadius = 16) {
   const blocks = {};
+  const exposedOres = {};
   const botPosition = bot.entity.position.floored();
   const targetPos = new Vec3(0, 0, 0);
   const yMin = Math.max(-8, -radius);
   const yMax = Math.min(8, radius);
 
   for (let x = -radius; x <= radius; x++) {
+    const inOreX = Math.abs(x) <= oreRadius;
     for (let y = yMin; y <= yMax; y++) {
       for (let z = -radius; z <= radius; z++) {
         targetPos.set(botPosition.x + x, botPosition.y + y, botPosition.z + z);
-        const block = bot.blockAt(targetPos);
-        if (block && block.name !== 'air' && block.name !== 'cave_air') {
-          blocks[block.name] = (blocks[block.name] || 0) + 1;
-        }
+        recordScannedBlock(bot, blocks, exposedOres, targetPos, inOreX && Math.abs(z) <= oreRadius);
       }
     }
   }
+
+  Object.defineProperty(blocks, 'exposedOres', {
+    value: exposedOres,
+    enumerable: false,
+    configurable: true
+  });
   return blocks;
 }
 
@@ -149,25 +176,7 @@ function isBlockExposedToAir(bot, block) {
  * @returns {Record<string, number>} Dictionnaire des minerais exposés et leurs quantités
  */
 function scanExposedOres(bot, radius = 16) {
-  const exposedOres = {};
-  const botPosition = bot.entity.position.floored();
-  const targetPos = new Vec3(0, 0, 0);
-  const yMin = Math.max(-8, -radius);
-  const yMax = Math.min(8, radius);
-
-  for (let x = -radius; x <= radius; x++) {
-    for (let y = yMin; y <= yMax; y++) {
-      for (let z = -radius; z <= radius; z++) {
-        targetPos.set(botPosition.x + x, botPosition.y + y, botPosition.z + z);
-        const block = bot.blockAt(targetPos);
-        if (block && isOreBlock(block.name) && isBlockExposedToAir(bot, block)) {
-          exposedOres[block.name] = (exposedOres[block.name] || 0) + 1;
-        }
-      }
-    }
-  }
-
-  return exposedOres;
+  return scanEnvironment(bot, radius, radius).exposedOres;
 }
 
 module.exports = {

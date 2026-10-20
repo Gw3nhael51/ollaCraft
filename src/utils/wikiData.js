@@ -1,5 +1,8 @@
 const config = require('../config');
 
+let cachedOreNames = null;
+const targetBlocksCache = new Map();
+
 /**
  * Return minecraft-data registry corresponding to current server version
  * @param {object} bot Mineflayer bot instance
@@ -72,34 +75,34 @@ function canHarvestBlock(bot, block) {
  * @returns {string[]} Liste des blocs minables correspondants
  */
 function getBlockNamesForTarget(bot, targetItemName) {
-  const mcData = getMcData(bot);
   const { isWoodLog, isPlanks } = require('./inventory');
+  let cacheKey = targetItemName;
+  if (isWoodLog(targetItemName)) cacheKey = '__log__';
+  else if (isPlanks(targetItemName)) cacheKey = '__planks__';
 
-  // Return all tree logs and wood blocks when any log is targeted
-  if (isWoodLog(targetItemName)) {
-    return mcData.blocksArray
-      .filter(b => isWoodLog(b.name))
-      .map(b => b.name);
+  if (targetBlocksCache.has(cacheKey)) {
+    return targetBlocksCache.get(cacheKey);
   }
 
-  // Return all plank varieties when any plank block is targeted
-  if (isPlanks(targetItemName)) {
-    return mcData.blocksArray
-      .filter(b => isPlanks(b.name))
-      .map(b => b.name);
+  const mcData = getMcData(bot);
+  let result;
+
+  if (cacheKey === '__log__') {
+    result = mcData.blocksArray.filter(b => isWoodLog(b.name)).map(b => b.name);
+  } else if (cacheKey === '__planks__') {
+    result = mcData.blocksArray.filter(b => isPlanks(b.name)).map(b => b.name);
+  } else if (targetItemName === 'lapis' || targetItemName === 'lapis_lazuli') {
+    result = ['lapis_ore', 'deepslate_lapis_ore'];
+  } else {
+    const matchingBlocks = mcData.blocksArray.filter(b => {
+      if (b.name === targetItemName) return true;
+      return Boolean(b.drops?.some(id => mcData.items[id]?.name === targetItemName));
+    }).map(b => b.name);
+    result = matchingBlocks.length > 0 ? matchingBlocks : [targetItemName];
   }
 
-  if (targetItemName === 'lapis' || targetItemName === 'lapis_lazuli') {
-    return ['lapis_ore', 'deepslate_lapis_ore'];
-  }
-
-  const matchingBlocks = mcData.blocksArray.filter(b => {
-    if (b.name === targetItemName) return true;
-    if (b.drops?.some(id => mcData.items[id]?.name === targetItemName)) return true;
-    return false;
-  }).map(b => b.name);
-
-  return matchingBlocks.length > 0 ? matchingBlocks : [targetItemName];
+  targetBlocksCache.set(cacheKey, result);
+  return result;
 }
 
 /**
@@ -118,11 +121,13 @@ function isOreBlock(blockName) {
  * @returns {Set<string>} Set of ore block names
  */
 function getOreBlockNames(bot) {
+  if (cachedOreNames) return cachedOreNames;
   const mcData = getMcData(bot);
   const oreNames = mcData.blocksArray
     .filter(b => b.name.endsWith('_ore') || b.name === 'ancient_debris')
     .map(b => b.name);
-  return new Set(oreNames);
+  cachedOreNames = new Set(oreNames);
+  return cachedOreNames;
 }
 
 /**
