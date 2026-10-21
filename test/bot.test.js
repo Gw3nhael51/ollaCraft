@@ -16,7 +16,7 @@ const { skillHunt, isPositionSafeForLoot } = require('../src/skills/combat');
 const { buildObsidianFrame, PORTAL_BUILD_STEPS } = require('../src/skills/portal');
 const { scanEnvironment } = require('../src/utils/environment');
 const { getBlockNamesForTarget, getOreBlockNames } = require('../src/utils/wikiData');
-const { buildReactPrompt } = require('../src/ai/prompt');
+const { buildReactPrompt, filterRadarEnvironment } = require('../src/ai/prompt');
 const { isDiggableObstacle } = require('../src/skills/navigate');
 
 /**
@@ -496,4 +496,34 @@ test('Event-driven Manager skips intermediate successes and triggers on failures
 
   mockState.lastActionResult = { action: 'craft', target: 'planks', success: false, message: 'Failed' };
   assert.equal(manager.shouldRunManager(bot, mockState, false), true);
+});
+
+test('Radar prompt filters out decorative plants and unbreakable blocks while keeping actionable blocks', () => {
+  const bot = createMockBot();
+  const rawEnvironment = {
+    stone: 42,
+    oak_log: 5,
+    iron_ore: 3,
+    water: 10,
+    short_grass: 25,
+    tall_grass: 12,
+    dandelion: 4,
+    poppy: 2,
+    bedrock: 15
+  };
+
+  const filtered = filterRadarEnvironment(bot, rawEnvironment);
+  assert.deepEqual(filtered, {
+    stone: 42,
+    oak_log: 5,
+    iron_ore: 3,
+    water: 10
+  });
+
+  const prompt = buildReactPrompt(bot, state, rawEnvironment, null);
+  assert.ok(prompt.includes('"stone":42'));
+  assert.ok(prompt.includes('"oak_log":5'));
+  assert.ok(!prompt.includes('short_grass'));
+  assert.ok(!prompt.includes('dandelion'));
+  assert.ok(!prompt.includes('bedrock'));
 });

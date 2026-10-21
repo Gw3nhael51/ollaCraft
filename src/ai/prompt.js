@@ -148,6 +148,24 @@ function getTableStatusText(bot, craftingTable) {
 }
 
 /**
+ * Filter decorative plants and unbreakable blocks out of the scanned radar environment
+ * @param {object} bot Mineflayer bot instance
+ * @param {Record<string, number>} environment Scanned blocks dictionary
+ * @returns {Record<string, number>} Filtered blocks dictionary for the LLM prompt
+ */
+function filterRadarEnvironment(bot, environment) {
+  if (!environment || typeof environment !== 'object') return {};
+  const mcData = getMcData(bot);
+  return Object.fromEntries(
+    Object.entries(environment).filter(([name]) => {
+      const block = mcData.blocksByName[name];
+      if (!block) return false;
+      return block.diggable !== false && !block.material?.includes('plant');
+    })
+  );
+}
+
+/**
  * Build complete ReAct prompt for Ollama reasoning model
  * @param {object} bot Mineflayer bot instance
  * @param {object} state Global bot state
@@ -156,7 +174,7 @@ function getTableStatusText(bot, craftingTable) {
  * @returns {string} Full prompt text
  */
 function buildReactPrompt(bot, state, environment, craftingTable) {
-  const envText = JSON.stringify(environment);
+  const envText = JSON.stringify(filterRadarEnvironment(bot, environment));
   const inventoryText = invUtils.getInventorySummary(bot);
   const terrainStatus = envUtils.checkTerrainSituation(bot);
   const availableCrafts = JSON.stringify(invUtils.getAvailableCrafts(bot, craftingTable));
@@ -267,4 +285,4 @@ function buildReactPrompt(bot, state, environment, craftingTable) {
   `;
 }
 
-module.exports = { buildReactPrompt };
+module.exports = { buildReactPrompt, filterRadarEnvironment };
