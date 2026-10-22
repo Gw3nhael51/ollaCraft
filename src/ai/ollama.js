@@ -1,6 +1,42 @@
 const config = require('../config');
 const state = require('../state');
 
+const PLAYER_JSON_SCHEMA = {
+  type: 'object',
+  properties: {
+    thought: { type: 'string' },
+    action: {
+      type: 'string',
+      enum: Array.from(config.VALID_ACTIONS)
+    },
+    target: { type: 'string' }
+  },
+  required: ['thought', 'action', 'target']
+};
+
+const MANAGER_JSON_SCHEMA = {
+  type: 'object',
+  properties: {
+    thought: { type: 'string' },
+    directive: { type: 'string' },
+    suggestedAction: {
+      type: 'string',
+      enum: Array.from(config.VALID_ACTIONS)
+    },
+    suggestedTarget: { type: 'string' }
+  },
+  required: ['thought', 'directive', 'suggestedAction', 'suggestedTarget']
+};
+
+/**
+ * Get schema definition based on role
+ * @param {string} role Calling role ('joueur' or 'manager')
+ * @returns {object} JSON schema
+ */
+function getFormatSchema(role) {
+  return role === 'manager' ? MANAGER_JSON_SCHEMA : PLAYER_JSON_SCHEMA;
+}
+
 /**
  * Query local Ollama model to obtain a structured JSON decision
  * @param {string} promptText Full prompt sent to the model
@@ -10,7 +46,8 @@ const state = require('../state');
  */
 async function askOllama(promptText, modelName = config.OLLAMA_MODEL_PLAYER, role = 'joueur') {
   try {
-    const response = await fetch('http://localhost:11434/api/generate', {
+    const host = config.OLLAMA_HOST || 'http://localhost:11434';
+    const response = await fetch(`${host}/api/generate`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       signal: AbortSignal.timeout(30000),
@@ -18,7 +55,7 @@ async function askOllama(promptText, modelName = config.OLLAMA_MODEL_PLAYER, rol
         model: modelName,
         prompt: promptText,
         stream: false,
-        format: 'json',
+        format: getFormatSchema(role),
         think: false,
         options: {
           temperature: 0.1
@@ -65,4 +102,4 @@ async function askOllama(promptText, modelName = config.OLLAMA_MODEL_PLAYER, rol
   }
 }
 
-module.exports = { askOllama };
+module.exports = { askOllama, getFormatSchema, PLAYER_JSON_SCHEMA, MANAGER_JSON_SCHEMA };

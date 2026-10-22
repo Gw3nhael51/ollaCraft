@@ -4,6 +4,7 @@
 require("dotenv").config();
 
 module.exports = {
+  OLLAMA_HOST: process.env.OLLAMA_HOST || 'http://localhost:11434',
   OLLAMA_MODEL: process.env.OLLAMA_MODEL || 'qwen3.5:9B',
   OLLAMA_MODEL_PLAYER: process.env.OLLAMA_MODEL_PLAYER || process.env.OLLAMA_MODEL || 'qwen3.5:9B',
   OLLAMA_MODEL_MANAGER: process.env.OLLAMA_MODEL_MANAGER || process.env.OLLAMA_MODEL || 'qwen3.5:9B',

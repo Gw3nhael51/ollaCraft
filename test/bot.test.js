@@ -1,6 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const mcData = require('minecraft-data')('1.20.4');
+const config = require('../src/config');
 const state = require('../src/state');
 const invUtils = require('../src/utils/inventory');
 const advUtils = require('../src/utils/advancements');
@@ -18,6 +19,7 @@ const { scanEnvironment } = require('../src/utils/environment');
 const { getBlockNamesForTarget, getOreBlockNames } = require('../src/utils/wikiData');
 const { buildReactPrompt, filterRadarEnvironment } = require('../src/ai/prompt');
 const { isDiggableObstacle } = require('../src/skills/navigate');
+const { getFormatSchema, PLAYER_JSON_SCHEMA, MANAGER_JSON_SCHEMA } = require('../src/ai/ollama');
 
 /**
  * Create a lightweight offline mock of a Mineflayer bot instance
@@ -526,4 +528,21 @@ test('Radar prompt filters out decorative plants and unbreakable blocks while ke
   assert.ok(!prompt.includes('short_grass'));
   assert.ok(!prompt.includes('dandelion'));
   assert.ok(!prompt.includes('bedrock'));
+});
+
+test('Ollama configuration supports custom host and structured outputs schemas constrain actions', () => {
+  assert.equal(typeof config.OLLAMA_HOST, 'string');
+  assert.ok(config.OLLAMA_HOST.startsWith('http'));
+
+  const playerSchema = getFormatSchema('joueur');
+  assert.equal(playerSchema, PLAYER_JSON_SCHEMA);
+  assert.equal(playerSchema.type, 'object');
+  assert.deepEqual(playerSchema.required, ['thought', 'action', 'target']);
+  assert.deepEqual(playerSchema.properties.action.enum, Array.from(config.VALID_ACTIONS));
+
+  const managerSchema = getFormatSchema('manager');
+  assert.equal(managerSchema, MANAGER_JSON_SCHEMA);
+  assert.equal(managerSchema.type, 'object');
+  assert.deepEqual(managerSchema.required, ['thought', 'directive', 'suggestedAction', 'suggestedTarget']);
+  assert.deepEqual(managerSchema.properties.suggestedAction.enum, Array.from(config.VALID_ACTIONS));
 });
