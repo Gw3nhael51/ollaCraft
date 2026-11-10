@@ -6,7 +6,7 @@ const { buildReactPrompt } = require('./prompt');
 const { askOllama } = require('./ollama');
 const { dispatchSkill } = require('../skills/dispatcher');
 const { skillUnstuck } = require('../skills/navigate');
-const { runManagerCycle, shouldRunManager } = require('./manager');
+const { runManagerCycle, shouldRunManager, cleanTargetIdentifier } = require('./manager');
 
 const ACTION_TIMEOUT_MS = 45000;
 
@@ -119,7 +119,14 @@ function recordActionResult(decision, executionResult) {
 function resolvePlayerDecision(rawDecision) {
   const candidate = [rawDecision, state.managerSubGoal].find(d => config.VALID_ACTIONS.has(d?.action));
   if (!candidate) return null;
-  return { thought: state.managerDirective, target: 'none', qty: 1, ...candidate };
+  const target = cleanTargetIdentifier(candidate.target);
+  const qty = Number.isInteger(candidate.qty) && candidate.qty > 0 ? Math.min(candidate.qty, 64) : 1;
+  return {
+    thought: candidate.thought || state.managerDirective || '',
+    action: candidate.action,
+    target,
+    qty
+  };
 }
 
 /**
@@ -175,7 +182,9 @@ async function handleSurvivalRequest(bot, sessionId = state.survivalSessionId) {
     if (decision.thought) {
       console.log(`[AI THOUGHT] ${decision.thought}`);
     }
-    bot.chat(`Action : ${decision.action} (${decision.target})`);
+    const safeTarget = decision.target && decision.target !== 'none' ? ` (${decision.target})` : '';
+    const safeActionAnnouncement = `Action : ${decision.action}${safeTarget}`.slice(0, 60);
+    bot.chat(safeActionAnnouncement);
 
     const executionResult = await executeDecisionWithTimeout(bot, decision);
     if (!isSessionActive(sessionId)) return;

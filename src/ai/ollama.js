@@ -9,7 +9,7 @@ const PLAYER_JSON_SCHEMA = {
       type: 'string',
       enum: Array.from(config.VALID_ACTIONS)
     },
-    target: { type: 'string' }
+    target: { type: 'string', maxLength: 32 }
   },
   required: ['thought', 'action', 'target']
 };
@@ -23,7 +23,7 @@ const MANAGER_JSON_SCHEMA = {
       type: 'string',
       enum: Array.from(config.VALID_ACTIONS)
     },
-    suggestedTarget: { type: 'string' }
+    suggestedTarget: { type: 'string', maxLength: 32 }
   },
   required: ['thought', 'directive', 'suggestedAction', 'suggestedTarget']
 };

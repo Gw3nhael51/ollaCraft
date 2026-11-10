@@ -545,4 +545,25 @@ test('Ollama configuration supports custom host and structured outputs schemas c
   assert.equal(managerSchema.type, 'object');
   assert.deepEqual(managerSchema.required, ['thought', 'directive', 'suggestedAction', 'suggestedTarget']);
   assert.deepEqual(managerSchema.properties.suggestedAction.enum, Array.from(config.VALID_ACTIONS));
+  assert.equal(playerSchema.properties.target.maxLength, 32);
+  assert.equal(managerSchema.properties.suggestedTarget.maxLength, 32);
+});
+
+test('Target sanitization filters out hallucinated text', () => {
+  // Tester : Nettoyer un texte verbeux issu du LLM
+  const verboseDecision = {
+    action: 'craft',
+    target: "planks_oak_planks_from_logs_in_inventory_and_mine_more_if_needed_but_first_craft_planks_to_clear_space_for_chest_or_table_logic: I have logs",
+    thought: 'Need planks'
+  };
+  const resolved = resolvePlayerDecision(verboseDecision);
+  assert.equal(resolved.action, 'craft');
+  assert.equal(resolved.target, 'none');
+
+  // Tester : Conserver une cible valide
+  const validDecision = { action: 'mine', target: 'oak_log', qty: 3 };
+  const resolvedValid = resolvePlayerDecision(validDecision);
+  assert.equal(resolvedValid.action, 'mine');
+  assert.equal(resolvedValid.target, 'oak_log');
+  assert.equal(resolvedValid.qty, 3);
 });

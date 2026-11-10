@@ -51,6 +51,21 @@ function resolveAvailableCraftTarget(target, available) {
 }
 
 /**
+ * Sanitize target identifier string to ensure it is a valid single Minecraft identifier
+ * @param {string} rawTarget Raw target string from LLM response
+ * @returns {string} Sanitized clean target identifier
+ */
+function cleanTargetIdentifier(rawTarget) {
+  if (typeof rawTarget !== 'string') return 'none';
+  const trimmed = rawTarget.trim();
+  if (!trimmed) return 'none';
+  const match = trimmed.match(/^[a-z0-9_]+/i);
+  if (!match) return 'none';
+  const candidate = match[0].toLowerCase();
+  return candidate.length <= 32 ? candidate : 'none';
+}
+
+/**
  * Validate and adjust a craft suggestion according to inventory and nearby crafting table
  * @param {object} bot Mineflayer bot instance
  * @param {string} target Suggested craft target
@@ -154,15 +169,16 @@ function sanitizeManagerOutput(bot, rawDecision) {
   }
 
   let action = config.VALID_ACTIONS.has(rawDecision.suggestedAction) ? rawDecision.suggestedAction : 'explore';
-  let target = rawDecision.suggestedTarget || 'none';
+  let target = cleanTargetIdentifier(rawDecision.suggestedTarget);
   let directive = rawDecision.directive || "Poursuivre l'objectif en cours.";
 
+  if (action === 'chest') {
+    ({ action, target, directive } = sanitizeChestDecision(bot, target, directive));
+  }
   if (action === 'craft') {
     ({ action, target, directive } = sanitizeCraftDecision(bot, target, directive));
   } else if (action === 'smelt') {
     ({ action, target, directive } = sanitizeSmeltDecision(bot, target, directive));
-  } else if (action === 'chest') {
-    ({ action, target, directive } = sanitizeChestDecision(bot, target, directive));
   } else if (action === 'wiki' && target === 'none') {
     // Default wiki target to current objective when omitted
     target = state.currentObjective;
@@ -233,12 +249,14 @@ async function runManagerCycle(bot) {
 
       CONSIGNE :
       Définis la prochaine étape logique pour progresser ou te débloquer. Sois direct, clair et réaliste.
+      RÈGLE ABSOLUE POUR "suggestedTarget" :
+      - "suggestedTarget" doit être UNIQUEMENT l'identifiant technique Minecraft (ex: "oak_log", "stone", "chest", "none"), sans espace ni phrase.
       Réponds UNIQUEMENT en JSON :
       {
         "thought": "Diagnostic rapide de la situation",
         "directive": "Consigne impérative et courte pour le joueur",
         "suggestedAction": "mine" | "craft" | "place" | "smelt" | "explore" | "unstuck" | "wiki" | "eat" | "chest" | "equip" | "portal" | "fight" | "hunt",
-        "suggestedTarget": "nom_cible"
+        "suggestedTarget": "nom_cible_strict"
       }
     `;
 
@@ -272,5 +290,6 @@ module.exports = {
   startManagerLoop,
   shouldRunManager,
   detectActionLoop,
-  sanitizeManagerOutput
+  sanitizeManagerOutput,
+  cleanTargetIdentifier
 };

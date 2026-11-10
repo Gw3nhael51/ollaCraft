@@ -275,11 +275,14 @@ function buildReactPrompt(bot, state, environment, craftingTable) {
     - "explore" : Pour marcher et trouver de nouvelles ressources si rien d'utile n'est visible.
 
     CONSIGNE : Analyse le résultat précédent, tes ressources et tes recettes. Déduis la prochaine action logique.
+    RÈGLE ABSOLUE POUR "target" :
+    - "target" doit être UNIQUEMENT l'identifiant technique Minecraft (ex: "oak_log", "stone", "planks", "crafting_table", "chest").
+    - Strictement AUCUN texte explicatif, AUCUNE phrase, AUCUN espace dans "target". Toute ton analyse doit être dans "thought".
     Réponds UNIQUEMENT en JSON :
     {
       "thought": "Explication courte de ton raisonnement",
       "action": "mine" | "craft" | "place" | "explore" | "unstuck" | "wiki" | "smelt" | "eat" | "hunt" | "fight" | "chest" | "equip" | "portal",
-      "target": "nom_cible_si_applicable",
+      "target": "identifiant_strict_sans_espace",
       "qty": 1
     }
   `;
