@@ -6,7 +6,7 @@ const { createResult } = require('./result');
  * @param {object} bot Mineflayer bot instance
  */
 function stopMovement(bot) {
-  bot._activeMovementTaskId = (bot._activeMovementTaskId || 0) + 1;
+  bot._activeNavigationTaskId = (bot._activeNavigationTaskId || 0) + 1;
 
   if (bot.pathfinder) {
     try {
@@ -16,9 +16,7 @@ function stopMovement(bot) {
       if (typeof bot.pathfinder.stop === 'function') {
         bot.pathfinder.stop();
       }
-    } catch {
-      // Ignore reset exceptions
-    }
+    } catch {}
   }
 
   if (typeof bot.clearControlStates === 'function') {
@@ -31,9 +29,7 @@ function stopMovement(bot) {
       if (typeof bot.setControlState === 'function') {
         bot.setControlState(control, false);
       }
-    } catch {
-      // Ignore missing control
-    }
+    } catch {}
   }
 }
 
@@ -79,7 +75,7 @@ async function gotoCoordinates(bot, x, y, z, options = {}) {
     };
   };
 
-  const currentTaskId = (bot._activeMovementTaskId = (bot._activeMovementTaskId || 0) + 1);
+  const currentTaskId = (bot._activeNavigationTaskId = (bot._activeNavigationTaskId || 0) + 1);
 
   if (abortSignal?.aborted) {
     stopMovement(bot);
@@ -90,6 +86,7 @@ async function gotoCoordinates(bot, x, y, z, options = {}) {
   let abortHandler = null;
   let isTimedOut = false;
   let isAborted = false;
+  let finalized = false;
 
   const cleanupListeners = () => {
     if (timerId) {
@@ -117,7 +114,7 @@ async function gotoCoordinates(bot, x, y, z, options = {}) {
     if (abortSignal) {
       const abortPromise = new Promise((_, reject) => {
         abortHandler = () => {
-          if (bot._activeMovementTaskId === currentTaskId) {
+          if (!finalized && bot._activeNavigationTaskId === currentTaskId) {
             isAborted = true;
             stopMovement(bot);
             reject(new Error('Navigation aborted by caller'));
@@ -131,7 +128,7 @@ async function gotoCoordinates(bot, x, y, z, options = {}) {
     if (timeoutMs > 0) {
       const timeoutPromise = new Promise((_, reject) => {
         timerId = setTimeout(() => {
-          if (bot._activeMovementTaskId === currentTaskId) {
+          if (!finalized && bot._activeNavigationTaskId === currentTaskId) {
             isTimedOut = true;
             stopMovement(bot);
             reject(new Error('Navigation timed out'));
@@ -142,6 +139,7 @@ async function gotoCoordinates(bot, x, y, z, options = {}) {
     }
 
     await Promise.race(racePromises);
+    finalized = true;
 
     if (isTimedOut) {
       return createResult(false, 'timeout', getPositionData(), 'Navigation timed out');
@@ -150,7 +148,7 @@ async function gotoCoordinates(bot, x, y, z, options = {}) {
       return createResult(false, 'aborted', getPositionData(), 'Navigation aborted by caller');
     }
 
-    if (bot._activeMovementTaskId !== currentTaskId) {
+    if (bot._activeNavigationTaskId !== currentTaskId) {
       return createResult(false, 'aborted', getPositionData(), 'Navigation superseded by another movement task');
     }
 
@@ -161,6 +159,7 @@ async function gotoCoordinates(bot, x, y, z, options = {}) {
     }
     return createResult(false, 'no_path', finalData, 'Target position was not reached within range');
   } catch (err) {
+    finalized = true;
     const finalData = getPositionData();
 
     if (isTimedOut) {
@@ -170,7 +169,7 @@ async function gotoCoordinates(bot, x, y, z, options = {}) {
       return createResult(false, 'aborted', finalData, 'Navigation aborted by caller');
     }
 
-    if (bot._activeMovementTaskId !== currentTaskId) {
+    if (bot._activeNavigationTaskId !== currentTaskId) {
       return createResult(false, 'aborted', finalData, 'Navigation superseded by another movement task');
     }
 
@@ -219,11 +218,11 @@ async function jump(bot, options = {}) {
     let timeoutTimer = null;
     let checkInterval = null;
     let abortHandler = null;
-    let resolved = false;
+    let finalized = false;
 
     const finalize = (success, reason, errMessage = null) => {
-      if (resolved) return;
-      resolved = true;
+      if (finalized) return;
+      finalized = true;
 
       if (keyReleaseTimer) clearTimeout(keyReleaseTimer);
       if (timeoutTimer) clearTimeout(timeoutTimer);
@@ -234,9 +233,7 @@ async function jump(bot, options = {}) {
         if (typeof bot.setControlState === 'function') {
           bot.setControlState('jump', false);
         }
-      } catch {
-        // Ignore control error
-      }
+      } catch {}
 
       resolve(createResult(success, reason, getJumpData(peakY), errMessage));
     };
@@ -266,9 +263,7 @@ async function jump(bot, options = {}) {
         if (typeof bot.setControlState === 'function') {
           bot.setControlState('jump', false);
         }
-      } catch {
-        // Ignore release error
-      }
+      } catch {}
       if (!waitForApex) {
         finalize(true, 'jumped', null);
       }
@@ -295,7 +290,7 @@ async function jump(bot, options = {}) {
 
     if (typeof bot.on === 'function') {
       const onTick = () => {
-        if (resolved) {
+        if (finalized) {
           bot.removeListener?.('physicTick', onTick);
           return;
         }

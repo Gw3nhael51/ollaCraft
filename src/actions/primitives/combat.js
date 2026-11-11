@@ -1,5 +1,6 @@
 const { goals } = require('mineflayer-pathfinder');
 const { createResult } = require('./result');
+const { stopMovement } = require('./movement');
 
 /**
  * Check whether a target entity is currently alive and active in the world
@@ -139,6 +140,7 @@ async function attackEntity(bot, targetEntity, options = {}) {
   let abortHandler = null;
   let isTimedOut = false;
   let isAborted = false;
+  let finalized = false;
 
   const cleanup = () => {
     if (timerId) clearTimeout(timerId);
@@ -158,8 +160,10 @@ async function attackEntity(bot, targetEntity, options = {}) {
     if (abortSignal) {
       const abortPromise = new Promise((_, reject) => {
         abortHandler = () => {
-          isAborted = true;
-          reject(new Error('Attack operation aborted by caller'));
+          if (!finalized) {
+            isAborted = true;
+            reject(new Error('Attack operation aborted by caller'));
+          }
         };
         abortSignal.addEventListener('abort', abortHandler, { once: true });
       });
@@ -169,14 +173,17 @@ async function attackEntity(bot, targetEntity, options = {}) {
     if (timeoutMs > 0) {
       const timeoutPromise = new Promise((_, reject) => {
         timerId = setTimeout(() => {
-          isTimedOut = true;
-          reject(new Error('Attack operation timed out'));
+          if (!finalized) {
+            isTimedOut = true;
+            reject(new Error('Attack operation timed out'));
+          }
         }, timeoutMs);
       });
       racePromises.push(timeoutPromise);
     }
 
     await Promise.race(racePromises);
+    finalized = true;
 
     const postCheck = inspectTargetEntity(bot, targetEntity);
     const postHealth = targetEntity.health !== undefined ? targetEntity.health : null;
@@ -198,6 +205,8 @@ async function attackEntity(bot, targetEntity, options = {}) {
       remainingHealth: postHealth
     }, null);
   } catch (err) {
+    finalized = true;
+
     if (isAborted || abortSignal?.aborted) {
       return createResult(false, 'aborted', { entityId: targetEntity.id }, 'Attack operation aborted by caller');
     }
@@ -241,7 +250,7 @@ async function followEntity(bot, targetEntity, options = {}) {
   const timeoutMs = options.timeoutMs || 0;
   const abortSignal = options.abortSignal;
 
-  const currentTaskId = (bot._activeCombatTaskId = (bot._activeCombatTaskId || 0) + 1);
+  const currentTaskId = (bot._activeNavigationTaskId = (bot._activeNavigationTaskId || 0) + 1);
 
   const getDistance = () => {
     const botPos = bot.entity?.position;
@@ -255,12 +264,7 @@ async function followEntity(bot, targetEntity, options = {}) {
   };
 
   if (abortSignal?.aborted) {
-    if (bot.pathfinder) {
-      try {
-        bot.pathfinder.setGoal(null);
-        bot.pathfinder.stop();
-      } catch {}
-    }
+    stopMovement(bot);
     return createResult(false, 'aborted', { entityId: targetEntity.id }, 'Follow operation aborted before start');
   }
 
@@ -279,18 +283,7 @@ async function followEntity(bot, targetEntity, options = {}) {
   let isAborted = false;
   let stopReason = null;
   let reachedRange = false;
-
-  const stopFollowing = () => {
-    if (bot.pathfinder) {
-      try {
-        if (typeof bot.pathfinder.setGoal === 'function') bot.pathfinder.setGoal(null);
-        if (typeof bot.pathfinder.stop === 'function') bot.pathfinder.stop();
-      } catch {}
-    }
-    if (typeof bot.clearControlStates === 'function') {
-      bot.clearControlStates();
-    }
-  };
+  let finalized = false;
 
   const cleanup = () => {
     if (timerId) clearTimeout(timerId);
@@ -307,7 +300,7 @@ async function followEntity(bot, targetEntity, options = {}) {
 
     const trackingPromise = new Promise((resolve) => {
       checkInterval = setInterval(() => {
-        if (bot._activeCombatTaskId !== currentTaskId) {
+        if (bot._activeNavigationTaskId !== currentTaskId) {
           clearInterval(checkInterval);
           stopReason = 'aborted';
           resolve();
@@ -318,7 +311,7 @@ async function followEntity(bot, targetEntity, options = {}) {
         if (!stateCheck.valid) {
           clearInterval(checkInterval);
           stopReason = stateCheck.reason;
-          stopFollowing();
+          stopMovement(bot);
           resolve();
           return;
         }
@@ -327,7 +320,7 @@ async function followEntity(bot, targetEntity, options = {}) {
         if (dist <= range + 0.5) {
           reachedRange = true;
           clearInterval(checkInterval);
-          stopFollowing();
+          stopMovement(bot);
           resolve();
         }
       }, 20);
@@ -338,9 +331,9 @@ async function followEntity(bot, targetEntity, options = {}) {
     if (abortSignal) {
       const abortPromise = new Promise((_, reject) => {
         abortHandler = () => {
-          if (bot._activeCombatTaskId === currentTaskId) {
+          if (!finalized && bot._activeNavigationTaskId === currentTaskId) {
             isAborted = true;
-            stopFollowing();
+            stopMovement(bot);
             reject(new Error('Follow operation aborted by caller'));
           }
         };
@@ -352,9 +345,9 @@ async function followEntity(bot, targetEntity, options = {}) {
     if (timeoutMs > 0) {
       const timeoutPromise = new Promise((_, reject) => {
         timerId = setTimeout(() => {
-          if (bot._activeCombatTaskId === currentTaskId) {
+          if (!finalized && bot._activeNavigationTaskId === currentTaskId) {
             isTimedOut = true;
-            stopFollowing();
+            stopMovement(bot);
             reject(new Error('Follow operation timed out'));
           }
         }, timeoutMs);
@@ -363,6 +356,7 @@ async function followEntity(bot, targetEntity, options = {}) {
     }
 
     await Promise.race(racePromises);
+    finalized = true;
 
     if (stopReason) {
       return createResult(false, stopReason, { entityId: targetEntity.id }, `Entity state changed during follow: ${stopReason}`);
@@ -385,9 +379,10 @@ async function followEntity(bot, targetEntity, options = {}) {
 
     return createResult(false, 'timeout', { entityId: targetEntity.id }, 'Target range was not reached');
   } catch (err) {
-    stopFollowing();
+    finalized = true;
+    stopMovement(bot);
 
-    if (bot._activeCombatTaskId !== currentTaskId) {
+    if (bot._activeNavigationTaskId !== currentTaskId) {
       return createResult(false, 'aborted', { entityId: targetEntity.id }, 'Follow superseded by newer task');
     }
 
