@@ -608,7 +608,11 @@ test('Structural refactoring step 1 exposes new modules and action primitives', 
   assert.equal(typeof primItems.dropItem, 'function');
   assert.equal(typeof primContainer.openContainer, 'function');
   assert.equal(typeof primContainer.depositItem, 'function');
+  assert.equal(typeof primContainer.withdrawItem, 'function');
+  assert.equal(typeof primContainer.transferItem, 'function');
   assert.equal(typeof primContainer.closeContainer, 'function');
+  assert.equal(typeof primCombat.attackEntity, 'function');
   assert.equal(typeof primCombat.attackTarget, 'function');
+  assert.equal(typeof primCombat.followEntity, 'function');
   assert.equal(typeof primCombat.faceTarget, 'function');
 });
