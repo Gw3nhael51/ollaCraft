@@ -567,3 +567,46 @@ test('Target sanitization filters out hallucinated text', () => {
   assert.equal(resolvedValid.target, 'oak_log');
   assert.equal(resolvedValid.qty, 3);
 });
+
+test('Structural refactoring step 1 exposes new modules and action primitives', () => {
+  // Charger : Vérifier les modules relocalisés de la nouvelle structure
+  const directDispatcher = require('../src/actions/dispatcher');
+  const directLoop = require('../src/agent/loop');
+  const directManager = require('../src/agent/manager');
+  const directPrompt = require('../src/agent/prompt');
+  const directState = require('../src/core/state');
+  const directConfig = require('../src/infrastructure/config');
+  const directInventory = require('../src/perception/inventory');
+  const directEnvironment = require('../src/perception/environment');
+  const directWikiData = require('../src/minecraft/wikiData');
+
+  assert.equal(typeof directDispatcher.dispatchSkill, 'function');
+  assert.equal(typeof directLoop.handleSurvivalRequest, 'function');
+  assert.equal(typeof directManager.runManagerCycle, 'function');
+  assert.equal(typeof directPrompt.buildReactPrompt, 'function');
+  assert.equal(typeof directState.currentObjective, 'string');
+  assert.equal(typeof directConfig.BOT_CONFIG, 'object');
+  assert.equal(typeof directInventory.countItem, 'function');
+  assert.equal(typeof directEnvironment.scanEnvironment, 'function');
+  assert.equal(typeof directWikiData.getMcData, 'function');
+
+  // Vérifier : Contrôler l'exposition des primitives élémentaires
+  const primMovement = require('../src/actions/primitives/movement');
+  const primBlocks = require('../src/actions/primitives/blocks');
+  const primItems = require('../src/actions/primitives/items');
+  const primContainer = require('../src/actions/primitives/container');
+  const primCombat = require('../src/actions/primitives/combat');
+
+  assert.equal(typeof primMovement.gotoCoordinates, 'function');
+  assert.equal(typeof primMovement.jump, 'function');
+  assert.equal(typeof primBlocks.breakBlockAt, 'function');
+  assert.equal(typeof primBlocks.placeBlockOnFace, 'function');
+  assert.equal(typeof primItems.equipItem, 'function');
+  assert.equal(typeof primItems.consumeItem, 'function');
+  assert.equal(typeof primItems.craftRecipe, 'function');
+  assert.equal(typeof primContainer.openContainer, 'function');
+  assert.equal(typeof primContainer.depositItem, 'function');
+  assert.equal(typeof primContainer.closeContainer, 'function');
+  assert.equal(typeof primCombat.attackTarget, 'function');
+  assert.equal(typeof primCombat.faceTarget, 'function');
+});
