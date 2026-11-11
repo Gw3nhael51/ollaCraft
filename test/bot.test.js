@@ -599,6 +599,7 @@ test('Structural refactoring step 1 exposes new modules and action primitives', 
 
   assert.equal(typeof primMovement.gotoCoordinates, 'function');
   assert.equal(typeof primMovement.jump, 'function');
+  assert.equal(typeof primMovement.stopMovement, 'function');
   assert.equal(typeof primBlocks.breakBlockAt, 'function');
   assert.equal(typeof primBlocks.placeBlockOnFace, 'function');
   assert.equal(typeof primItems.equipItem, 'function');
