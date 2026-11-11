@@ -605,6 +605,7 @@ test('Structural refactoring step 1 exposes new modules and action primitives', 
   assert.equal(typeof primItems.equipItem, 'function');
   assert.equal(typeof primItems.consumeItem, 'function');
   assert.equal(typeof primItems.craftRecipe, 'function');
+  assert.equal(typeof primItems.dropItem, 'function');
   assert.equal(typeof primContainer.openContainer, 'function');
   assert.equal(typeof primContainer.depositItem, 'function');
   assert.equal(typeof primContainer.closeContainer, 'function');
