@@ -1,80 +1,8 @@
 const { createResult } = require('../actions/primitives/result');
 const { createDefaultRegistry } = require('./registry');
 const { validateProcedure } = require('./validator');
-const { isDynamicReference, parseDynamicReference } = require('./schema');
-
-/**
- * Resolve dynamic reference against execution context
- * @param {string} refString Dynamic reference expression
- * @param {object} context Active procedure execution context
- * @returns {any} Resolved value
- */
-function resolveReference(refString, context) {
-  const parsed = parseDynamicReference(refString);
-  if (!parsed) {
-    throw new Error(`Malformed dynamic reference: '${refString}'`);
-  }
-
-  if (parsed.scope === 'parameters') {
-    const paramValue = context.parameters[parsed.targetId];
-    if (paramValue === undefined) {
-      throw new Error(`Reference '${refString}' could not be resolved: parameter '${parsed.targetId}' is undefined`);
-    }
-    return paramValue;
-  }
-
-  if (parsed.scope === 'steps') {
-    const stepResult = context.stepResults[parsed.targetId];
-    if (!stepResult) {
-      throw new Error(`Reference '${refString}' could not be resolved: step '${parsed.targetId}' produced no result`);
-    }
-
-    let current = stepResult;
-    for (const segment of parsed.path) {
-      if (current === null || current === undefined || typeof current !== 'object') {
-        throw new Error(`Reference '${refString}' could not traverse property '${segment}' on non-object`);
-      }
-      current = current[segment];
-    }
-
-    if (current === undefined) {
-      throw new Error(`Reference '${refString}' resolved to undefined`);
-    }
-
-    return current;
-  }
-
-  throw new Error(`Unknown reference scope '${parsed.scope}' in '${refString}'`);
-}
-
-/**
- * Recursively resolve all dynamic expressions within a parameters structure
- * @param {any} value Parameter payload containing static or dynamic values
- * @param {object} context Active execution context
- * @returns {any} Fully evaluated data structure with resolved values
- */
-function resolveDynamicValues(value, context) {
-  if (typeof value === 'string') {
-    if (isDynamicReference(value)) {
-      return resolveReference(value, context);
-    }
-    return value;
-  }
-
-  if (Array.isArray(value)) {
-    return value.map(item => resolveDynamicValues(item, context));
-  }
-
-  if (value && typeof value === 'object') {
-    const resolved = {};
-    for (const [key, val] of Object.entries(value)) {
-      resolved[key] = resolveDynamicValues(val, context);
-    }
-    return resolved;
-  }
-
-  return value;
-}
+const { isDynamicReference, parseDynamicReference, resolveReference, resolveDynamicValues } = require('./schema');
+const { evaluatePreconditions, evaluatePostconditions } = require('./evaluator');
 
 /**
  * Execute a validated procedure step by step in sequence
@@ -127,6 +55,17 @@ async function executeProcedure(bot, procedure, options = {}) {
   let timedOut = false;
 
   const executePipeline = async () => {
+    if (!options.skipPreconditions && procedure.preconditions && procedure.preconditions.length > 0) {
+      const preResult = await evaluatePreconditions(bot, procedure.preconditions, context);
+      if (!preResult.success) {
+        return createResult(false, 'preconditions_failed', {
+          procedureId: procedure.id,
+          preconditionsResult: preResult.data,
+          stepTraces: []
+        }, preResult.error);
+      }
+    }
+
     let stepsExecuted = 0;
 
     for (const step of procedure.steps) {
@@ -210,12 +149,28 @@ async function executeProcedure(bot, procedure, options = {}) {
       }
     }
 
+    let postResult = null;
+    if (!options.skipPostconditions && procedure.postconditions && procedure.postconditions.length > 0) {
+      postResult = await evaluatePostconditions(bot, procedure.postconditions, context);
+      if (!postResult.success) {
+        return createResult(false, 'postconditions_failed', {
+          procedureId: procedure.id,
+          durationMs: Date.now() - context.startTime,
+          stepsExecuted,
+          stepResults: context.stepResults,
+          stepTraces: context.stepTraces,
+          postconditionsResult: postResult.data
+        }, postResult.error);
+      }
+    }
+
     return createResult(true, 'completed', {
       procedureId: procedure.id,
       durationMs: Date.now() - context.startTime,
       stepsExecuted,
       stepResults: context.stepResults,
-      stepTraces: context.stepTraces
+      stepTraces: context.stepTraces,
+      postconditionsResult: postResult?.data || null
     }, null);
   };
 

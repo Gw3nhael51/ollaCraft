@@ -192,6 +192,79 @@ function createProcedureTemplate(partial = {}) {
   };
 }
 
+/**
+ * Resolve dynamic reference against execution context
+ * @param {string} refString Dynamic reference expression
+ * @param {object} context Active procedure execution context
+ * @returns {any} Resolved value
+ */
+function resolveReference(refString, context) {
+  const parsed = parseDynamicReference(refString);
+  if (!parsed) {
+    throw new Error(`Malformed dynamic reference: '${refString}'`);
+  }
+
+  if (parsed.scope === 'parameters') {
+    const paramValue = context.parameters[parsed.targetId];
+    if (paramValue === undefined) {
+      throw new Error(`Reference '${refString}' could not be resolved: parameter '${parsed.targetId}' is undefined`);
+    }
+    return paramValue;
+  }
+
+  if (parsed.scope === 'steps') {
+    const stepResult = context.stepResults[parsed.targetId];
+    if (!stepResult) {
+      throw new Error(`Reference '${refString}' could not be resolved: step '${parsed.targetId}' produced no result`);
+    }
+
+    let current = stepResult;
+    for (const segment of parsed.path) {
+      if (current === null || current === undefined || typeof current !== 'object') {
+        throw new Error(`Reference '${refString}' could not traverse property '${segment}' on non-object`);
+      }
+      current = current[segment];
+    }
+
+    if (current === undefined) {
+      throw new Error(`Reference '${refString}' resolved to undefined`);
+    }
+
+    return current;
+  }
+
+  throw new Error(`Unknown reference scope '${parsed.scope}' in '${refString}'`);
+}
+
+/**
+ * Recursively resolve all dynamic expressions within a parameters structure
+ * @param {any} value Parameter payload containing static or dynamic values
+ * @param {object} context Active execution context
+ * @returns {any} Fully evaluated data structure with resolved values
+ */
+function resolveDynamicValues(value, context) {
+  if (typeof value === 'string') {
+    if (isDynamicReference(value)) {
+      return resolveReference(value, context);
+    }
+    return value;
+  }
+
+  if (Array.isArray(value)) {
+    return value.map(item => resolveDynamicValues(item, context));
+  }
+
+  if (value && typeof value === 'object') {
+    const resolved = {};
+    for (const [key, val] of Object.entries(value)) {
+      resolved[key] = resolveDynamicValues(val, context);
+    }
+    return resolved;
+  }
+
+  return value;
+}
+
 module.exports = {
   CURRENT_DSL_VERSION,
   ALLOWED_STATUSES,
@@ -199,6 +272,8 @@ module.exports = {
   DYNAMIC_REF_REGEX,
   isDynamicReference,
   parseDynamicReference,
+  resolveReference,
+  resolveDynamicValues,
   validateProcedureSchema,
   createProcedureTemplate
 };
