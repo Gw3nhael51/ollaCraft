@@ -28,11 +28,9 @@ const defaultProcedureMemory = new ProcedureMemory();
  * @returns {Promise<{ success: boolean, message: string }>} Execution result conforming to dispatcher contract
  */
 async function skillProcedure(bot, state, target, qty, options = {}) {
-  // Déterminer : Résoudre la mémoire et le registre applicables
   const memory = options.memory || state?.procedureMemory || defaultProcedureMemory;
   const registry = options.actionRegistry || defaultActionRegistry;
 
-  // Extraire : Identifier la procédure cible
   let procedureId = null;
   let targetInputs = {};
 
@@ -45,7 +43,6 @@ async function skillProcedure(bot, state, target, qty, options = {}) {
     }
   }
 
-  // Vérifier : Valider la conformité de l'identifiant de procédure
   if (!procedureId || !IDENTIFIER_REGEX.test(procedureId)) {
     return {
       success: false,
@@ -53,7 +50,6 @@ async function skillProcedure(bot, state, target, qty, options = {}) {
     };
   }
 
-  // Rechercher : Obtenir la procédure enregistrée depuis la mémoire
   const procedure = memory.get(procedureId);
   if (!procedure) {
     return {
@@ -62,7 +58,6 @@ async function skillProcedure(bot, state, target, qty, options = {}) {
     };
   }
 
-  // Vérifier : Contrôler le statut de cycle de vie de la procédure
   if (!procedure.status || !ALLOWED_STATUSES.includes(procedure.status)) {
     return {
       success: false,
@@ -77,7 +72,6 @@ async function skillProcedure(bot, state, target, qty, options = {}) {
     };
   }
 
-  // Résoudre : Agréger les paramètres d'entrée
   let inputs = {};
   if (qty && typeof qty === 'object') {
     inputs = { ...qty };
@@ -97,7 +91,6 @@ async function skillProcedure(bot, state, target, qty, options = {}) {
     }
   }
 
-  // Vérifier : Valider la présence et le type des paramètres déclarés
   if (procedure.parameters && typeof procedure.parameters === 'object') {
     for (const [paramName, paramDef] of Object.entries(procedure.parameters)) {
       if (paramDef && typeof paramDef === 'object') {
@@ -137,7 +130,6 @@ async function skillProcedure(bot, state, target, qty, options = {}) {
     }
   }
 
-  // Valider : Effectuer la validation sémantique stricte via le registre
   const validation = validateProcedure(procedure, registry);
   if (!validation.valid) {
     return {
@@ -146,7 +138,6 @@ async function skillProcedure(bot, state, target, qty, options = {}) {
     };
   }
 
-  // Exécuter : Déléguer l'exécution séquentielle au runner
   let runnerResult;
   try {
     runnerResult = await executeProcedure(bot, procedure, {
@@ -164,16 +155,14 @@ async function skillProcedure(bot, state, target, qty, options = {}) {
     };
   }
 
-  // Enregistrer : Mettre à jour les statistiques de réussite dans la mémoire
   if (typeof memory.recordExecution === 'function') {
     try {
       await memory.recordExecution(procedureId, runnerResult.success);
     } catch {
-      // Ignorer : Tolérer les erreurs de persistance secondaire
+      // Intentionally suppress storage persistence error in secondary path
     }
   }
 
-  // Convertir : Retourner le résultat au format attendu par le dispatcher
   if (runnerResult.success) {
     return {
       success: true,

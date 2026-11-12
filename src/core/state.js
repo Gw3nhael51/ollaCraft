@@ -1,3 +1,5 @@
+const { ProcedureMemory } = require('../procedures/memory');
+
 /**
  * Define shared global state for the autonomous agent
  */
@@ -24,6 +26,7 @@ module.exports = {
   actionHistory: [],
   managerDirective: "Récolter du bois pour fabriquer les premiers outils.",
   managerSubGoal: null,
+  procedureMemory: new ProcedureMemory(),
   isManagerThinking: false,
   cyclesSinceLastManager: 0,
   activeActionId: 0,

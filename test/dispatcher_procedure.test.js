@@ -26,11 +26,9 @@ function createMockBot() {
 }
 
 test('Dispatcher: Rejects non-existent procedure in memory', async () => {
-  // Configurer : Préparer un état et un bot fictifs
   const bot = createMockBot();
   const state = { procedureMemory: new ProcedureMemory() };
 
-  // Exécuter : Appeler une procédure non enregistrée
   const result = await dispatchSkill(bot, state, 'procedure', 'unknown_procedure');
 
   assert.equal(result.success, false);
@@ -38,11 +36,9 @@ test('Dispatcher: Rejects non-existent procedure in memory', async () => {
 });
 
 test('Dispatcher: Rejects invalid procedure identifier', async () => {
-  // Configurer : Préparer un environnement de test
   const bot = createMockBot();
   const state = { procedureMemory: new ProcedureMemory() };
 
-  // Vérifier : Tester les identifiants invalides
   const emptyRes = await dispatchSkill(bot, state, 'procedure', '');
   assert.equal(emptyRes.success, false);
   assert.match(emptyRes.message, /invalid procedure identifier/i);
@@ -53,7 +49,6 @@ test('Dispatcher: Rejects invalid procedure identifier', async () => {
 });
 
 test('Dispatcher: Rejects deprecated and invalid status procedures', async () => {
-  // Configurer : Initialiser le registre et la mémoire
   const bot = createMockBot();
   const memory = new ProcedureMemory();
   const state = { procedureMemory: memory };
@@ -65,7 +60,6 @@ test('Dispatcher: Rejects deprecated and invalid status procedures', async () =>
   });
   memory.register(deprecatedProc);
 
-  // Exécuter : Tenter d'exécuter la procédure dépréciée
   const depResult = await dispatchSkill(bot, state, 'procedure', 'deprecated_task');
   assert.equal(depResult.success, false);
   assert.match(depResult.message, /deprecated/i);
@@ -77,14 +71,12 @@ test('Dispatcher: Rejects deprecated and invalid status procedures', async () =>
   });
   memory.register(invalidStatusProc);
 
-  // Exécuter : Tenter d'exécuter la procédure avec statut invalide
   const invResult = await dispatchSkill(bot, state, 'procedure', 'invalid_status_task');
   assert.equal(invResult.success, false);
   assert.match(invResult.message, /invalid status/i);
 });
 
 test('Dispatcher: Enforces semantic validation and rejects unknown registry actions', async () => {
-  // Configurer : Définir un registre d'actions limité
   const bot = createMockBot();
   const registry = new ActionRegistry();
   const memory = new ProcedureMemory();
@@ -97,7 +89,6 @@ test('Dispatcher: Enforces semantic validation and rejects unknown registry acti
   });
   memory.register(invalidProc);
 
-  // Exécuter : Vérifier le refus de l'action non répertoriée
   const result = await dispatchSkill(bot, state, 'procedure', 'unregistered_action_proc', 1, {
     actionRegistry: registry
   });
@@ -108,7 +99,6 @@ test('Dispatcher: Enforces semantic validation and rejects unknown registry acti
 });
 
 test('Dispatcher: Validates presence and types of declared parameters', async () => {
-  // Configurer : Définir une procédure avec paramètres obligatoires et typés
   const bot = createMockBot();
   const registry = new ActionRegistry();
   const memory = new ProcedureMemory();
@@ -136,14 +126,12 @@ test('Dispatcher: Validates presence and types of declared parameters', async ()
   });
   memory.register(proc);
 
-  // Vérifier : Détecter l'omission d'un paramètre obligatoire
   const missingRes = await dispatchSkill(bot, state, 'procedure', 'typed_param_proc', null, {
     actionRegistry: registry
   });
   assert.equal(missingRes.success, false);
   assert.match(missingRes.message, /missing required parameter 'count'/i);
 
-  // Vérifier : Détecter un type erroné pour un paramètre
   const badTypeRes = await dispatchSkill(bot, state, 'procedure', 'typed_param_proc', { count: 'three' }, {
     actionRegistry: registry
   });
@@ -152,7 +140,6 @@ test('Dispatcher: Validates presence and types of declared parameters', async ()
 });
 
 test('Dispatcher: Successfully executes registered procedure and updates lifecycle stats', async () => {
-  // Configurer : Définir une procédure valide et enregistrée
   const bot = createMockBot();
   const registry = new ActionRegistry();
   const memory = new ProcedureMemory();
@@ -187,7 +174,6 @@ test('Dispatcher: Successfully executes registered procedure and updates lifecyc
   });
   memory.register(procedure);
 
-  // Exécuter : Déclencher la procédure via le dispatcher avec paramètre quantitatif
   const result = await dispatchSkill(bot, state, 'procedure', 'harvest_wood_batch', 3, {
     actionRegistry: registry
   });
@@ -196,14 +182,12 @@ test('Dispatcher: Successfully executes registered procedure and updates lifecyc
   assert.match(result.message, /completed successfully/i);
   assert.equal(stepCallCount, 3);
 
-  // Vérifier : Confirmer l'enregistrement des statistiques dans la mémoire
   const updatedProc = memory.get('harvest_wood_batch');
   assert.equal(updatedProc.metadata.executionCount, 1);
   assert.equal(updatedProc.metadata.successCount, 1);
 });
 
 test('Dispatcher: Converts runner step failure to dispatcher error format', async () => {
-  // Configurer : Simuler un échec dans le gestionnaire de primitive
   const bot = createMockBot();
   const registry = new ActionRegistry();
   const memory = new ProcedureMemory();
@@ -226,7 +210,6 @@ test('Dispatcher: Converts runner step failure to dispatcher error format', asyn
   });
   memory.register(procedure);
 
-  // Exécuter : Constater la conversion de l'échec
   const result = await dispatchSkill(bot, state, 'procedure', 'failing_procedure', 1, {
     actionRegistry: registry
   });
@@ -235,18 +218,15 @@ test('Dispatcher: Converts runner step failure to dispatcher error format', asyn
   assert.match(result.message, /failed/i);
   assert.match(result.message, /block_unreachable/i);
 
-  // Vérifier : Vérifier la mise à jour des statistiques d'échec
   const recorded = memory.get('failing_procedure');
   assert.equal(recorded.metadata.executionCount, 1);
   assert.equal(recorded.metadata.failureCount, 1);
 });
 
 test('Dispatcher: Non-regression for standard skills and unknown action fallback', async () => {
-  // Configurer : Définir un état global minimal
   const bot = createMockBot();
   const state = {};
 
-  // Vérifier : Tester la persistance du repli pour les actions inconnues
   const unknownRes = await dispatchSkill(bot, state, 'unrecognized_skill', 'dirt');
   assert.equal(unknownRes.success, false);
   assert.equal(unknownRes.message, "Unknown action 'unrecognized_skill'.");

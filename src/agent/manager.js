@@ -3,6 +3,7 @@ const state = require('../core/state');
 const invUtils = require('../perception/inventory');
 const { scanNearbyEntities } = require('../perception/environment');
 const { askOllama } = require('./ollama');
+const { defaultProcedureMemory } = require('../actions/dispatcher');
 
 /**
  * Detect whether the bot is stuck in an action loop or consecutive failures
@@ -59,10 +60,124 @@ function cleanTargetIdentifier(rawTarget) {
   if (typeof rawTarget !== 'string') return 'none';
   const trimmed = rawTarget.trim();
   if (!trimmed) return 'none';
-  const match = trimmed.match(/^[a-z0-9_]+/i);
+  const match = trimmed.match(/^[a-z0-9_-]+/i);
   if (!match) return 'none';
   const candidate = match[0].toLowerCase();
-  return candidate.length <= 32 ? candidate : 'none';
+  return candidate.length <= 64 ? candidate : 'none';
+}
+
+/**
+ * Search and select the best procedure matching a quest or crafting objective
+ * @param {object} memory ProcedureMemory instance
+ * @param {string} objective Target objective identifier
+ * @param {object} [options={}] Filtering options
+ * @param {boolean} [options.onlyValidated=false] Whether to strictly require validated status
+ * @returns {{ procedure: object, isReliable: boolean }|null} Selected procedure with reliability flag
+ */
+function selectProcedureForObjective(memory, objective, options = {}) {
+  if (!memory || typeof memory.getAll !== 'function' || !objective) {
+    return null;
+  }
+
+  const procedures = memory.getAll();
+  if (!Array.isArray(procedures) || procedures.length === 0) {
+    return null;
+  }
+
+  const cleanObjective = String(objective).toLowerCase().trim();
+
+  const matching = procedures.filter(proc => {
+    if (!proc || proc.status === 'deprecated') return false;
+
+    const tags = Array.isArray(proc.metadata?.tags) ? proc.metadata.tags.map(t => String(t).toLowerCase()) : [];
+    const id = String(proc.id || '').toLowerCase();
+    const name = String(proc.name || '').toLowerCase();
+
+    const matchesTag = tags.includes(cleanObjective);
+    const matchesId = id === cleanObjective ||
+      id === `obtain_${cleanObjective}` ||
+      id === `craft_${cleanObjective}` ||
+      id === `mine_${cleanObjective}` ||
+      id.includes(cleanObjective);
+    const matchesName = name.includes(cleanObjective);
+
+    return matchesTag || matchesId || matchesName;
+  });
+
+  if (matching.length === 0) {
+    return null;
+  }
+
+  const validated = matching.filter(p => p.status === 'validated');
+  if (validated.length > 0) {
+    validated.sort((a, b) => {
+      const confA = a.metadata?.confidenceScore !== undefined ? a.metadata.confidenceScore : 0.5;
+      const confB = b.metadata?.confidenceScore !== undefined ? b.metadata.confidenceScore : 0.5;
+      if (confA !== confB) return confB - confA;
+      return (b.metadata?.executionCount || 0) - (a.metadata?.executionCount || 0);
+    });
+    return {
+      procedure: validated[0],
+      isReliable: true
+    };
+  }
+
+  if (options.onlyValidated) {
+    return null;
+  }
+
+  const experimental = matching.filter(p => p.status === 'experimental');
+  if (experimental.length > 0) {
+    experimental.sort((a, b) => {
+      const confA = a.metadata?.confidenceScore !== undefined ? a.metadata.confidenceScore : 0.5;
+      const confB = b.metadata?.confidenceScore !== undefined ? b.metadata.confidenceScore : 0.5;
+      return confB - confA;
+    });
+    return {
+      procedure: experimental[0],
+      isReliable: false
+    };
+  }
+
+  return null;
+}
+
+/**
+ * Validate and sanitize a procedure suggestion from supervisor output
+ * @param {object} bot Mineflayer bot instance
+ * @param {string} target Suggested procedure identifier
+ * @param {string} directive Current directive message
+ * @param {object} [memory=null] Optional procedure memory instance
+ * @returns {{ action: string, target: string, directive: string, isReliable: boolean }}
+ */
+function sanitizeProcedureDecision(bot, target, directive, memory = null) {
+  const activeMemory = memory || state.procedureMemory || defaultProcedureMemory;
+  const procedure = activeMemory.get(target);
+
+  if (!procedure || procedure.status === 'deprecated') {
+    return {
+      action: 'explore',
+      target: 'none',
+      directive: `Procédure '${target}' introuvable ou dépréciée, exploration recommandée.`,
+      isReliable: false
+    };
+  }
+
+  if (procedure.status === 'experimental') {
+    return {
+      action: 'procedure',
+      target: procedure.id,
+      directive: directive || `Tester la procédure expérimentale '${procedure.id}' (non garantie).`,
+      isReliable: false
+    };
+  }
+
+  return {
+    action: 'procedure',
+    target: procedure.id,
+    directive: directive || `Exécuter la procédure validée '${procedure.id}'.`,
+    isReliable: true
+  };
 }
 
 /**
@@ -164,27 +279,33 @@ function sanitizeManagerOutput(bot, rawDecision) {
     return {
       directive: "Poursuivre la progression vers l'objectif actuel.",
       suggestedAction: "explore",
-      suggestedTarget: "none"
+      suggestedTarget: "none",
+      isReliable: false
     };
   }
 
   let action = config.VALID_ACTIONS.has(rawDecision.suggestedAction) ? rawDecision.suggestedAction : 'explore';
   let target = cleanTargetIdentifier(rawDecision.suggestedTarget);
   let directive = rawDecision.directive || "Poursuivre l'objectif en cours.";
+  let isReliable = false;
 
   if (action === 'chest') {
     ({ action, target, directive } = sanitizeChestDecision(bot, target, directive));
-  }
-  if (action === 'craft') {
+  } else if (action === 'craft') {
     ({ action, target, directive } = sanitizeCraftDecision(bot, target, directive));
   } else if (action === 'smelt') {
     ({ action, target, directive } = sanitizeSmeltDecision(bot, target, directive));
+  } else if (action === 'procedure') {
+    const procRes = sanitizeProcedureDecision(bot, target, directive);
+    action = procRes.action;
+    target = procRes.target;
+    directive = procRes.directive;
+    isReliable = procRes.isReliable;
   } else if (action === 'wiki' && target === 'none') {
-    // Default wiki target to current objective when omitted
     target = state.currentObjective;
   }
 
-  return { directive, suggestedAction: action, suggestedTarget: target };
+  return { directive, suggestedAction: action, suggestedTarget: target, isReliable };
 }
 
 const MANAGER_HEARTBEAT_INTERVAL = 3;
@@ -219,6 +340,22 @@ async function runManagerCycle(bot) {
   state.cyclesSinceLastManager = 0;
   try {
     invUtils.syncObjective(bot, state);
+
+    const memory = state.procedureMemory || defaultProcedureMemory;
+    const match = selectProcedureForObjective(memory, state.currentObjective, { onlyValidated: true });
+
+    if (match && match.procedure && match.isReliable) {
+      state.managerDirective = `Exécuter la procédure validée '${match.procedure.id}' pour l'objectif '${state.currentObjective}'.`;
+      state.managerSubGoal = {
+        action: 'procedure',
+        target: match.procedure.id,
+        isReliable: true,
+        procedureId: match.procedure.id
+      };
+      console.log(`\n[MANAGER 🧠] Directive mise à jour : "${state.managerDirective}" (action suggérée: procedure)`);
+      return;
+    }
+
     const tools = invUtils.getOwnedTools(bot).join(', ') || 'aucun';
     const inventory = invUtils.getInventorySummary(bot);
     const loopDetected = detectActionLoop(state.actionHistory);
@@ -255,7 +392,7 @@ async function runManagerCycle(bot) {
       {
         "thought": "Diagnostic rapide de la situation",
         "directive": "Consigne impérative et courte pour le joueur",
-        "suggestedAction": "mine" | "craft" | "place" | "smelt" | "explore" | "unstuck" | "wiki" | "eat" | "chest" | "equip" | "portal" | "fight" | "hunt",
+        "suggestedAction": "mine" | "craft" | "place" | "smelt" | "explore" | "unstuck" | "wiki" | "eat" | "chest" | "equip" | "portal" | "fight" | "hunt" | "procedure",
         "suggestedTarget": "nom_cible_strict"
       }
     `;
@@ -265,7 +402,11 @@ async function runManagerCycle(bot) {
     if (result) {
       const validated = sanitizeManagerOutput(bot, result);
       state.managerDirective = validated.directive;
-      state.managerSubGoal = { action: validated.suggestedAction, target: validated.suggestedTarget };
+      state.managerSubGoal = {
+        action: validated.suggestedAction,
+        target: validated.suggestedTarget,
+        isReliable: validated.isReliable
+      };
       console.log(`\n[MANAGER 🧠] Directive mise à jour : "${state.managerDirective}" (action suggérée: ${validated.suggestedAction})`);
     }
   } catch (error) {
@@ -281,7 +422,6 @@ async function runManagerCycle(bot) {
  * @returns {Promise<void>}
  */
 async function startManagerLoop(bot) {
-  // Trigger initial supervisor reasoning pass
   return runManagerCycle(bot);
 }
 
@@ -291,5 +431,7 @@ module.exports = {
   shouldRunManager,
   detectActionLoop,
   sanitizeManagerOutput,
-  cleanTargetIdentifier
+  cleanTargetIdentifier,
+  selectProcedureForObjective,
+  sanitizeProcedureDecision
 };

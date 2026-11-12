@@ -18,7 +18,7 @@ module.exports = {
 
   SOFT_BLOCKS: new Set(['dirt', 'grass_block', 'sand', 'gravel', 'stone', 'cobblestone', 'clay']),
   VALID_GROUND_BLOCKS: new Set(['grass_block', 'dirt', 'stone', 'sand', 'cobblestone', 'deepslate', 'gravel']),
-  VALID_ACTIONS: new Set(['mine', 'explore', 'craft', 'place', 'unstuck', 'smelt', 'eat', 'wiki', 'hunt', 'fight', 'chest', 'equip', 'portal']),
+  VALID_ACTIONS: new Set(['mine', 'explore', 'craft', 'place', 'unstuck', 'smelt', 'eat', 'wiki', 'hunt', 'fight', 'chest', 'equip', 'portal', 'procedure']),
   QUEST_CHAIN: [
     'wooden_pickaxe',
     'cobblestone',
