@@ -4,7 +4,7 @@ const ALLOWED_STATUSES = Object.freeze(['experimental', 'validated', 'deprecated
 
 const IDENTIFIER_REGEX = /^[a-z0-9_-]{1,64}$/;
 
-const DYNAMIC_REF_REGEX = /^\$(steps\.[a-z0-9_-]+(\.[a-zA-Z0-9_.-]+)*|parameters\.[a-z0-9_-]+)$/;
+const DYNAMIC_REF_REGEX = /^\$(steps\.[a-zA-Z0-9_-]+(\.[a-zA-Z0-9_.-]+)*|parameters\.[a-zA-Z0-9_-]+)$/;
 
 /**
  * Test whether a value string is a dynamic reference to parameters or previous steps

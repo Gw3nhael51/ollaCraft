@@ -433,9 +433,10 @@ async function craftRecipe(bot, recipe, count = 1, tableBlock = null, options = 
       for (const ingredient of recipe.delta) {
         if (ingredient.count < 0) {
           const required = Math.abs(ingredient.count) * count;
-          const available = countInventoryItem(bot, ingredient.id);
+          const key = ingredient.id !== undefined ? ingredient.id : ingredient.name;
+          const available = countInventoryItem(bot, key);
           if (available < required) {
-            const ingredientName = registry?.items?.[ingredient.id]?.name || String(ingredient.id);
+            const ingredientName = registry?.items?.[ingredient.id]?.name || ingredient.name || String(ingredient.id);
             return createResult(false, 'missing_ingredients', {
               ingredient: ingredientName,
               required,
