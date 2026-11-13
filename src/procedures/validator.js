@@ -8,6 +8,11 @@ const SUPPORTED_ASSERTION_TYPES = Object.freeze([
   'bot_health',
   'bot_food',
   'bot_position',
+  'equipped_item',
+  'equipment',
+  'container_item',
+  'entity_state',
+  'entity_eliminated',
   'custom'
 ]);
 

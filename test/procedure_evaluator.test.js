@@ -6,7 +6,9 @@ const {
   getDistance,
   evaluateAssertion,
   evaluatePreconditions,
-  evaluatePostconditions
+  evaluatePostconditions,
+  evaluateObjective,
+  evaluateProcedureExecution
 } = require('../src/procedures/evaluator');
 const { executeProcedure } = require('../src/procedures/runner');
 const { ActionRegistry } = require('../src/procedures/registry');
@@ -257,4 +259,240 @@ test('Evaluator & Runner: Postconditions failure flags procedure as failed despi
   assert.equal(result.reason, 'postconditions_failed');
   assert.equal(stepExecuted, true);
   assert.equal(result.data.stepsExecuted, 1);
+});
+
+test('Evaluator: Equipment, Container, and Entity state controls with real and missing observations', async () => {
+  const slots = new Array(46).fill(null);
+  slots[5] = { name: 'iron_helmet', count: 1 };
+  slots[45] = { name: 'shield', count: 1 };
+
+  const bot = createMockBot({
+    heldItem: { name: 'stone_pickaxe', count: 1 },
+    inventory: {
+      slots,
+      items: () => [{ name: 'stone_pickaxe', count: 1 }, { name: 'iron_helmet', count: 1 }, { name: 'shield', count: 1 }]
+    },
+    currentWindow: {
+      containerItems: () => [{ name: 'iron_ingot', count: 5 }]
+    },
+    entities: {
+      101: { id: 101, name: 'zombie', health: 0, isValid: false, position: { x: 11, y: 64, z: 20 } },
+      102: { id: 102, name: 'skeleton', health: 20, isValid: true, position: { x: 12, y: 64, z: 20 } }
+    }
+  });
+
+  const handCheck = await evaluateAssertion(bot, {
+    type: 'equipped_item',
+    item: 'stone_pickaxe',
+    destination: 'hand'
+  });
+  assert.equal(handCheck.passed, true);
+  assert.equal(handCheck.status, 'verified');
+
+  const headCheck = await evaluateAssertion(bot, {
+    type: 'equipped_item',
+    item: 'iron_helmet',
+    destination: 'head'
+  });
+  assert.equal(headCheck.passed, true);
+  assert.equal(headCheck.status, 'verified');
+
+  const containerCheck = await evaluateAssertion(bot, {
+    type: 'container_item',
+    item: 'iron_ingot',
+    count: 3,
+    operator: 'gte'
+  });
+  assert.equal(containerCheck.passed, true);
+  assert.equal(containerCheck.actual, 5);
+
+  const entityEliminatedCheck = await evaluateAssertion(bot, {
+    type: 'entity_eliminated',
+    entityId: 101
+  });
+  assert.equal(entityEliminatedCheck.passed, true);
+  assert.equal(entityEliminatedCheck.status, 'verified');
+
+  const livingEntityFail = await evaluateAssertion(bot, {
+    type: 'entity_eliminated',
+    entity: 'skeleton'
+  });
+  assert.equal(livingEntityFail.passed, false);
+  assert.equal(livingEntityFail.status, 'failed');
+
+  const blindBot = {};
+  const unknownInv = await evaluateAssertion(blindBot, {
+    type: 'inventory_item',
+    item: 'stone_pickaxe',
+    count: 1
+  });
+  assert.equal(unknownInv.passed, false);
+  assert.equal(unknownInv.status, 'unknown');
+
+  const unknownBlock = await evaluateAssertion({ blockAt: () => null }, {
+    type: 'block_state',
+    position: { x: 100, y: 64, z: 100 },
+    block: 'crafting_table'
+  });
+  assert.equal(unknownBlock.passed, false);
+  assert.equal(unknownBlock.status, 'unknown');
+
+  const unverifiableType = await evaluateAssertion(bot, {
+    type: 'telepathic_victory',
+    expected: true
+  });
+  assert.equal(unverifiableType.passed, false);
+  assert.equal(unverifiableType.status, 'unknown');
+  assert.equal(unverifiableType.verifiable, false);
+});
+
+test('Evaluator: Independently evaluates executionSuccess, postconditionsPassed, and objectiveAchieved', async () => {
+  const botWithWoodOnly = createMockBot({
+    items: [
+      { name: 'oak_log', count: 4 },
+      { name: 'stick', count: 2 }
+    ]
+  });
+
+  const procedure = {
+    id: 'craft_stone_pickaxe',
+    version: 1,
+    name: 'Craft Stone Pickaxe',
+    status: 'experimental',
+    steps: [
+      { id: 'gather_wood', action: 'break_block', parameters: { position: { x: 10, y: 64, z: 20 } } }
+    ],
+    postconditions: [
+      { type: 'inventory_item', item: 'oak_log', count: 1, operator: 'gte' }
+    ],
+    metadata: {
+      confidenceScore: 0.99,
+      tags: ['stone_pickaxe']
+    }
+  };
+
+  const trace = {
+    procedureId: 'craft_stone_pickaxe',
+    status: 'completed',
+    success: true,
+    steps: [
+      {
+        stepId: 'gather_wood',
+        action: 'break_block',
+        parameters: { position: { x: 1, y: 64, z: 1 } },
+        status: 'completed',
+        success: true,
+        reason: 'broken',
+        output: { position: { x: 1, y: 64, z: 1 }, blockName: 'oak_log' }
+      }
+    ]
+  };
+
+  const evalRes = await evaluateProcedureExecution(botWithWoodOnly, procedure, trace, {
+    objective: 'craft_stone_pickaxe'
+  });
+
+  assert.equal(evalRes.success, true);
+  assert.equal(evalRes.reason, 'evaluation_completed');
+  assert.equal(evalRes.data.executionSuccess, true);
+  assert.equal(evalRes.data.postconditionsPassed, true);
+  assert.equal(evalRes.data.objectiveAchieved, false);
+  assert.equal(evalRes.data.status, 'partially_achieved');
+  assert.notEqual(evalRes.data.confidence, 0.99);
+  assert.equal(evalRes.data.confidence, 0.5);
+  assert.equal(procedure.status, 'experimental');
+});
+
+test('Evaluator: Integration scenarios (achieved, partially_achieved, not_achieved, inconclusive, contradiction)', async () => {
+  const procedure = {
+    id: 'craft_stone_pickaxe',
+    version: 1,
+    name: 'Craft Stone Pickaxe',
+    status: 'experimental',
+    steps: [
+      { id: 'craft_pick', action: 'craft_recipe', parameters: { recipe: 'stone_pickaxe', count: 1 } }
+    ],
+    postconditions: [
+      { type: 'inventory_item', item: 'stone_pickaxe', count: 1, operator: 'gte' }
+    ],
+    metadata: {
+      tags: ['stone_pickaxe']
+    }
+  };
+
+  const successTrace = {
+    procedureId: 'craft_stone_pickaxe',
+    status: 'completed',
+    success: true,
+    steps: [
+      {
+        stepId: 'craft_pick',
+        action: 'craft_recipe',
+        parameters: { recipe: 'stone_pickaxe', count: 1 },
+        status: 'completed',
+        success: true,
+        reason: 'crafted',
+        output: { item: 'stone_pickaxe', count: 1, gainedCount: 1 }
+      }
+    ]
+  };
+
+  const botAchieved = createMockBot({
+    items: [{ name: 'stone_pickaxe', count: 1 }]
+  });
+  const achievedRes = await evaluateProcedureExecution(botAchieved, procedure, successTrace, {
+    objective: 'craft_stone_pickaxe'
+  });
+  assert.equal(achievedRes.data.status, 'achieved');
+  assert.equal(achievedRes.data.executionSuccess, true);
+  assert.equal(achievedRes.data.postconditionsPassed, true);
+  assert.equal(achievedRes.data.objectiveAchieved, true);
+  assert.equal(achievedRes.data.confidence, 1);
+  assert.equal(achievedRes.data.contradictions.length, 0);
+
+  const botContradiction = createMockBot({
+    items: [{ name: 'cobblestone', count: 1 }]
+  });
+  const contradictionRes = await evaluateProcedureExecution(botContradiction, procedure, successTrace, {
+    objective: 'craft_stone_pickaxe'
+  });
+  assert.equal(contradictionRes.data.status, 'not_achieved');
+  assert.equal(contradictionRes.data.executionSuccess, true);
+  assert.equal(contradictionRes.data.postconditionsPassed, false);
+  assert.equal(contradictionRes.data.objectiveAchieved, false);
+  assert.equal(contradictionRes.data.contradictions.length, 1);
+  assert.equal(contradictionRes.data.contradictions[0].code, 'CRAFT_OUTPUT_MISSING_IN_INVENTORY');
+  assert.equal(contradictionRes.data.confidence, 0);
+
+  const resourceFailTrace = {
+    procedureId: 'craft_stone_pickaxe',
+    status: 'failed',
+    success: false,
+    steps: [
+      {
+        stepId: 'craft_pick',
+        action: 'craft_recipe',
+        parameters: { recipe: 'stone_pickaxe', count: 1 },
+        status: 'failed',
+        success: false,
+        reason: 'missing_ingredients',
+        error: 'Insufficient ingredient: cobblestone'
+      }
+    ]
+  };
+  const resourceFailRes = await evaluateProcedureExecution(botContradiction, procedure, resourceFailTrace, {
+    objective: 'craft_stone_pickaxe'
+  });
+  assert.equal(resourceFailRes.data.status, 'not_achieved');
+  assert.equal(resourceFailRes.data.resourceShortage, true);
+  assert.equal(resourceFailRes.data.deprecateRecommended, false);
+
+  const blindBot = {};
+  const inconclusiveRes = await evaluateProcedureExecution(blindBot, procedure, successTrace, {
+    objective: 'craft_stone_pickaxe'
+  });
+  assert.equal(inconclusiveRes.data.status, 'inconclusive');
+  assert.equal(inconclusiveRes.data.objectiveAchieved, false);
+  assert.equal(inconclusiveRes.data.unknownConditions.length, 2);
+  assert.equal(inconclusiveRes.data.confidence, 0);
 });
