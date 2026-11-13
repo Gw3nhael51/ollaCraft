@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const { Vec3 } = require('vec3');
 
 const { ActionRegistry } = require('../src/procedures/registry');
-const { executeProcedure } = require('../src/procedures/runner');
+const { executeProcedure, executeExperimentalProcedure } = require('../src/procedures/runner');
 const { createResult } = require('../src/actions/primitives/result');
 
 /**
@@ -301,4 +301,140 @@ test('Runner: Step retries succeed when intermittent failure clears', async () =
   assert.equal(res.reason, 'completed');
   assert.equal(calls, 2);
   assert.equal(res.data.stepTraces[0].attempts, 2);
+});
+
+test('Runner: Enforces individual step timeout and aborts hung step handler', async () => {
+  const bot = createRunnerMockBot();
+  const registry = new ActionRegistry();
+  let stepSignalAborted = false;
+
+  registry.register({
+    id: 'hung_step',
+    defaultTimeoutMs: 5000,
+    handler: async (_bot, _params, ctx) => {
+      if (ctx.abortSignal) {
+        ctx.abortSignal.addEventListener('abort', () => {
+          stepSignalAborted = true;
+        }, { once: true });
+      }
+      await new Promise(resolve => setTimeout(resolve, 300));
+      return createResult(true, 'ok');
+    }
+  });
+
+  const procedure = {
+    id: 'step_timeout_proc',
+    version: 1,
+    name: 'Step Timeout Procedure',
+    status: 'experimental',
+    steps: [
+      { id: 'slow_step', action: 'hung_step', timeoutMs: 30, retries: 2 }
+    ]
+  };
+
+  const res = await executeExperimentalProcedure(bot, procedure, {
+    actionRegistry: registry
+  });
+
+  assert.equal(res.success, false);
+  assert.equal(res.reason, 'step_timeout');
+  assert.equal(stepSignalAborted, true);
+  assert.equal(res.data.stepTraces[0].attempts, 1);
+  assert.equal(res.data.trace.status, 'failed');
+  assert.equal(res.data.trace.objectiveAchieved, null);
+});
+
+test('Runner: Halts immediately on critical error and enforces resource and safety limits', async () => {
+  const bot = createRunnerMockBot();
+  const registry = new ActionRegistry();
+
+  registry.register({
+    id: 'safe_step',
+    handler: async () => createResult(true, 'ok')
+  });
+
+  registry.register({
+    id: 'drop_item',
+    parametersSchema: { required: ['item', 'count'] },
+    handler: async () => createResult(true, 'dropped')
+  });
+
+  const overStepProcedure = {
+    id: 'too_many_steps_proc',
+    version: 1,
+    name: 'Too Many Steps',
+    status: 'experimental',
+    steps: [
+      { id: 's1', action: 'safe_step' },
+      { id: 's2', action: 'safe_step' },
+      { id: 's3', action: 'safe_step' }
+    ]
+  };
+
+  const limitRes = await executeExperimentalProcedure(bot, overStepProcedure, {
+    actionRegistry: registry,
+    maxSteps: 2
+  });
+
+  assert.equal(limitRes.success, false);
+  assert.equal(limitRes.reason, 'resource_limit_exceeded');
+  assert.equal(limitRes.data.stepsExecuted, 2);
+
+  const dangerousDropProcedure = {
+    id: 'dangerous_drop_proc',
+    version: 1,
+    name: 'Dangerous Drop',
+    status: 'experimental',
+    steps: [
+      { id: 'drop_all', action: 'drop_item', parameters: { item: 'diamond', count: 128 } }
+    ]
+  };
+
+  const safetyRes = await executeExperimentalProcedure(bot, dangerousDropProcedure, {
+    actionRegistry: registry,
+    maxDropCount: 64
+  });
+
+  assert.equal(safetyRes.success, false);
+  assert.equal(safetyRes.reason, 'dangerous_operation');
+});
+
+test('Runner: Produces complete Evaluator-compatible trace and never mutates procedure status', async () => {
+  const bot = createRunnerMockBot();
+  const registry = new ActionRegistry();
+
+  registry.register({
+    id: 'quick_action',
+    handler: async () => createResult(true, 'done', { mined: 1 })
+  });
+
+  const procedure = {
+    id: 'trace_verif_proc',
+    version: 1,
+    name: 'Trace Verification',
+    status: 'experimental',
+    steps: [
+      { id: 'step_1', action: 'quick_action' }
+    ]
+  };
+
+  const res = await executeExperimentalProcedure(bot, procedure, {
+    actionRegistry: registry
+  });
+
+  assert.equal(res.success, true);
+  assert.equal(procedure.status, 'experimental');
+
+  const trace = res.data.trace;
+  assert.equal(trace.procedureId, 'trace_verif_proc');
+  assert.equal(trace.status, 'completed');
+  assert.equal(trace.success, true);
+  assert.equal(trace.objectiveAchieved, null);
+  assert.equal(typeof trace.startedAt, 'string');
+  assert.equal(typeof trace.completedAt, 'string');
+  assert.equal(typeof trace.executionDurationMs, 'number');
+  assert.equal(trace.steps.length, 1);
+  assert.equal(trace.steps[0].stepId, 'step_1');
+  assert.equal(trace.steps[0].status, 'completed');
+  assert.deepEqual(trace.steps[0].output, { mined: 1 });
 });

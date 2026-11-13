@@ -4,9 +4,10 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const os = require('node:os');
 const { Vec3 } = require('vec3');
-const { executeProcedure } = require('../src/procedures/runner');
+const { executeProcedure, runExperimentalProcedureCycle } = require('../src/procedures/runner');
 const { createDefaultRegistry } = require('../src/procedures/registry');
 const { ProcedureMemory } = require('../src/procedures/memory');
+const { loadProcedure } = require('../src/procedures/store');
 const { createProcedureTemplate } = require('../src/procedures/schema');
 
 /**
@@ -202,6 +203,91 @@ test('Integration E2E: Harvest wood and craft planks full procedure pipeline', a
     assert.notEqual(bestCandidate, null);
     assert.equal(bestCandidate.id, 'harvest_wood_and_craft_planks');
     assert.equal(bestCandidate.status, 'validated');
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('Integration E2E: Full operational cycle generates via Ollama, validates, persists as experimental, and executes with trace', async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'ollacraft-e2e-cycle-'));
+
+  try {
+    const bot = createSimulationBot({
+      blocks: [
+        { x: 10, y: 64, z: 20, name: 'oak_log' }
+      ]
+    });
+
+    const registry = createDefaultRegistry();
+    const memory = new ProcedureMemory({ storageDir: tempDir });
+
+    const mockOllamaGenerator = async () => JSON.stringify({
+      id: 'auto_harvest_planks',
+      version: 1,
+      name: 'Auto Harvest and Craft Planks',
+      status: 'validated',
+      description: 'Automatically navigate to oak log, harvest it, and craft oak planks',
+      parameters: {},
+      preconditions: [
+        { type: 'bot_health', value: 10, operator: 'gte' }
+      ],
+      steps: [
+        {
+          id: 'move_to_log',
+          action: 'goto_coordinates',
+          parameters: { x: 10, y: 64, z: 20, range: 1 }
+        },
+        {
+          id: 'chop_log',
+          action: 'break_block',
+          parameters: { position: { x: 10, y: 64, z: 20 } }
+        },
+        {
+          id: 'make_planks',
+          action: 'craft_recipe',
+          parameters: { recipe: 'oak_planks', count: 1 }
+        }
+      ],
+      postconditions: [
+        { type: 'inventory_item', item: 'oak_planks', count: 4, operator: 'gte' }
+      ],
+      metadata: {
+        tags: ['oak_planks']
+      }
+    });
+
+    const cycleRes = await runExperimentalProcedureCycle(bot, {
+      objective: 'oak_planks',
+      memory,
+      registry,
+      storageDir: tempDir,
+      askOllamaFn: mockOllamaGenerator
+    });
+
+    assert.equal(cycleRes.success, true);
+    assert.equal(cycleRes.reason, 'completed');
+    assert.equal(cycleRes.data.stage, 'execution');
+
+    const registeredProc = cycleRes.data.procedure;
+    assert.equal(registeredProc.id, 'auto_harvest_planks');
+    assert.equal(registeredProc.status, 'experimental');
+    assert.equal(memory.get('auto_harvest_planks').status, 'experimental');
+
+    const persistedOnDisk = await loadProcedure('auto_harvest_planks', tempDir);
+    assert.equal(persistedOnDisk.success, true);
+    assert.equal(persistedOnDisk.data.procedure.status, 'experimental');
+
+    const trace = cycleRes.data.trace;
+    assert.notEqual(trace, null);
+    assert.equal(trace.procedureId, 'auto_harvest_planks');
+    assert.equal(trace.status, 'completed');
+    assert.equal(trace.success, true);
+    assert.equal(trace.objectiveAchieved, null);
+    assert.equal(trace.steps.length, 3);
+
+    const planks = bot.inventory.items().find(i => i.name === 'oak_planks');
+    assert.notEqual(planks, undefined);
+    assert.equal(planks.count, 4);
   } finally {
     await fs.rm(tempDir, { recursive: true, force: true });
   }
