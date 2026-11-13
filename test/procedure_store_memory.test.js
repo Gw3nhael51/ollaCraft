@@ -12,9 +12,12 @@ const {
 const {
   updateProcedureStats,
   selectBestProcedure,
+  generateUniqueProcedureId,
+  registerExperimentalProcedure,
   ProcedureMemory
 } = require('../src/procedures/memory');
 const { createProcedureTemplate } = require('../src/procedures/schema');
+const { createDefaultRegistry } = require('../src/procedures/registry');
 
 /**
  * Helper to build a valid sample procedure
@@ -179,4 +182,91 @@ test('Procedure Memory: Cache management and persistent synchronization', async 
   } finally {
     await fs.rm(tempDir, { recursive: true, force: true });
   }
+});
+
+test('Procedure Store & Memory: Forbids overwriting validated procedure with experimental generation', async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'ollacraft-proc-safe-'));
+
+  try {
+    const validatedProc = createSampleProcedure('craft_stone_pickaxe', { status: 'validated' });
+    const experimentalOverwrite = createSampleProcedure('craft_stone_pickaxe', { status: 'experimental' });
+
+    const saveVal = await saveProcedure(validatedProc, tempDir);
+    assert.equal(saveVal.success, true);
+
+    const saveExp = await saveProcedure(experimentalOverwrite, tempDir);
+    assert.equal(saveExp.success, false);
+    assert.equal(saveExp.reason, 'validated_overwrite_forbidden');
+
+    const memory = new ProcedureMemory({ storageDir: tempDir });
+    memory.register(validatedProc);
+
+    assert.throws(() => {
+      memory.register(experimentalOverwrite);
+    }, /Cannot overwrite validated procedure/i);
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('Procedure Memory: Safe experimental registration assigns unique ID and persists metadata', async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'ollacraft-proc-reg-'));
+
+  try {
+    const registry = createDefaultRegistry();
+    const memory = new ProcedureMemory({ storageDir: tempDir });
+
+    const existingValidated = createSampleProcedure('craft_stone_pickaxe', { status: 'validated' });
+    await saveProcedure(existingValidated, tempDir);
+    memory.register(existingValidated);
+
+    const candidate = {
+      id: 'craft_stone_pickaxe',
+      version: 1,
+      name: 'Craft Stone Pickaxe Candidate',
+      status: 'validated',
+      steps: [
+        { id: 'locate_tree', action: 'find_block', parameters: { block: 'oak_log' } }
+      ],
+      postconditions: [
+        { type: 'inventory_item', item: 'stone_pickaxe', count: 1, operator: 'gte' }
+      ],
+      metadata: {
+        tags: ['stone_pickaxe']
+      }
+    };
+
+    const regRes = await registerExperimentalProcedure(memory, candidate, {
+      registry,
+      storageDir: tempDir,
+      generationMetadata: { model: 'qwen2.5:latest', durationMs: 420, attempts: 1 }
+    });
+
+    assert.equal(regRes.success, true);
+    assert.equal(regRes.reason, 'registered');
+    assert.equal(regRes.data.renamed, true);
+    assert.equal(regRes.data.id, 'craft_stone_pickaxe_exp_1');
+    assert.equal(regRes.data.procedure.status, 'experimental');
+    assert.deepEqual(regRes.data.procedure.metadata.generationMetadata, {
+      model: 'qwen2.5:latest',
+      durationMs: 420,
+      attempts: 1
+    });
+    assert.equal(regRes.data.procedure.metadata.validationMetadata.valid, true);
+
+    assert.equal(memory.get('craft_stone_pickaxe').status, 'validated');
+    assert.equal(memory.get('craft_stone_pickaxe_exp_1').status, 'experimental');
+
+    const loadedOnDisk = await loadProcedure('craft_stone_pickaxe_exp_1', tempDir);
+    assert.equal(loadedOnDisk.success, true);
+    assert.equal(loadedOnDisk.data.procedure.status, 'experimental');
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('Procedure Memory: Unique ID generator avoids collisions across sets', () => {
+  const existing = new Set(['mine_iron', 'mine_iron_exp_1', 'mine_iron_exp_2']);
+  const nextId = generateUniqueProcedureId('mine_iron', existing);
+  assert.equal(nextId, 'mine_iron_exp_3');
 });

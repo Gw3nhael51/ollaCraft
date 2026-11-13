@@ -6,22 +6,25 @@ const { validateProcedureSchema } = require('./schema');
 const DEFAULT_STORAGE_DIR = path.resolve(process.cwd(), 'data/procedures');
 
 /**
- * Resolve full path for a procedure JSON file
- * @param {string} procedureId Identifier of the procedure
- * @param {string} [storageDir=DEFAULT_STORAGE_DIR] Directory hosting procedure files
- * @returns {string} Absolute file path
+ * Résoudre le chemin complet du fichier JSON d'une procédure
+ * @param {string} procedureId Identifiant de la procédure
+ * @param {string} [storageDir=DEFAULT_STORAGE_DIR] Répertoire de stockage
+ * @returns {string} Chemin absolu du fichier
  */
 function getProcedurePath(procedureId, storageDir = DEFAULT_STORAGE_DIR) {
   return path.join(storageDir, `${procedureId}.json`);
 }
 
 /**
- * Persist a procedure definition object to disk as formatted JSON
- * @param {object} procedure Procedure object to save
- * @param {string} [storageDir=DEFAULT_STORAGE_DIR] Target storage directory
- * @returns {Promise<{ success: boolean, reason: string, data: object|null, error: string|null }>}
+ * Persister une définition de procédure sur disque au format JSON avec protection des procédures validées
+ * @param {object} procedure Objet procédure à sauvegarder
+ * @param {string} [storageDir=DEFAULT_STORAGE_DIR] Répertoire cible
+ * @param {object} [options={}] Options de sauvegarde et de protection
+ * @param {boolean} [options.preventOverwrite=false] Interdire tout écrasement d'un fichier existant
+ * @param {boolean} [options.allowOverwriteValidated=false] Autoriser explicitement le remplacement d'une procédure validée
+ * @returns {Promise<{ success: boolean, reason: string, data: object|null, error: string|null }>} Résultat de sauvegarde
  */
-async function saveProcedure(procedure, storageDir = DEFAULT_STORAGE_DIR) {
+async function saveProcedure(procedure, storageDir = DEFAULT_STORAGE_DIR, options = {}) {
   const schemaValidation = validateProcedureSchema(procedure);
   if (!schemaValidation.valid) {
     return createResult(false, 'invalid_schema', { errors: schemaValidation.errors }, 'Cannot save invalid procedure');
@@ -30,6 +33,35 @@ async function saveProcedure(procedure, storageDir = DEFAULT_STORAGE_DIR) {
   try {
     await fs.mkdir(storageDir, { recursive: true });
     const targetPath = getProcedurePath(procedure.id, storageDir);
+
+    try {
+      const existingRaw = await fs.readFile(targetPath, 'utf8');
+      if (options.preventOverwrite) {
+        return createResult(
+          false,
+          'already_exists',
+          { id: procedure.id, path: targetPath },
+          `Procedure '${procedure.id}' already exists in storage`
+        );
+      }
+
+      const existingParsed = JSON.parse(existingRaw);
+      if (
+        existingParsed &&
+        existingParsed.status === 'validated' &&
+        procedure.status === 'experimental' &&
+        options.allowOverwriteValidated !== true
+      ) {
+        return createResult(
+          false,
+          'validated_overwrite_forbidden',
+          { id: procedure.id, path: targetPath, existingStatus: existingParsed.status },
+          `Cannot overwrite validated procedure '${procedure.id}' with an experimental procedure`
+        );
+      }
+    } catch {
+    }
+
     const content = JSON.stringify(procedure, null, 2);
     await fs.writeFile(targetPath, content, 'utf8');
 
@@ -44,10 +76,10 @@ async function saveProcedure(procedure, storageDir = DEFAULT_STORAGE_DIR) {
 }
 
 /**
- * Load and validate a procedure definition from disk by identifier
- * @param {string} procedureId Identifier of procedure to load
- * @param {string} [storageDir=DEFAULT_STORAGE_DIR] Source storage directory
- * @returns {Promise<{ success: boolean, reason: string, data: object|null, error: string|null }>}
+ * Charger et valider une procédure depuis le disque par son identifiant
+ * @param {string} procedureId Identifiant de la procédure à charger
+ * @param {string} [storageDir=DEFAULT_STORAGE_DIR] Répertoire source
+ * @returns {Promise<{ success: boolean, reason: string, data: object|null, error: string|null }>} Résultat de chargement
  */
 async function loadProcedure(procedureId, storageDir = DEFAULT_STORAGE_DIR) {
   const targetPath = getProcedurePath(procedureId, storageDir);
@@ -75,9 +107,9 @@ async function loadProcedure(procedureId, storageDir = DEFAULT_STORAGE_DIR) {
 }
 
 /**
- * Enumerate and load all valid procedures stored in a directory
- * @param {string} [storageDir=DEFAULT_STORAGE_DIR] Source storage directory
- * @returns {Promise<{ success: boolean, reason: string, data: object|null, error: string|null }>}
+ * Énumérer et charger toutes les procédures valides stockées dans un répertoire
+ * @param {string} [storageDir=DEFAULT_STORAGE_DIR] Répertoire source
+ * @returns {Promise<{ success: boolean, reason: string, data: object|null, error: string|null }>} Liste des procédures
  */
 async function listProcedures(storageDir = DEFAULT_STORAGE_DIR) {
   try {
@@ -109,10 +141,10 @@ async function listProcedures(storageDir = DEFAULT_STORAGE_DIR) {
 }
 
 /**
- * Remove a procedure file from disk
- * @param {string} procedureId Identifier of procedure to delete
- * @param {string} [storageDir=DEFAULT_STORAGE_DIR] Target storage directory
- * @returns {Promise<{ success: boolean, reason: string, data: object|null, error: string|null }>}
+ * Supprimer le fichier d'une procédure sur le disque
+ * @param {string} procedureId Identifiant de la procédure à supprimer
+ * @param {string} [storageDir=DEFAULT_STORAGE_DIR] Répertoire cible
+ * @returns {Promise<{ success: boolean, reason: string, data: object|null, error: string|null }>} Résultat de suppression
  */
 async function deleteProcedure(procedureId, storageDir = DEFAULT_STORAGE_DIR) {
   const targetPath = getProcedurePath(procedureId, storageDir);
