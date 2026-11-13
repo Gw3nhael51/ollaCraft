@@ -35,6 +35,7 @@ class ActionRegistry {
       description: actionDefinition.description || '',
       handler: actionDefinition.handler,
       parametersSchema: actionDefinition.parametersSchema || {},
+      outputSchema: actionDefinition.outputSchema || null,
       defaultTimeoutMs: actionDefinition.defaultTimeoutMs || 10000
     });
   }
@@ -78,7 +79,19 @@ function createDefaultRegistry() {
     description: 'Navigate bot towards world coordinates (x, y, z)',
     parametersSchema: {
       required: ['x', 'y', 'z'],
-      optional: ['range', 'timeoutMs']
+      optional: ['range', 'timeoutMs'],
+      types: {
+        x: 'number',
+        y: 'number',
+        z: 'number',
+        range: 'number',
+        timeoutMs: 'number'
+      },
+      allowAdditionalProperties: false
+    },
+    outputSchema: {
+      position: { type: 'object', properties: { x: { type: 'number' }, y: { type: 'number' }, z: { type: 'number' } } },
+      distance: { type: 'number' }
     },
     defaultTimeoutMs: 30000,
     handler: async (bot, params, context = {}) => {
@@ -95,7 +108,18 @@ function createDefaultRegistry() {
     id: 'jump',
     description: 'Execute physical jump with apex detection',
     parametersSchema: {
-      optional: ['durationMs', 'waitForApex', 'timeoutMs']
+      optional: ['durationMs', 'waitForApex', 'timeoutMs'],
+      types: {
+        durationMs: 'number',
+        waitForApex: 'boolean',
+        timeoutMs: 'number'
+      },
+      allowAdditionalProperties: false
+    },
+    outputSchema: {
+      initialY: { type: 'number' },
+      peakY: { type: 'number' },
+      heightGained: { type: 'number' }
     },
     defaultTimeoutMs: 2000,
     handler: async (bot, params = {}, context = {}) => {
@@ -113,7 +137,17 @@ function createDefaultRegistry() {
     description: 'Mine and break world block at given coordinates',
     parametersSchema: {
       required: ['position'],
-      optional: ['maxDistance', 'timeoutMs']
+      optional: ['maxDistance', 'timeoutMs'],
+      types: {
+        position: 'object',
+        maxDistance: 'number',
+        timeoutMs: 'number'
+      },
+      allowAdditionalProperties: false
+    },
+    outputSchema: {
+      position: { type: 'object', properties: { x: { type: 'number' }, y: { type: 'number' }, z: { type: 'number' } } },
+      blockName: { type: 'string' }
     },
     defaultTimeoutMs: 15000,
     handler: async (bot, params, context = {}) => {
@@ -130,7 +164,19 @@ function createDefaultRegistry() {
     description: 'Place an item from inventory against a reference block face',
     parametersSchema: {
       required: ['itemName', 'referencePosition', 'faceVector'],
-      optional: ['maxDistance', 'timeoutMs']
+      optional: ['maxDistance', 'timeoutMs'],
+      types: {
+        itemName: 'string',
+        referencePosition: 'object',
+        faceVector: 'object',
+        maxDistance: 'number',
+        timeoutMs: 'number'
+      },
+      allowAdditionalProperties: false
+    },
+    outputSchema: {
+      position: { type: 'object', properties: { x: { type: 'number' }, y: { type: 'number' }, z: { type: 'number' } } },
+      blockName: { type: 'string' }
     },
     defaultTimeoutMs: 10000,
     handler: async (bot, params, context = {}) => {
@@ -147,7 +193,17 @@ function createDefaultRegistry() {
     description: 'Equip inventory item into target equipment slot',
     parametersSchema: {
       required: ['itemName'],
-      optional: ['destination', 'timeoutMs']
+      optional: ['destination', 'timeoutMs'],
+      types: {
+        itemName: 'string',
+        destination: 'string',
+        timeoutMs: 'number'
+      },
+      allowAdditionalProperties: false
+    },
+    outputSchema: {
+      itemName: { type: 'string' },
+      destination: { type: 'string' }
     },
     defaultTimeoutMs: 5000,
     handler: async (bot, params, context = {}) => {
@@ -163,7 +219,18 @@ function createDefaultRegistry() {
     description: 'Eat food or drink beverage from inventory',
     parametersSchema: {
       required: ['itemName'],
-      optional: ['timeoutMs']
+      optional: ['timeoutMs'],
+      types: {
+        itemName: 'string',
+        timeoutMs: 'number'
+      },
+      allowAdditionalProperties: false
+    },
+    outputSchema: {
+      itemName: { type: 'string' },
+      consumedCount: { type: 'number' },
+      food: { type: 'number' },
+      health: { type: 'number' }
     },
     defaultTimeoutMs: 8000,
     handler: async (bot, params, context = {}) => {
@@ -179,7 +246,20 @@ function createDefaultRegistry() {
     description: 'Craft recipe via player grid or nearby crafting table',
     parametersSchema: {
       required: ['recipe'],
-      optional: ['count', 'tableBlock', 'timeoutMs']
+      optional: ['count', 'tableBlock', 'timeoutMs'],
+      types: {
+        recipe: ['string', 'object'],
+        count: 'number',
+        tableBlock: 'object',
+        timeoutMs: 'number'
+      },
+      allowAdditionalProperties: false
+    },
+    outputSchema: {
+      item: { type: 'string' },
+      count: { type: 'number' },
+      gainedCount: { type: 'number' },
+      expectedCount: { type: 'number' }
     },
     defaultTimeoutMs: 10000,
     handler: async (bot, params, context = {}) => {
@@ -205,7 +285,17 @@ function createDefaultRegistry() {
     description: 'Drop specific quantity of inventory items on the ground',
     parametersSchema: {
       required: ['itemName'],
-      optional: ['count', 'timeoutMs']
+      optional: ['count', 'timeoutMs'],
+      types: {
+        itemName: 'string',
+        count: 'number',
+        timeoutMs: 'number'
+      },
+      allowAdditionalProperties: false
+    },
+    outputSchema: {
+      itemName: { type: 'string' },
+      droppedCount: { type: 'number' }
     },
     defaultTimeoutMs: 5000,
     handler: async (bot, params, context = {}) => {
@@ -221,7 +311,17 @@ function createDefaultRegistry() {
     description: 'Open a chest, barrel, or furnace container block',
     parametersSchema: {
       required: ['containerBlock'],
-      optional: ['timeoutMs']
+      optional: ['timeoutMs'],
+      types: {
+        containerBlock: 'object',
+        timeoutMs: 'number'
+      },
+      allowAdditionalProperties: false
+    },
+    outputSchema: {
+      window: { type: 'object' },
+      containerType: { type: 'string' },
+      position: { type: 'object', properties: { x: { type: 'number' }, y: { type: 'number' }, z: { type: 'number' } } }
     },
     defaultTimeoutMs: 8000,
     handler: async (bot, params, context = {}) => {
@@ -237,7 +337,18 @@ function createDefaultRegistry() {
     description: 'Deposit items from inventory into open container window',
     parametersSchema: {
       required: ['containerWindow', 'itemName'],
-      optional: ['count', 'timeoutMs']
+      optional: ['count', 'timeoutMs'],
+      types: {
+        containerWindow: 'object',
+        itemName: 'string',
+        count: 'number',
+        timeoutMs: 'number'
+      },
+      allowAdditionalProperties: false
+    },
+    outputSchema: {
+      itemName: { type: 'string' },
+      depositedCount: { type: 'number' }
     },
     defaultTimeoutMs: 8000,
     handler: async (bot, params, context = {}) => {
@@ -253,7 +364,18 @@ function createDefaultRegistry() {
     description: 'Withdraw items from container into player inventory',
     parametersSchema: {
       required: ['containerWindow', 'itemName'],
-      optional: ['count', 'timeoutMs']
+      optional: ['count', 'timeoutMs'],
+      types: {
+        containerWindow: 'object',
+        itemName: 'string',
+        count: 'number',
+        timeoutMs: 'number'
+      },
+      allowAdditionalProperties: false
+    },
+    outputSchema: {
+      itemName: { type: 'string' },
+      withdrawnCount: { type: 'number' }
     },
     defaultTimeoutMs: 8000,
     handler: async (bot, params, context = {}) => {
@@ -268,8 +390,13 @@ function createDefaultRegistry() {
     id: 'close_container',
     description: 'Close currently open container window',
     parametersSchema: {
-      optional: ['containerWindow']
+      optional: ['containerWindow'],
+      types: {
+        containerWindow: 'object'
+      },
+      allowAdditionalProperties: false
     },
+    outputSchema: {},
     defaultTimeoutMs: 3000,
     handler: async (bot, params = {}) => {
       return await closeContainer(bot, params.containerWindow || null);
@@ -281,7 +408,20 @@ function createDefaultRegistry() {
     description: 'Strike target entity with weapon and range verification',
     parametersSchema: {
       required: ['targetEntity'],
-      optional: ['maxDistance', 'autoEquipWeapon', 'timeoutMs']
+      optional: ['maxDistance', 'autoEquipWeapon', 'timeoutMs'],
+      types: {
+        targetEntity: 'object',
+        maxDistance: 'number',
+        autoEquipWeapon: 'boolean',
+        timeoutMs: 'number'
+      },
+      allowAdditionalProperties: false
+    },
+    outputSchema: {
+      entityId: { type: ['number', 'string'] },
+      targetEliminated: { type: 'boolean' },
+      damageDealt: { type: 'number' },
+      remainingHealth: { type: 'number' }
     },
     defaultTimeoutMs: 5000,
     handler: async (bot, params, context = {}) => {
@@ -299,7 +439,18 @@ function createDefaultRegistry() {
     description: 'Follow target entity dynamically maintaining designated range',
     parametersSchema: {
       required: ['targetEntity'],
-      optional: ['range', 'timeoutMs']
+      optional: ['range', 'timeoutMs'],
+      types: {
+        targetEntity: 'object',
+        range: 'number',
+        timeoutMs: 'number'
+      },
+      allowAdditionalProperties: false
+    },
+    outputSchema: {
+      entityId: { type: ['number', 'string'] },
+      distance: { type: 'number' },
+      range: { type: 'number' }
     },
     defaultTimeoutMs: 30000,
     handler: async (bot, params, context = {}) => {
@@ -316,7 +467,16 @@ function createDefaultRegistry() {
     description: 'Search nearby world for block matching target name',
     parametersSchema: {
       required: ['block'],
-      optional: ['maxDistance']
+      optional: ['maxDistance'],
+      types: {
+        block: 'string',
+        maxDistance: 'number'
+      },
+      allowAdditionalProperties: false
+    },
+    outputSchema: {
+      block: { type: 'string' },
+      position: { type: 'object', properties: { x: { type: 'number' }, y: { type: 'number' }, z: { type: 'number' } } }
     },
     defaultTimeoutMs: 5000,
     handler: async (bot, params) => {
