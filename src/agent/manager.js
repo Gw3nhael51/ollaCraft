@@ -116,9 +116,12 @@ function selectProcedureForObjective(memory, objective, options = {}) {
       if (confA !== confB) return confB - confA;
       return (b.metadata?.executionCount || 0) - (a.metadata?.executionCount || 0);
     });
+    const selected = validated[0];
+    const knowledge = typeof memory.getKnowledge === 'function' ? memory.getKnowledge(cleanObjective) : null;
     return {
-      procedure: validated[0],
-      isReliable: true
+      procedure: selected,
+      isReliable: true,
+      knowledge
     };
   }
 
@@ -133,9 +136,12 @@ function selectProcedureForObjective(memory, objective, options = {}) {
       const confB = b.metadata?.confidenceScore !== undefined ? b.metadata.confidenceScore : 0.5;
       return confB - confA;
     });
+    const selected = experimental[0];
+    const knowledge = typeof memory.getKnowledge === 'function' ? memory.getKnowledge(cleanObjective) : null;
     return {
-      procedure: experimental[0],
-      isReliable: false
+      procedure: selected,
+      isReliable: false,
+      knowledge
     };
   }
 

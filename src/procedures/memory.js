@@ -3,6 +3,12 @@ const { IDENTIFIER_REGEX } = require('./schema');
 const { createDefaultRegistry } = require('./registry');
 const { validateProcedure } = require('./validator');
 const { saveProcedure, loadProcedure, listProcedures } = require('./store');
+const {
+  applyEvaluationToLifecycle,
+  createVersionedProcedure,
+  compareProcedureVersions,
+  buildProceduralKnowledgeSummary
+} = require('./lifecycle');
 
 const STATUS_WEIGHTS = Object.freeze({
   validated: 2,
@@ -57,14 +63,21 @@ function generateUniqueProcedureId(baseId, existingIds = []) {
 /**
  * Mettre à jour les statistiques d'exécution d'une procédure et gérer sa promotion ou rétrogradation
  * @param {object} procedure Objet procédure à mettre à jour
- * @param {boolean} success Indicateur de succès de l'exécution
+ * @param {boolean|object} successOrEvaluation Indicateur booléen ou rapport complet de l'Evaluator
+ * @param {object} [options={}] Options de trace et de politique de cycle de vie
  * @returns {object} Procédure mise à jour avec ses nouvelles métadonnées et son statut
  */
-function updateProcedureStats(procedure, success) {
+function updateProcedureStats(procedure, successOrEvaluation, options = {}) {
   if (!procedure || typeof procedure !== 'object') {
     throw new Error('Procedure must be a valid object');
   }
 
+  if (successOrEvaluation && typeof successOrEvaluation === 'object') {
+    const outcome = applyEvaluationToLifecycle(procedure, successOrEvaluation, options);
+    return outcome.updatedProcedure;
+  }
+
+  const success = Boolean(successOrEvaluation);
   const metadata = procedure.metadata || {};
   const executionCount = (metadata.executionCount || 0) + 1;
   const successCount = (metadata.successCount || 0) + (success ? 1 : 0);
@@ -220,6 +233,7 @@ async function registerExperimentalProcedure(memory, candidateProcedure, options
     }
   }
 
+  const parentProcedure = options.parentProcedure || existingInMem || null;
   const uniqueId = generateUniqueProcedureId(
     candidateProcedure.id || candidateProcedure.name || 'experimental_proc',
     existingIds
@@ -228,12 +242,32 @@ async function registerExperimentalProcedure(memory, candidateProcedure, options
   const now = new Date().toISOString();
   const baseMetadata = candidateProcedure.metadata || {};
 
+  // Calculer : Incrémenter la version et préserver la lignée si une procédure parente existe
+  const resolvedVersion = parentProcedure
+    ? Math.max((parentProcedure.version || 1) + 1, candidateProcedure.version || 1)
+    : (Number.isInteger(candidateProcedure.version) && candidateProcedure.version >= 1
+        ? candidateProcedure.version
+        : 1);
+
+  const rootId = baseMetadata.rootId ||
+    parentProcedure?.metadata?.rootId ||
+    parentProcedure?.id ||
+    candidateProcedure.id ||
+    uniqueId;
+
+  const parentId = baseMetadata.parentId || parentProcedure?.id || null;
+  const lineage = Array.isArray(baseMetadata.lineage)
+    ? [...baseMetadata.lineage]
+    : (Array.isArray(parentProcedure?.metadata?.lineage) ? [...parentProcedure.metadata.lineage] : []);
+
+  if (parentId && !lineage.includes(parentId)) {
+    lineage.push(parentId);
+  }
+
   const preparedProcedure = {
     ...candidateProcedure,
     id: uniqueId,
-    version: Number.isInteger(candidateProcedure.version) && candidateProcedure.version >= 1
-      ? candidateProcedure.version
-      : 1,
+    version: resolvedVersion,
     status: 'experimental'
   };
 
@@ -261,8 +295,16 @@ async function registerExperimentalProcedure(memory, candidateProcedure, options
       executionCount: 0,
       successCount: 0,
       failureCount: 0,
+      penalizableFailureCount: 0,
       confidenceScore: baseMetadata.confidenceScore !== undefined ? baseMetadata.confidenceScore : 0.5,
+      effectiveConfidenceScore: baseMetadata.effectiveConfidenceScore !== undefined ? baseMetadata.effectiveConfidenceScore : 0.5,
+      rootId,
+      parentId,
+      parentVersion: parentProcedure ? (parentProcedure.version || 1) : null,
+      lineage,
       tags: Array.isArray(baseMetadata.tags) ? [...baseMetadata.tags] : [],
+      evaluationHistory: Array.isArray(baseMetadata.evaluationHistory) ? [...baseMetadata.evaluationHistory] : [],
+      knownLimitations: Array.isArray(baseMetadata.knownLimitations) ? [...baseMetadata.knownLimitations] : [],
       generationMetadata: options.generationMetadata || baseMetadata.generationMetadata || null,
       validationMetadata: {
         valid: true,
@@ -295,6 +337,9 @@ async function registerExperimentalProcedure(memory, candidateProcedure, options
   return createResult(true, 'registered', {
     id: finalProcedure.id,
     originalId: candidateProcedure.id || null,
+    parentId,
+    rootId,
+    version: finalProcedure.version,
     renamed: finalProcedure.id !== candidateProcedure.id,
     procedure: finalProcedure,
     path: persistedPath,
@@ -355,6 +400,89 @@ class ProcedureMemory {
   }
 
   /**
+   * Créer et enregistrer une nouvelle version expérimentale dérivée d'une procédure existante
+   * @param {string} baseProcedureId Identifiant de la procédure d'origine
+   * @param {object} candidateChanges Modifications proposées (étapes, préconditions, postconditions)
+   * @param {object} [options={}] Options de validation et de persistance
+   * @returns {Promise<{ success: boolean, reason: string, data: object|null, error: string|null }>} Résultat de création de la version
+   */
+  async createVersion(baseProcedureId, candidateChanges = {}, options = {}) {
+    const baseProc = this.get(baseProcedureId);
+    if (!baseProc) {
+      return createResult(false, 'parent_not_found', { baseProcedureId }, `Base procedure '${baseProcedureId}' not found`);
+    }
+
+    const existingIds = new Set(this.getAll().map(p => p.id));
+    const versionedCandidate = createVersionedProcedure(
+      baseProc,
+      candidateChanges,
+      generateUniqueProcedureId,
+      existingIds
+    );
+
+    return await this.registerExperimental(versionedCandidate, {
+      ...options,
+      parentProcedure: baseProc
+    });
+  }
+
+  /**
+   * Récupérer toutes les versions appartenant à la même lignée procédurale
+   * @param {string} rootOrProcedureId Identifiant de base ou d'une variante
+   * @returns {Array<object>} Versions triées par numéro de version croissant
+   */
+  getVersions(rootOrProcedureId) {
+    const target = this.get(rootOrProcedureId);
+    const rootId = target?.metadata?.rootId ||
+      String(rootOrProcedureId || '').replace(/_v\d+$/, '').replace(/_exp_\d+$/, '');
+
+    return this.getAll()
+      .filter(p => {
+        const pRoot = p.metadata?.rootId || p.id.replace(/_v\d+$/, '').replace(/_exp_\d+$/, '');
+        return p.id === rootOrProcedureId || pRoot === rootId || p.metadata?.parentId === rootOrProcedureId;
+      })
+      .sort((a, b) => (a.version || 1) - (b.version || 1));
+  }
+
+  /**
+   * Retourner la version validée de repli la plus fiable pour une procédure donnée
+   * @param {string} procedureId Identifiant de la procédure
+   * @returns {object|null} Dernière version validée fiable ou null
+   */
+  getReliableFallback(procedureId) {
+    const family = this.getVersions(procedureId);
+    const validated = family
+      .filter(p => p.status === 'validated')
+      .sort((a, b) => {
+        const confA = a.metadata?.effectiveConfidenceScore ?? a.metadata?.confidenceScore ?? 0.5;
+        const confB = b.metadata?.effectiveConfidenceScore ?? b.metadata?.confidenceScore ?? 0.5;
+        if (confA !== confB) return confB - confA;
+        return (b.version || 1) - (a.version || 1);
+      });
+
+    return validated[0] || null;
+  }
+
+  /**
+   * Comparer deux procédures présentes en mémoire
+   * @param {string} idA Premier identifiant
+   * @param {string} idB Second identifiant
+   * @returns {object} Résultat comparatif
+   */
+  compareVersions(idA, idB) {
+    return compareProcedureVersions(this.get(idA), this.get(idB));
+  }
+
+  /**
+   * Extraire la synthèse de connaissances procédurales pour le Manager ou le Generator
+   * @param {string|null} [objective=null] Objectif cible optionnel
+   * @returns {object} Connaissances consolidées (procédures validées, limites, échecs, variantes)
+   */
+  getKnowledge(objective = null) {
+    return buildProceduralKnowledgeSummary(this.getAll(), objective);
+  }
+
+  /**
    * Récupérer une procédure par son identifiant
    * @param {string} id Identifiant de la procédure
    * @returns {object|null} Procédure trouvée ou null
@@ -390,16 +518,51 @@ class ProcedureMemory {
   }
 
   /**
-   * Enregistrer le résultat d'une exécution, mettre à jour les statistiques et persister sur disque si configuré
+   * Enregistrer une évaluation complète issue de l'Evaluator dans l'historique de la procédure
    * @param {string} procedureId Identifiant de la procédure
-   * @param {boolean} success Indicateur de réussite
-   * @returns {Promise<object|null>} Procédure mise à jour ou null
+   * @param {object} evaluation Rapport d'évaluation produit par evaluateProcedureExecution
+   * @param {object} [options={}] Trace du Runner et options de cycle de vie
+   * @returns {Promise<{
+   *   updatedProcedure: object,
+   *   record: object,
+   *   duplicateSkipped: boolean,
+   *   promoted: boolean,
+   *   deprecated: boolean,
+   *   promotionAnalysis: object,
+   *   deprecationAnalysis: object
+   * }|null>} Détails de mise à jour du cycle de vie ou null
    */
-  async recordExecution(procedureId, success) {
+  async recordEvaluation(procedureId, evaluation, options = {}) {
     const procedure = this.get(procedureId);
     if (!procedure) return null;
 
-    const updated = updateProcedureStats(procedure, success);
+    const outcome = applyEvaluationToLifecycle(procedure, evaluation, options);
+    this.procedures.set(procedureId, outcome.updatedProcedure);
+
+    if (this.storageDir && !outcome.duplicateSkipped) {
+      await saveProcedure(outcome.updatedProcedure, this.storageDir, { allowOverwriteValidated: true });
+    }
+
+    return outcome;
+  }
+
+  /**
+   * Enregistrer le résultat d'une exécution, mettre à jour les statistiques et persister sur disque si configuré
+   * @param {string} procedureId Identifiant de la procédure
+   * @param {boolean|object} success Indicateur booléen de réussite ou objet d'évaluation
+   * @param {object} [options={}] Options additionnelles de trace et cycle de vie
+   * @returns {Promise<object|null>} Procédure mise à jour ou null
+   */
+  async recordExecution(procedureId, success, options = {}) {
+    const procedure = this.get(procedureId);
+    if (!procedure) return null;
+
+    if (success && typeof success === 'object') {
+      const outcome = await this.recordEvaluation(procedureId, success, options);
+      return outcome ? outcome.updatedProcedure : null;
+    }
+
+    const updated = updateProcedureStats(procedure, success, options);
     this.procedures.set(procedureId, updated);
 
     if (this.storageDir) {

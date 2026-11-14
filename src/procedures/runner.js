@@ -2,9 +2,10 @@ const { createResult } = require('../actions/primitives/result');
 const { createDefaultRegistry } = require('./registry');
 const { validateProcedure } = require('./validator');
 const { resolveReference, resolveDynamicValues } = require('./schema');
-const { evaluatePreconditions, evaluatePostconditions } = require('./evaluator');
+const { evaluatePreconditions, evaluatePostconditions, evaluateProcedureExecution } = require('./evaluator');
 const { generateProcedure } = require('./generator');
 const { registerExperimentalProcedure } = require('./memory');
+const { generateExecutionId } = require('./lifecycle');
 
 const DEFAULT_SUPERVISED_TIMEOUT_MS = 60000;
 const DEFAULT_SUPERVISED_STEP_TIMEOUT_MS = 15000;
@@ -42,6 +43,7 @@ const CRITICAL_ERROR_REASONS = Object.freeze(new Set([
  * }} Trace d'exécution complète
  */
 function buildExecutionTrace({
+  executionId,
   procedureId,
   status,
   steps = [],
@@ -50,8 +52,10 @@ function buildExecutionTrace({
   success
 }) {
   const durationMs = Math.max(0, endTime - startTime);
+  const resolvedProcedureId = procedureId || 'unknown';
   return {
-    procedureId: procedureId || 'unknown',
+    executionId: executionId || generateExecutionId(resolvedProcedureId),
+    procedureId: resolvedProcedureId,
     status,
     steps: [...steps],
     startedAt: new Date(startTime).toISOString(),
@@ -603,15 +607,35 @@ async function runExperimentalProcedureCycle(bot, options = {}) {
     maxSteps
   });
 
+  let evaluation = null;
+  let lifecycle = null;
+
+  if (options.evaluateExecution === true) {
+    const evalRes = await evaluateProcedureExecution(bot, registeredProcedure, execResult, {
+      objective,
+      context
+    });
+    evaluation = evalRes.data;
+
+    if (options.recordEvaluation === true && memory && typeof memory.recordEvaluation === 'function') {
+      lifecycle = await memory.recordEvaluation(registeredProcedure.id, evaluation, {
+        executionTrace: execResult.data?.trace || execResult.data,
+        context
+      });
+    }
+  }
+
   return createResult(
     execResult.success,
     execResult.reason,
     {
       stage: 'execution',
-      procedure: registeredProcedure,
+      procedure: lifecycle?.updatedProcedure || registeredProcedure,
       registration: regResult.data,
       execution: execResult.data,
-      trace: execResult.data?.trace || null
+      trace: execResult.data?.trace || null,
+      evaluation,
+      lifecycle
     },
     execResult.error
   );

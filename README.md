@@ -6,9 +6,10 @@ An autonomous Minecraft survival agent powered by local Large Language Models (L
 
 ## 🌟 Highlights
 
-- **Local LLM Intelligence:** Operates 100% locally and privately using Ollama (supporting models such as `qwen3.5:9B`, `qwen2.5:27b`, `llama3.1:8b`, or similar).
-- **Two-Tier ReAct Decision Loop:** Structured cycle of **Perception -> Prompt Synthesis -> LLM Reasoning -> Skill Execution -> Supervisor Review & Feedback**.
-- **Anti-Looping Strategy Manager:** A supervisor pass monitors action history, detects repeated failures or ping-pong loops, and sanitizes directives against real inventory and recipe constraints.
+- **Local LLM Intelligence:** Operates 100% locally and privately using Ollama (supporting models such as `qwen3.5:9B`, `qwen2.5:27b`, `llama3.1:8b`, or similar) with strict JSON Structured Outputs.
+- **Autonomous Procedural Learning Engine (Phase 4):** Generates, validates, executes, and evaluates declarative multi-step procedures (`src/procedures/`). Distinguishes technical step completion from real-world objective achievement, detects trace contradictions, and promotes reliable procedures from `experimental` to `validated` while reducing LLM token usage by **up to 90%**.
+- **Two-Tier Event-Driven ReAct Decision Loop:** Structured cycle of **Perception -> Prompt Synthesis -> LLM Reasoning / Validated Procedure Dispatch -> Physical Verification -> Event-Driven Supervisor Review**.
+- **Anti-Looping Strategy Manager:** A supervisor pass monitors action history, detects repeated failures or ping-pong loops, prioritizes validated procedures from `ProcedureMemory`, and sanitizes directives against real inventory and recipe constraints.
 - **Autonomous Progression Chain:** Naturally advances through survival tiers:
 
 ```mermaid
@@ -62,35 +63,24 @@ flowchart TD
 ## 📁 Project Structure
 
 ```text
+├── scripts/
+│   └── benchmark.js           # Performance & cognitive token-savings benchmark suite
 ├── src/
 │   ├── index.js               # Entry point, bot connection, server chat & event listeners
-│   ├── config.js              # Global configuration, quest chain, timing, and item thresholds
-│   ├── state.js               # Central runtime state (inventory, health, memory, base coordinates)
-│   ├── ai/
-│   │   ├── loop.js            # Main ReAct loop, action execution cycle, and fallback triggers
-│   │   ├── manager.js         # Strategic supervisor loop, loop detection, and anti-hallucination
-│   │   ├── ollama.js          # Ollama REST client, payload formatting, and JSON extraction
-│   │   └── prompt.js          # Dynamic system and user prompt constructor
-│   ├── skills/
-│   │   ├── dispatcher.js      # Central router mapping action names to skill functions
-│   │   ├── mine.js            # Target block search, pathfinding, and mining with best tool
-│   │   ├── craft.js           # Crafting table detection/placement and 2x2/3x3 recipe crafting
-│   │   ├── smelt.js           # Furnace placement, fuel selection, and smelting operations
-│   │   ├── place.js           # Physical block placement (crafting tables, furnaces, chests)
-│   │   ├── navigate.js        # Safe exploration, obstacle avoidance, and unstuck recovery
-│   │   ├── combat.js          # Passive animal hunting and hostile mob combat
-│   │   ├── equip.js           # Automatic armor upgrades and off-hand shield equipping
-│   │   ├── eat.js             # Food selection and eating routines
-│   │   ├── storage.js         # Chest sorting and bulky item depositing
-│   │   ├── portal.js          # Water bucket filling, lava casting, and Nether portal ignition
-│   │   └── wiki.js            # Game data lookups (recipes, harvest tools, drops)
-│   └── utils/
-│       ├── environment.js     # 3D block scanner, exposed ore locator, entity tracking, biomes
-│       ├── inventory.js       # Item counting, tool selectors, craft availability checks
-│       ├── advancements.js    # Story advancements progression and badge URL builder
-│       └── wikiData.js        # Minecraft registry access and harvest verification
+│   ├── core/                  # Central runtime state (state.js) and structured logger
+│   ├── infrastructure/        # Configuration (config.js) and environment loader
+│   ├── agent/                 # ReAct loop (loop.js), Supervisor (manager.js), Ollama client & Prompt builder
+│   ├── actions/
+│   │   ├── dispatcher.js      # Central router for skills and autonomous procedures
+│   │   ├── primitives/        # Verified primitives (movement, blocks, items, container, combat, locks)
+│   │   └── behaviors/         # High-level skills (mine, craft, smelt, place, navigate, combat, storage, portal)
+│   ├── procedures/            # Procedural Learning Engine (schema, registry, validator, matcher, generator, runner, evaluator, lifecycle, memory, store)
+│   ├── perception/            # Unified 3D scanner (environment.js), inventory & advancements
+│   └── minecraft/             # Offline WikiCraft lookups (wiki.js, wikiData.js)
+├── test/                      # 171 automated unit and E2E integration tests
 ├── .env.example               # Template for environment variables
-├── package.json               # Dependencies and scripts
+├── ARCHITECTURE.md            # Detailed schematics, sequence diagrams & benchmark metrics
+├── package.json               # Dependencies and scripts (test, benchmark)
 └── README.md                  # Project documentation
 ```
 
@@ -222,6 +212,21 @@ The ReAct loop provides the LLM with structured actions formatted in JSON:
 | `explore` | *None* | Selects a randomized terrain coordinate and walks forward to discover new resources. |
 | `unstuck` | *None* | Performs emergency ceiling breaking, wall digging, or upward swimming to escape holes or water. |
 | `wiki` | `target: string` | Looks up recipes, tool requirements, and drops for any block or item in the local game database. |
+| `procedure` | `target: string \| object, qty?: number \| object` | Executes a validated or experimental multi-step DSL procedure from `ProcedureMemory` under supervision and records its lifecycle evaluation. |
+
+---
+
+## 🧪 Automated Tests & Benchmark
+
+Run the full test suite (**171 unit & integration tests**):
+```bash
+npm test
+```
+
+Run the architecture & procedural learning benchmark:
+```bash
+npm run benchmark
+```
 
 ---
 
