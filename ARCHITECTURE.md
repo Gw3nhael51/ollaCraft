@@ -1,14 +1,14 @@
 # 🗺️ Global System Architecture & Schematics - ollaCraft
 
-**ollaCraft** is an autonomous survival agent for **Minecraft Java Edition** powered by local Large Language Models (LLMs) via **Ollama** and interfaced with the game through **Mineflayer**.
+**ollaCraft** is an autonomous survival and learning agent for **Minecraft Java Edition** powered by local Large Language Models (LLMs) via **Ollama** and interfaced with the game through **Mineflayer**.
 
-The architecture uses a two-tier hierarchical system (**Strategy Manager** + **Tactical ReAct Player**), backed by a deterministic skill engine and a 3D environment radar.
+The architecture combines a two-tier hierarchical cognitive system (**Strategy Manager** + **Tactical ReAct Player**), a deterministic **Action Primitives** layer, and an autonomous **Procedural Learning Engine (DSL + Evaluator + Lifecycle Memory)** inspired by Voyager, with **strict physical verification** against the real Minecraft world.
 
 ---
 
 ## 1. High-Level System Architecture
 
-This diagram illustrates the separation of concerns across the Minecraft game server, the Node.js bot runtime, and the local LLM inference server.
+This diagram illustrates the separation of concerns across the Minecraft game server, the Node.js bot runtime, the Procedural Learning Engine, and the local LLM inference server.
 
 ```mermaid
 flowchart TD
@@ -22,228 +22,134 @@ flowchart TD
         direction TB
         NET["Mineflayer Client & Event Handlers (Spawn, Chat, Physics)"]
         
-        subgraph PERCEPTION["Perception & Radar"]
-            SCANNER["3D Environment Scanner (16-20 Block Radius)"]
-            INV_TRACK["Inventory & Tool Tracker"]
+        subgraph PERCEPTION["Perception & Radar (src/perception)"]
+            SCANNER["Unified 3D Environment Scanner (35,937 voxels/pass)"]
+            INV_TRACK["Inventory, Equipment & Quest Tracker"]
             ADV_TRACK["Advancements & Milestone Tracker"]
-            WIKI_CACHE["Local WikiCraft Database (minecraft-data)"]
+            WIKI_CACHE["Local WikiCraft Database (src/minecraft)"]
         end
 
-        subgraph BRAIN["Hierarchical Brain"]
-            MANAGER["Strategy Supervisor (Manager Loop)"]
+        subgraph BRAIN["Hierarchical Brain (src/agent)"]
+            MANAGER["Strategy Supervisor (Event-Driven Manager)"]
             REACT["Tactical Operator (ReAct Loop)"]
-            STATE[("Shared Global State (state.js)")]
+            STATE[("Shared Global State (src/core/state.js)")]
         end
 
-        subgraph ACTUATION["Actuation & Skills"]
-            DISPATCH["Skill Dispatcher"]
-            SKILLS["Specialized Skill Modules (Mine, Craft, Smelt, Combat, etc.)"]
-            PATHFINDER["Mineflayer Pathfinder (3D A* + Unstuck)"]
+        subgraph PROCEDURES["Procedural Learning Engine (src/procedures)"]
+            MATCHER["Objective Coverage & Anti-Loop Tracker (matcher.js)"]
+            GEN["Declarative DSL Generator (generator.js)"]
+            VALIDATOR["Static & Semantic Validator (schema.js + validator.js)"]
+            RUNNER["Supervised Procedure Runner (runner.js)"]
+            EVALUATOR["Independent World Evaluator (evaluator.js)"]
+            LIFECYCLE["Lifecycle, Promotion & Versioning (lifecycle.js + memory.js)"]
+            STORE[("Persistent JSON Store (store.js)")]
+        end
+
+        subgraph ACTUATION["Actuation, Behaviors & Primitives (src/actions)"]
+            DISPATCH["Skill & Procedure Dispatcher (dispatcher.js)"]
+            BEHAVIORS["High-Level Behaviors (Mine, Craft, Smelt, Combat, Portal)"]
+            PRIMITIVES["Verified Action Primitives (Movement, Blocks, Items, Container, Combat)"]
         end
     end
 
     subgraph OLLAMA["Local LLM Inference (Ollama)"]
-        MODEL_M["Supervisor Model (e.g., Qwen 2.5 / Llama 3)"]
-        MODEL_P["Player Model (e.g., Qwen 2.5 / Llama 3)"]
+        MODEL_M["Supervisor / Generator Model (Structured JSON)"]
+        MODEL_P["Player Tactical Model (Structured JSON)"]
     end
 
-    %% Perception Connections
-    WORLD --> NET
-    ENTITIES --> NET
-    BLOCKS --> NET
-    NET --> SCANNER
-    NET --> INV_TRACK
-    NET --> ADV_TRACK
+    WORLD & ENTITIES & BLOCKS --> NET
+    NET --> SCANNER & INV_TRACK & ADV_TRACK
+    SCANNER & INV_TRACK & ADV_TRACK & WIKI_CACHE --> STATE
 
-    SCANNER --> STATE
-    INV_TRACK --> STATE
-    ADV_TRACK --> STATE
-    WIKI_CACHE --> STATE
+    STATE --> MANAGER & REACT
+    MANAGER <-->|"Select Validated / Query Knowledge"| LIFECYCLE
+    MANAGER -->|"Uncovered Complex Goal"| MATCHER
+    MATCHER --> GEN
+    GEN <--> MODEL_M
+    GEN --> VALIDATOR --> RUNNER
+    RUNNER --> PRIMITIVES
+    RUNNER -->|"Execution Trace"| EVALUATOR
+    EVALUATOR -->|"Independent Verdict + Contradictions"| LIFECYCLE
+    LIFECYCLE <--> STORE
 
-    %% Brain Connections
-    STATE --> MANAGER
-    STATE --> REACT
-    MANAGER -->|"Macro Directives & Anti-Looping"| STATE
     MANAGER <--> MODEL_M
     REACT <--> MODEL_P
-
-    %% Action Connections
     REACT -->|"Action JSON {action, target, qty}"| DISPATCH
-    DISPATCH --> SKILLS
-    SKILLS --> PATHFINDER
-    PATHFINDER --> NET
-    SKILLS --> NET
-
-    %% Feedback
-    SKILLS -. "Action Result (Success/Failure)" .-> STATE
+    DISPATCH --> BEHAVIORS & RUNNER
+    BEHAVIORS --> PRIMITIVES --> NET
 ```
 
 ---
 
-## 2. Hierarchical Decision Loop: Strategy Manager vs Tactical ReAct Player
+## 2. Procedural Learning & Lifecycle Pipeline (Phase 4.1 → 4.6)
 
-The agent separates macro-level strategy from micro-level reactivity with synchronized execution:
-
-1. **Tactical ReAct Player** ([`src/ai/loop.js`](src/ai/loop.js)): Runs the **Perception &rarr; Prompt Construction &rarr; LLM Reasoning &rarr; Skill Dispatch (with 45s Timeout Guard) &rarr; Action Feedback** cycle.
-2. **Strategy Manager** ([`src/ai/manager.js`](src/ai/manager.js)): Executed synchronously at the end of each Player thinking cycle, receiving the exact up-to-date state (eliminating blind timers and preventing idle token waste), reviewing recent actions, detecting loops or consecutive failures, updating macro directives, and sanitizing goals.
+Unlike naive LLM agents that blindly trust step completion return codes, **ollaCraft** separates **execution** (`runner.js`), **physical verification** (`evaluator.js`), and **long-term memory evolution** (`lifecycle.js` & `memory.js`):
 
 ```mermaid
 flowchart TD
-    subgraph REACT_LOOP["1. Tactical ReAct Cycle (Player)"]
-        R1["Observation (3D Radar, Health, Hunger, Inventory)"] --> R2["Build Contextual Dynamic Prompt"]
-        R2 --> R3["Query Player LLM (Ollama)"]
-        R3 --> R4{"Valid JSON & Action Whitelisted?"}
-        R4 -- "No" --> R5["2s Backoff & Retry"]
-        R4 -- "Yes" --> R6["Dispatch skill inside Promise.race (45s timeout guard)"]
-        R6 --> R7{"Action timed out?"}
-        R7 -- "Yes" --> R8["Emergency unstuck & Record failure"]
-        R7 -- "No" --> R9["Execute physical action & Record feedback"]
-        R8 --> R10["syncObjective()"]
-        R9 --> R10
+    OBJ["1. Uncovered Complex Objective Detected (matcher.js)"] --> GEN["2. Generate Declarative JSON DSL via Ollama (generator.js)"]
+    GEN --> VAL["3. Static & Semantic Graph Validation (schema.js + validator.js)"]
+    VAL -->|"Invalid"| RETRY["Bounded Retry / Anti-Loop Cooldown"]
+    VAL -->|"Valid"| REG["4. Safe Experimental Registration & Versioning v1/v2 (memory.js)"]
+    REG --> RUN["5. Supervised Execution with Timeouts & Safety Guards (runner.js)"]
+    RUN --> TRACE["6. Normalized Execution Trace (executionId, stepTraces)"]
+    TRACE --> EVAL["7. Independent World Evaluation (evaluator.js)"]
+
+    subgraph EVAL_CHECKS["Independent Evaluator Checks"]
+        E1["evaluateObjective() (Real Inventory/World/Entity State)"]
+        E2["evaluatePostconditions() (verified / failed / unknown)"]
+        E3["detectTraceContradictions() (Catch Hallucinated Success)"]
+        E4["detectResourceShortage() (Separate Environment vs Code Fault)"]
     end
 
-    subgraph MGMT["2. Strategy Supervisor (Synchronized at cycle end)"]
-        M1["Analyze updated state & last actions in history"] --> M2{"Loop or repeated failure detected?"}
-        M2 -- "Yes" --> M3["Generate unstuck / recovery directive"]
-        M2 -- "No" --> M4["Maintain current objective directive"]
-        M3 --> M5["Sanitization & Wood/recipe normalization"]
-        M4 --> M5
-        M5 --> M6["Update managerDirective in state.js"]
+    EVAL --> EVAL_CHECKS --> LIFE["8. Procedure Lifecycle & Memory Evolution (lifecycle.js)"]
+
+    subgraph LIFE_RULES["Lifecycle Policy (Phase 4.6)"]
+        L1["4.6.1 Deduplicated Evaluation History (executionId)"]
+        L2["4.6.2 Promotion Policy (>= 3 Independent Verified Successes)"]
+        L3["4.6.3 Failure Classification & Prudent Deprecation"]
+        L4["4.6.4 Non-Destructive Versioning (v1 validated + v2 experimental)"]
+        L5["4.6.5 Knowledge Extraction for Manager (Success Rate, Limits, Fallbacks)"]
     end
 
-    R10 -- "Trigger supervisor with exact state" --> M1
-    M6 -. "Injected into next cycle prompt" .-> R2
+    LIFE --> LIFE_RULES --> MEM[("ProcedureMemory & ProcedureStore")]
 ```
 
 ---
 
-## 3. Sequence Diagram: Action Execution Cycle
+## 3. Hierarchical Decision Loop: Strategy Manager vs Tactical ReAct Player
 
-This diagram details the sequence of calls during a single ReAct cycle:
-
-```mermaid
-sequenceDiagram
-    autonumber
-    participant Bot as Mineflayer Bot
-    participant Loop as ReAct Loop (ai/loop.js)
-    participant Prompt as Prompt Builder (ai/prompt.js)
-    participant Ollama as Ollama API
-    participant Dispatcher as Dispatcher (skills/dispatcher.js)
-    participant Skill as Skill Module (e.g., mine.js)
-    participant State as Global State (state.js)
-    participant Manager as Supervisor Manager (ai/manager.js)
-
-    Loop->>Bot: 3D Environment scan & inventory readout
-    Loop->>State: syncObjective() (Check if current tier is completed)
-    Loop->>Prompt: buildReactPrompt(bot, state, radar, craftingTable)
-    Prompt-->>Loop: Assembled Prompt (Objective, Wiki Knowledge, Situation)
-    Loop->>Ollama: POST /api/generate (Player Model)
-    Ollama-->>Loop: JSON Response { thought, action, target, qty }
-    Loop->>Bot: bot.chat("Action : action (target)")
-    
-    rect rgb(240, 248, 255)
-        Note over Loop,Skill: 45s Timeout Guard (Promise.race)
-        Loop->>Dispatcher: dispatchSkill(bot, state, action, target, qty)
-        
-        alt "mine" Action
-            Dispatcher->>Skill: skillMine(bot, state, target, qty)
-            Skill->>Bot: Equip best harvest tool & pathfinder to block
-            Skill->>Bot: bot.dig(block)
-            Skill-->>Dispatcher: { success: true, message: "Successfully mined" }
-        else "craft" Action
-            Dispatcher->>Skill: skillCraft(bot, state, target)
-            Skill->>Skill: Wood & plank normalization (oak, jungle, birch, etc.)
-            Skill->>Bot: Locate / place crafting table for 3x3 recipes
-            Skill->>Bot: bot.craft(recipe)
-            Skill-->>Dispatcher: { success: true, message: "Item crafted" }
-        end
-        Dispatcher-->>Loop: Action execution result
-    end
-
-    Loop->>State: Record into actionHistory & lastActionResult
-    Loop->>State: syncObjective()
-    
-    rect rgb(255, 250, 240)
-        Note over Loop,Manager: Synchronized Supervisor Cycle
-        Loop->>Manager: runManagerCycle(bot) (Evaluate exact state)
-        Manager->>Ollama: POST /api/generate (Supervisor Model)
-        Manager->>State: Update managerDirective & managerSubGoal
-    end
-
-    Loop->>Loop: 1.5s delay, then trigger next cycle
-```
+1. **Strategy Manager** ([`src/agent/manager.js`](src/agent/manager.js)): Triggered on an **event-driven** basis (action failure, loop detected, objective milestone reached, inventory clutter, or heartbeat). It first checks `ProcedureMemory` for a **validated procedure** matching the current objective — if one exists, it bypasses step-by-step LLM inference and dispatches the validated procedure directly.
+2. **Tactical ReAct Player** ([`src/agent/loop.js`](src/agent/loop.js)): Runs the **Perception &rarr; Dynamic Radar Prompt &rarr; Structured LLM Output &rarr; Skill/Procedure Dispatch (45s Timeout Guard) &rarr; Feedback** cycle.
 
 ---
 
-## 4. Skills Matrix & Modular Capabilities
+## 4. Verified Action Primitives & Registry (`src/actions/primitives` & `src/procedures/registry.js`)
 
-[`src/skills/dispatcher.js`](src/skills/dispatcher.js) routes validated action requests to dedicated, deterministic skill implementations:
+All autonomous procedures are composed exclusively of whitelisted, deterministic primitives with reentrant locking and post-action world verification:
 
-| ReAct Action | Source Module | Functional Scope |
+| Domain | Module | Registered Primitives |
 | :--- | :--- | :--- |
-| `mine` | [`src/skills/mine.js`](src/skills/mine.js) | Scans for target blocks in 3D space, handles pathfinding, equips the optimal tool, and mines safely (prohibits digging straight down). |
-| `craft` | [`src/skills/craft.js`](src/skills/craft.js) | Handles 2x2 player inventory recipes and 3x3 crafting table recipes (locates or automatically places a crafting table if missing). |
-| `smelt` | [`src/skills/smelt.js`](src/skills/smelt.js) | Operates nearby furnaces, matches fuel sources (coal, logs, planks), and smelts raw ores into ingots. |
-| `place` | [`src/skills/place.js`](src/skills/place.js) | Evaluates valid solid ground blocks (`VALID_GROUND_BLOCKS`) and places utility blocks (crafting tables, furnaces, chests). |
-| `hunt` / `fight` | [`src/skills/combat.js`](src/skills/combat.js) | Selects the best weapon (swords/axes), engages targets with shield defense timing, attacks within melee range, and gathers drops. |
-| `equip` | [`src/skills/equip.js`](src/skills/equip.js) | Evaluates and equips best armor upgrades and places the shield into the off-hand slot. |
-| `chest` | [`src/skills/storage.js`](src/skills/storage.js) | Automates inventory dumping: navigates to the base chest and deposits bulky materials (dirt, cobblestone, gravel). |
-| `eat` | [`src/skills/eat.js`](src/skills/eat.js) | Evaluates food items in inventory by saturation/nutrition value and consumes food proactively. |
-| `unstuck` / `explore` | [`src/skills/navigate.js`](src/skills/navigate.js) | Failsafe routine (jump-scaffolding out of holes, escaping water) or safe perimeter exploration to uncover new resources. |
-| `wiki` | [`src/skills/wiki.js`](src/skills/wiki.js) | Queries local game registries (`minecraft-data`) for recipes, harvest tools, and drop tables without LLM hallucination. |
+| **Movement** | [`src/actions/primitives/movement.js`](src/actions/primitives/movement.js) | `goto_position`, `goto_coordinates`, `move_direction`, `jump`, `look_at`, `stop_movement` |
+| **Blocks** | [`src/actions/primitives/blocks.js`](src/actions/primitives/blocks.js) | `find_block`, `break_block`, `place_block`, `interact_block`, `collect_drops` |
+| **Items** | [`src/actions/primitives/items.js`](src/actions/primitives/items.js) | `equip_item`, `unequip_item`, `craft_recipe`, `consume_item`, `drop_item`, `check_inventory` |
+| **Container** | [`src/actions/primitives/container.js`](src/actions/primitives/container.js) | `open_container`, `deposit_item`, `withdraw_item`, `transfer_slot`, `close_container` |
+| **Combat** | [`src/actions/primitives/combat.js`](src/actions/primitives/combat.js) | `find_entity`, `attack_entity`, `engage_combat`, `follow_entity`, `evade_entity` |
 
 ---
 
-## 5. State Machine: Survival Progression Chain
+## 5. Benchmark & Performance Metrics (`npm run benchmark`)
 
-The agent advances through an ordered progression chain defined in [`QUEST_CHAIN`](src/config.js#L21-L43), dynamically evaluated against inventory counts:
+Measured via [`scripts/benchmark.js`](scripts/benchmark.js) across **171 automated unit & integration tests**:
 
-```mermaid
-stateDiagram-v2
-    [*] --> WoodAge: Spawn & Initial Log Gathering
-    
-    state WoodAge {
-        direction LR
-        [*] --> wooden_pickaxe
-    }
-
-    WoodAge --> StoneAge: Mine 'stone' with wooden pickaxe
-    
-    state StoneAge {
-        direction LR
-        cobblestone --> stone_pickaxe
-        stone_pickaxe --> furnace
-    }
-
-    StoneAge --> IronAge: Locate & Smelt Iron Ore
-    
-    state IronAge {
-        direction LR
-        raw_iron --> iron_ingot
-        iron_ingot --> iron_pickaxe
-        iron_pickaxe --> iron_sword
-        iron_sword --> shield
-        shield --> bucket
-    }
-
-    IronAge --> TheNether: Lava & Water Bucket Portal (Speedrun Route)
-    
-    state TheNether {
-        direction LR
-        [*] --> flint_and_steel
-        flint_and_steel --> blaze_rod
-    }
-
-    TheNether --> TheEnd: Stronghold Triangulation & Eyes of Ender
-    
-    state TheEnd {
-        direction LR
-        ender_pearl --> ender_eye
-        ender_eye --> EnderDragon
-    }
-
-    TheEnd --> [*]: Victory / Quest Chain Completed
-```
+| Subsystem | Metric | Result | Architectural Impact |
+| :--- | :--- | :--- | :--- |
+| **DSL Schema + Semantic Validator** | Latency / Throughput | **0.030 ms/proc** (~33,780 proc/s) | Zero-cost static safety and dependency graph verification |
+| **Supervised Runner + Evaluator** | Full Cycle Latency | **1.15 ms/cycle** | Sub-2ms orchestration and independent world verification |
+| **Anti-Hallucination Guard** | False Positive Detection | **50/50 (100 %)** | Prevents learning from Desyncs or hallucinated step claims |
+| **Lifecycle & Knowledge Engine** | Memory Update + Query | **0.45 ms/cycle** | Real-time promotion, versioning (`v1`/`v2`), and knowledge extraction |
+| **Unified 3D Environment Scan** | 35,937 Voxels (Radius 16) | **2.32 ms/scan** | Single-pass block + exposed ore scanning with cached registry |
+| **Cognitive Cost (10 Episodes)** | LLM Calls & Token Usage | **-90.0 % LLM calls / -90.0 % tokens** | Validated procedures replace repetitive step-by-step ReAct queries |
 
 ---
 
@@ -251,34 +157,46 @@ stateDiagram-v2
 
 ```text
 ollaCraft/
-├── ARCHITECTURE.md          # Global architecture documentation and schematics
-├── README.md                # Quickstart, installation, and usage guide
-├── todo.md                  # Development roadmap (Nether, Stronghold, Ender Dragon)
-├── package.json             # Runtime dependencies (mineflayer, mineflayer-pathfinder, etc.)
-└── src/
-    ├── index.js             # Bot bootstrap, AuthMe authentication, server event listeners
-    ├── config.js            # Ollama models, block definitions, quest progression chain
-    ├── state.js             # In-memory mutable state (inventory, base coordinates, action history)
-    ├── ai/
-    │   ├── loop.js          # ReAct execution loop and decision dispatcher
-    │   ├── manager.js       # Strategic supervisor loop and loop detection
-    │   ├── ollama.js        # REST client for Ollama LLM queries (JSON parsing)
-    │   └── prompt.js        # Dynamic prompt builder with 3D radar and game heuristics
-    ├── skills/
-    │   ├── dispatcher.js    # Routes decisions to dedicated skill execution modules
-    │   ├── mine.js          # Target block mining with pathfinding and obstacle clearance
-    │   ├── craft.js         # 2x2 and 3x3 crafting routines
-    │   ├── smelt.js         # Furnace placement and fuel smelting operations
-    │   ├── place.js         # Physical placement on solid terrain
-    │   ├── combat.js        # Hostile mob fighting and passive entity hunting
-    │   ├── equip.js         # Automatic armor and off-hand shield equipping
-    │   ├── storage.js       # Base chest item sorting and dumping
-    │   ├── eat.js           # Food consumption and vitality management
-    │   ├── navigate.js      # Unstuck jump-scaffolding and exploration
-    │   └── wiki.js          # Local Minecraft registry lookups
-    └── utils/
-        ├── environment.js   # 3D block scanner, exposed ore locator, entity tracking
-        ├── inventory.js     # Item counting, tool equipment, craftability checks
-        ├── advancements.js  # Vanilla Minecraft story advancements tracking
-        └── wikiData.js      # Direct access to minecraft-data registry
+├── ARCHITECTURE.md                  # Global system architecture, diagrams, and benchmarks
+├── README.md                        # Quickstart, installation, commands, and usage guide
+├── todo.md                          # Development roadmap and completed milestones
+├── package.json                     # Dependencies and npm scripts (test, benchmark)
+├── scripts/
+│   └── benchmark.js                 # Automated performance and cognitive savings benchmark
+├── src/
+│   ├── index.js                     # Bot bootstrap, AuthMe authentication, server listeners
+│   ├── core/
+│   │   ├── state.js                 # Central runtime state (inventory, base, token stats)
+│   │   └── logger.js                # Structured logging utility
+│   ├── infrastructure/
+│   │   ├── config.js                # Models, quest progression chain, action whitelists
+│   │   └── env.js                   # Environment variable loader
+│   ├── agent/
+│   │   ├── loop.js                  # Tactical ReAct execution loop and timeout guards
+│   │   ├── manager.js               # Event-driven Strategy Supervisor & procedure selector
+│   │   ├── ollama.js                # Ollama REST client with structured JSON outputs
+│   │   └── prompt.js                # Dynamic prompt builder with filtered 3D radar
+│   ├── actions/
+│   │   ├── dispatcher.js            # Routes skills and autonomous procedures
+│   │   ├── primitives/              # Deterministic primitives (movement, blocks, items, container, combat, locks)
+│   │   └── behaviors/               # High-level skills (mine, craft, smelt, place, navigate, combat, storage, portal)
+│   ├── procedures/
+│   │   ├── schema.js                # Declarative JSON DSL schema and dynamic reference resolver
+│   │   ├── registry.js              # Whitelisted action catalog and parameter contracts
+│   │   ├── validator.js             # Static & semantic validator (types, causal graph, preconditions)
+│   │   ├── matcher.js               # Uncovered objective detector and anti-loop tracker
+│   │   ├── generator.js             # Ollama DSL procedure generator with bounded retries
+│   │   ├── runner.js                # Supervised experimental & validated procedure runner
+│   │   ├── evaluator.js             # Independent objective, postcondition & contradiction evaluator
+│   │   ├── lifecycle.js             # Evaluation history, promotion policy, failure analysis & versioning
+│   │   ├── memory.js                # In-memory procedure registry, lineage manager & knowledge API
+│   │   └── store.js                 # Persistent JSON storage with validated procedure protection
+│   ├── perception/
+│   │   ├── environment.js           # Unified 3D block & exposed ore scanner, entity radar
+│   │   ├── inventory.js             # Item counting, tool selection, quest progression sync
+│   │   └── advancements.js          # Vanilla Minecraft advancements tracker
+│   └── minecraft/
+│       ├── wiki.js                  # Offline recipe, drop, and tool lookup skill
+│       └── wikiData.js              # Cached minecraft-data registry access
+└── test/                            # 171 automated unit and end-to-end integration tests
 ```

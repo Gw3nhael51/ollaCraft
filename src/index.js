@@ -1,12 +1,12 @@
 const mineflayer = require('mineflayer');
 const { pathfinder, Movements } = require('mineflayer-pathfinder');
-const config = require('./config');
-const state = require('./state');
-const { syncObjective } = require('./utils/inventory');
-const { autoEquipArmorAndShield } = require('./skills/equip');
-const { handleSurvivalRequest } = require('./ai/loop');
-const { startManagerLoop } = require('./ai/manager');
-const { checkAdvancementMessage } = require('./utils/advancements');
+const config = require('./infrastructure/config');
+const state = require('./core/state');
+const { syncObjective } = require('./perception/inventory');
+const { autoEquipArmorAndShield } = require('./actions/behaviors/items/equip');
+const { handleSurvivalRequest } = require('./agent/loop');
+const { startManagerLoop } = require('./agent/manager');
+const { checkAdvancementMessage } = require('./perception/advancements');
 
 const bot = mineflayer.createBot(config.BOT_CONFIG);
 bot.loadPlugin(pathfinder);
