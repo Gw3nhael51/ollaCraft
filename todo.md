@@ -1,60 +1,37 @@
-# Roadmap & Backlog Technique — ollaCraft (Bot Autonome Minecraft)
+# 🗺️ Roadmap & Bilan Technique — OllaCraft (v4.6)
 
-## 🚨 Priorité P0 : Corrections d'Incohérences & Bugs Critiques
-- [x] **Bug du saut infini hors de l'eau (`src/index.js`)** : Remettre `bot.setControlState('jump', false)` lorsque `bot.entity.isInWater` repasse à `false` dans `physicsTick` pour éviter l'épuisement de la faim et le blocage du pathfinder.
-- [x] **Incohérence de l'objectif initial (`src/state.js` & `src/config.js`)** : Aligner `currentObjective` initial (`'wooden_pickaxe'` au lieu de `'wooden_axe'`) avec `QUEST_CHAIN` pour éviter que `'wooden_axe'` soit marquée comme complétée sans avoir été fabriquée.
-- [x] **Recette `blaze_powder` manquante (`src/utils/inventory.js` & `src/config.js`)** : Ajouter `'blaze_powder'` dans `getAvailableCrafts` (et/ou `QUEST_CHAIN`) afin de débloquer la fabrication de `'ender_eye'`.
-- [x] **Conservation du gravier et matériaux clés (`src/skills/storage.js`)** : Aligner `maxToKeep` dans `skillChest` avec `isItemToStore` et conserver `gravel`/`flint` (requis pour `flint_and_steel`), `blaze_rod`, `ender_pearl` et `obsidian`.
-- [x] **Reprise de progression après mort/reconnexion et faux positif AuthMe (`src/index.js` & `src/utils/inventory.js`)** : Ignorer `"already have registered"` pour le lancement initial, reprendre la survie au respawn et valider les paliers antérieurs si un équipement supérieur est possédé.
-- [x] **Condition erronée du succès `Diamonds!` (`src/utils/advancements.js`)** : Retirer `hasItem('bucket')`, `hasItem('water_bucket')` et `hasItem('flint_and_steel')` de la validation du jalon `'Diamonds!'`.
-
-## 🛠️ Priorité P1 : Corrections Gameplay & Compétences
-- [x] **Exploitation de `state.managerSubGoal` (`src/ai/loop.js` & `src/ai/manager.js`)** : Utiliser `state.managerSubGoal` (actuellement calculé mais jamais lu) dans le prompt du joueur et comme action de *fallback* si l'appel LLM du joueur échoue.
-- [x] **Harmonisation de la portée de détection de l'établi (`src/ai/manager.js`, `src/ai/loop.js`, `src/skills/craft.js`)** : Unifier la distance de recherche de `crafting_table` et prendre en compte `state.base.crafting_table` dans `sanitizeManagerOutput`.
-- [x] **Ajout de l'action `"wiki"` dans le Manager (`src/ai/manager.js`)** : Autoriser `"wiki"` dans la liste des `suggestedAction` du prompt Manager.
-- [x] **Prise en compte de `qty` dans le craft (`src/skills/dispatcher.js` & `src/skills/craft.js`)** : Transmettre le paramètre `qty` à `skillCraft` et l'utiliser dans `bot.craft(recipes[0], qty, tableToUse)`.
-- [x] **Cuisson multiple et gestion du combustible (`src/skills/smelt.js`)** : Calculer la quantité de combustible requise selon `qty`, attendre la cuisson complète de tous les items (au lieu de s'arrêter dès le 1er item produit) et adapter le timeout dynamiquement.
-- [x] **Collecte des drops à la position de mort réelle (`src/skills/combat.js`)** : Mémoriser la dernière position valide de la cible pendant `combatLoop` au lieu d'aller chercher le butin à `startPos` (position initiale avant poursuite).
-- [x] **Construction et moulage du portail du Nether (`src/skills/portal.js`)** :
-  - Corriger `placePortalFrameStep` pour poser les blocs contre n'importe quelle face adjacente solide (et utiliser des blocs d'échafaudage pour les coins) afin de pouvoir monter les piliers et le linteau supérieur.
-  - Remplacer le simple versement d'eau de `castObsidianAtLavaPool` par un vrai moulage bloc par bloc ou par le minage de l'obsidienne formée si une pioche en diamant est disponible.
-
-## ⚡ Priorité P1 : Optimisations Performances (CPU, Mémoire & Coût LLM)
-- [x] **Fusion du scan 3D (`src/utils/environment.js`)** : Unifier `scanEnvironment` et `scanExposedOres` en une seule passe (évite > 47 000 appels `bot.blockAt()` synchrones par cycle) et mettre en cache les listes de blocs de `src/utils/wikiData.js`.
-- [x] **Manager événementiel (`src/ai/loop.js` & `src/ai/manager.js`)** : N'exécuter `runManagerCycle` que sur événement (échec d'action, boucle détectée par `detectActionLoop`, changement de palier, ou tous les $N$ cycles) pour réduire de ~75% la consommation de tokens et la latence.
-- [x] **Filtrage du radar dans le prompt (`src/ai/prompt.js`)** : Exclure les blocs décoratifs inutiles (`short_grass`, `tall_grass`, fleurs, `bedrock`, `kelp`) du JSON envoyé au LLM.
-- [x] **Structured Outputs & Configuration Ollama (`src/ai/ollama.js` & `src/config.js`)** :
-  - Rendre l'URL Ollama configurable via `process.env.OLLAMA_HOST`.
-  - Passer un schéma JSON strict dans le champ `format` d'Ollama pour contraindre `action` à `VALID_ACTIONS`.
-- [ ] **Expiration (TTL) sur `GLOBAL_BAD_BLOCKS` (`src/skills/mine.js`)** : Remplacer le `Set` infini par une `Map<posKey, timestamp>` avec expiration automatique (ex. 2-3 minutes) pour éviter les fuites mémoire et le bannissement définitif de blocs temporairement inaccessibles.
-
-## 🚀 Priorité P2 : Améliorations Fonctionnelles & Documentation
-- [ ] **Réflexes de survie déterministes pré-LLM (`src/ai/loop.js`)** : Déclencher automatiquement `skillEat` en cas de faim critique et la fuite/défense en cas de danger vital immédiat sans attendre la génération LLM.
-- [ ] **Amélioration de `skillUnstuck` (`src/skills/navigate.js` & `src/config.js`)** : Ajouter `deepslate` et `cobbled_deepslate` dans `SOFT_BLOCKS` et implémenter le *pillar-jumping* (sauter + poser un bloc sous ses pieds) pour sortir des puits profonds.
-- [ ] **Combat avancé (`src/skills/combat.js`)** : Activer la parade au bouclier (`bot.activateItem(true)`) face aux Squelettes et reculer lorsque les Creepers gonflent.
-- [ ] **Synchronisation de la documentation (`README.md`)** : Aligner la liste des compétences (`chest`, `hunt`, `fight`, `equip`, `portal`), documenter la commande `tokens` et retirer ou implémenter `flee` / `sleep` / `LOOP_DELAY_MS`.
+## ✅ Architecture Cognitive & Apprentissage Procédural (Phases 1 → 4.6)
+- [x] **Phase 1 — Restructuration Modulaire (`src/core`, `src/infrastructure`, `src/agent`, `src/actions`, `src/procedures`, `src/perception`, `src/minecraft`)** : Séparation stricte des responsabilités et découplage du client Mineflayer.
+- [x] **Phase 2 — Primitives d'Actions Déterministes (`src/actions/primitives/`)** : 27 primitives vérifiées (`movement`, `blocks`, `items`, `container`, `combat`) avec verrous réentrants (`lock.js`), gestion d'`AbortSignal` et vérification de l'état du monde.
+- [x] **Phase 3 — Moteur DSL Déclaratif (`src/procedures/`)** : Schéma JSON (`schema.js`), catalogue d'actions (`registry.js`), validation statique et sémantique (`validator.js`), exécution supervisée (`runner.js`), persistance (`store.js`) et intégration `dispatcher.js` / `manager.js`.
+- [x] **Phase 4.1 — Détection des Objectifs Non Couverts & Anti-Boucle (`matcher.js`)** : Filtrage des micro-tâches triviales et protection contre les boucles de génération (`ObjectiveGenerationTracker`).
+- [x] **Phase 4.2 — Génération DSL par Ollama (`generator.js`)** : Synthèse de procédures déclaratives avec tentatives bornées et gestion des timeouts.
+- [x] **Phase 4.3 — Validation Sémantique Profonde (`validator.js`)** : Vérification statique des types, du graphe de dépendances (`$steps`, `$parameters`), des préconditions et de la vérifiabilité des postconditions.
+- [x] **Phase 4.4 — Enregistrement & Exécution Expérimentale (`memory.js`, `runner.js`)** : Protection stricte des procédures `validated`, attribution d'identifiants uniques et trace d'exécution normalisée (`executionId`).
+- [x] **Phase 4.5 — Évaluation Indépendante des Résultats Réels (`evaluator.js`)** : Vérification physique de l'objectif (`evaluateObjective`), statut `unknown` pour capteurs indisponibles, détection des contradictions (`detectTraceContradictions`) et des pénuries de ressources (`detectResourceShortage`).
+- [x] **Phase 4.6 — Cycle de Vie, Versionnement & Exploitation des Connaissances (`lifecycle.js`, `memory.js`)** :
+  - Historique d'évaluation dédupliqué par `executionId`.
+  - Promotion `experimental → validated` après >= 3 réussites vérifiées et indépendantes.
+  - Classification des échecs (`resource_shortage`, `execution_error`, `objective_not_achieved`, `contradiction`, `inconclusive`) et dépréciation prudente.
+  - Versionnement non-destructif (`v1 validated` + `v2 experimental`) avec comparaison de performances et fallback.
+  - Extraction de connaissances (`getKnowledge`) pour le Manager et le Generator.
+- [x] **Tests & Benchmark (`test/`, `scripts/benchmark.js`, `.github/workflows/ci.yml`)** : **171/171 tests unitaires et E2E** + benchmark automatisé (`npm run benchmark`) + CI/CD GitHub Actions.
 
 ---
 
-## 🗺️ Roadmap Fonctionnelle (Progression Speedrun)
+## ✅ Correctifs P0 & P1 (Survie, Gameplay & Performances)
+- [x] **Sortie d'eau (`src/index.js`)** : Remise à zéro du saut (`jump: false`) dès la sortie de l'eau.
+- [x] **Alignement de `QUEST_CHAIN` (`src/infrastructure/config.js`, `src/core/state.js`)** : Objectif initial `wooden_pickaxe` et support de `blaze_powder`.
+- [x] **Conservation des matériaux clés (`src/actions/behaviors/items/storage.js`)** : Rétention de `gravel`, `flint`, `blaze_rod`, `ender_pearl`, `obsidian`.
+- [x] **Reprise après mort / reconnexion (`src/index.js`, `src/perception/inventory.js`)** : Synchronisation automatique du palier selon l'équipement possédé.
+- [x] **Scan 3D unifié & Cache Wiki (`src/perception/environment.js`, `src/minecraft/wikiData.js`)** : Scan en une passe (2,32 ms pour 35 937 voxels) et filtrage des blocs décoratifs dans le radar.
+- [x] **Manager événementiel & Structured Outputs Ollama (`src/agent/manager.js`, `src/agent/ollama.js`)** : Réduction des appels LLM et validation stricte des schémas JSON.
+- [x] **Construction du portail du Nether & Cuisson par lots (`src/actions/behaviors/world/portal.js`, `src/actions/behaviors/items/smelt.js`)** : Placement multi-faces des 11 blocs d'obsidienne et calcul dynamique du combustible.
 
-### Étape 1 : Survie avancée et Combat (Âge de Fer & Bouclier)
-- [x] **Compétence `hunt` / `fight`** : Apprendre au bot à attaquer les entités (animaux pour la nourriture, monstres pour se défendre ou récupérer des ressources utiles).
-- [x] **Gestion des armures (`equip`)** : Apprendre au bot à fabriquer (casque, plastron, jambières, bottes) et à s'équiper automatiquement pour survivre.
-- [x] **Stockage et gestion d'inventaire (`chest`)** : Crafter un coffre, le poser dans la base et y déposer les objets non essentiels quand l'inventaire est plein.
+---
 
-### Étape 2 : Le Nether (Transition Speedrun)
-- [x] **Création du Portail au Seau (`bucket`)** : Trouver une mare de lave et mouler le portail d'obsidienne avec de l'eau (évite le minage profond de diamant).
-- [x] **Allumage du Portail** : Fabriquer un briquet (`flint_and_steel`), allumer le portail et entrer dans le Nether.
-- [ ] **Exploration du Nether** : Gérer les dangers environnementaux (feu, lave) et trouver une Forteresse.
-- [ ] **Chasse aux Blazes** : Vaincre des Blazes pour obtenir des bâtons de Blaze (`blaze_rod`).
-
-### Étape 3 : La préparation finale (Yeux de l'Ender)
-- [ ] **Récolte d'Ender Pearls** : Chasser des Endermen ou mettre en place un système de troc avec les Piglins.
-- [ ] **Fabrication des Yeux** : Transformer les bâtons de Blaze en poudre et crafter les Yeux de l'Ender (`ender_eye`).
-- [ ] **Triangulation du Stronghold** : Lancer un œil, suivre sa direction, recommencer, et creuser jusqu'à trouver le Stronghold.
-
-### Étape 4 : L'Ender Dragon (Combat Final)
-- [ ] **Activation du Portail de l'End** : Trouver la salle du portail et placer les yeux de l'Ender manquants.
-- [ ] **Destruction des Cristaux** : Créer une logique pour cibler (arc) ou escalader les piliers afin de détruire les cristaux de l'End.
-- [ ] **Combat contre le Dragon** : Gérer les attaques au corps-à-corps lorsque le dragon se pose au centre.
+## 🧪 Campagne de Tests In-Game & Perspectives (Roadmap Future)
+- [ ] **Campagne de tests en conditions réelles (Serveur Minecraft 1.20.4 + Ollama)** : Relever et ouvrir des issues dédiées sur les éventuels cas limites rencontrés en jeu.
+- [ ] **Étape 2 Speedrun — Exploration du Nether & Chasse aux Blazes (#23)** : Recherche de Forteresse et récolte de `blaze_rod`.
+- [ ] **Étape 3 Speedrun — Yeux de l'Ender & Triangulation du Stronghold (#24)** : Récolte d'`ender_pearl`, craft d'`ender_eye` et localisation du portail.
+- [ ] **Étape 4 Speedrun — Combat contre l'Ender Dragon (#25)** : Activation du portail de l'End, destruction des cristaux et combat final.
