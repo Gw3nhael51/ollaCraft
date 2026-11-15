@@ -1,4 +1,4 @@
-.PHONY: run logs bot bot-logs bot-stop stop issue test
+.PHONY: run logs bot bot-logs bot-stop stop issue test reset-server
 run:
 	docker compose up -d
 logs:
@@ -23,3 +23,6 @@ issue:
 
 test:
 	node --test test/bot.test.js
+
+reset-server:
+	ssh ovh "cd minecraft-server && docker compose down && docker run --rm -v minecraft-server_mc-data:/data alpine sh -c 'rm -rf /data/world /data/world_nether /data/world_the_end /data/logs/* /data/plugins/AuthMe/playerdata/* && truncate -s 0 /data/plugins/AuthMe/authme.log && chown -R 1000:1000 /data/logs /data/plugins/AuthMe' && docker compose up -d --force-recreate"
