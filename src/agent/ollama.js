@@ -9,7 +9,8 @@ const PLAYER_JSON_SCHEMA = {
       type: 'string',
       enum: Array.from(config.VALID_ACTIONS)
     },
-    target: { type: 'string', maxLength: 32 }
+    target: { type: 'string', maxLength: 32 },
+    qty: { type: 'integer', minimum: 1, maximum: 64 }
   },
   required: ['thought', 'action', 'target']
 };
@@ -29,20 +30,45 @@ const MANAGER_JSON_SCHEMA = {
 };
 
 /**
- * Get schema definition based on role
- * @param {string} role Calling role ('joueur' or 'manager')
- * @returns {object} JSON schema
+ * Sélectionner le schéma de sortie structurée selon le rôle de l'agent
+ * @param {string} role Rôle de l'appelant ('joueur' ou 'manager')
+ * @returns {object} Schéma JSON strict
  */
 function getFormatSchema(role) {
   return role === 'manager' ? MANAGER_JSON_SCHEMA : PLAYER_JSON_SCHEMA;
 }
 
 /**
- * Query local Ollama model to obtain a structured JSON decision
- * @param {string} promptText Full prompt sent to the model
- * @param {string} [modelName] Name of target Ollama model
- * @param {string} [role] Calling role ('joueur' or 'manager')
- * @returns {Promise<object|null>} Parsed JSON decision or null on failure
+ * Enregistrer la consommation de tokens de la requête dans les statistiques globales
+ * @param {object} data Réponse brute de l'API Ollama
+ * @param {string} role Rôle de l'agent ('joueur' ou 'manager')
+ */
+function recordTokenUsage(data, role) {
+  if (!state?.tokenStats) return;
+
+  const promptTokens = data.prompt_eval_count || 0;
+  const completionTokens = data.eval_count || 0;
+  const isManager = role === 'manager';
+
+  if (isManager) {
+    state.tokenStats.managerPromptTokens += promptTokens;
+    state.tokenStats.managerCompletionTokens += completionTokens;
+  } else {
+    state.tokenStats.playerPromptTokens += promptTokens;
+    state.tokenStats.playerCompletionTokens += completionTokens;
+  }
+  state.tokenStats.totalTokens += promptTokens + completionTokens;
+
+  const roleTag = isManager ? 'MANAGER' : 'JOUEUR';
+  console.log(`[TOKENS 📊] ${roleTag}: ${promptTokens} in / ${completionTokens} out | Total session: ${state.tokenStats.totalTokens}`);
+}
+
+/**
+ * Interroger le modèle Ollama local pour obtenir une décision JSON structurée
+ * @param {string} promptText Prompt complet envoyé au modèle
+ * @param {string} [modelName] Nom du modèle Ollama cible
+ * @param {string} [role] Rôle de l'appelant ('joueur' ou 'manager')
+ * @returns {Promise<object|null>} Décision JSON analysée ou null en cas d'échec
  */
 async function askOllama(promptText, modelName = config.OLLAMA_MODEL_PLAYER, role = 'joueur') {
   try {
@@ -70,23 +96,7 @@ async function askOllama(promptText, modelName = config.OLLAMA_MODEL_PLAYER, rol
       return null;
     }
 
-    const promptTokens = data.prompt_eval_count || 0;
-    const completionTokens = data.eval_count || 0;
-    const isManager = role === 'manager';
-
-    if (state?.tokenStats) {
-      if (isManager) {
-        state.tokenStats.managerPromptTokens += promptTokens;
-        state.tokenStats.managerCompletionTokens += completionTokens;
-      } else {
-        state.tokenStats.playerPromptTokens += promptTokens;
-        state.tokenStats.playerCompletionTokens += completionTokens;
-      }
-      state.tokenStats.totalTokens += promptTokens + completionTokens;
-
-      const roleTag = isManager ? 'MANAGER' : 'JOUEUR';
-      console.log(`[TOKENS 📊] ${roleTag}: ${promptTokens} in / ${completionTokens} out | Total session: ${state.tokenStats.totalTokens}`);
-    }
+    recordTokenUsage(data, role);
 
     const raw = (data.response || data.thinking || '').trim();
     const start = raw.indexOf('{');
