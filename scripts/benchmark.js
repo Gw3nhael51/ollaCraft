@@ -45,7 +45,7 @@ function createBenchBot(opts = {}) {
     inventory: {
       slots: new Array(46).fill(null),
       items: () => inventoryItems.filter(Boolean),
-      findInventoryItem: (name) => inventoryItems.find(i => i && i.name === name) || null,
+      findInventoryItem: (name) => inventoryItems.find(i => i?.name === name) || null,
       clearSimItems: () => {
         inventoryItems.length = 0;
       }
@@ -54,7 +54,7 @@ function createBenchBot(opts = {}) {
       const key = `${Math.floor(pos.x)},${Math.floor(pos.y)},${Math.floor(pos.z)}`;
       return worldBlocks.get(key) || { name: 'air', position: new Vec3(pos.x, pos.y, pos.z) };
     },
-    canDigBlock: (b) => b && b.name !== 'air',
+    canDigBlock: (b) => Boolean(b?.name && b.name !== 'air'),
     dig: async (b) => {
       setBlock(b.position.x, b.position.y, b.position.z, 'air');
       inventoryItems.push({ name: 'oak_log', count: 1, type: 131, slot: 36 });
@@ -68,7 +68,7 @@ function createBenchBot(opts = {}) {
       }
     ],
     craft: async () => {
-      const logIdx = inventoryItems.findIndex(i => i && i.name === 'oak_log');
+      const logIdx = inventoryItems.findIndex(i => i?.name === 'oak_log');
       if (logIdx !== -1) inventoryItems.splice(logIdx, 1);
       inventoryItems.push({ name: 'oak_planks', count: 4, type: 36, slot: 37 });
     },
@@ -86,7 +86,59 @@ function createBenchBot(opts = {}) {
 }
 
 /**
+ * Exécuter une itération unitaire du benchmark d'exécution supervisée et d'évaluation
+ * @param {object} sampleProcedure Procédure de référence
+ * @param {object} registry Registre d'actions
+ * @param {number} index Index de l'itération
+ * @returns {Promise<boolean>} Vrai si une fausse réussite a été interceptée
+ */
+async function runSingleExecutionIteration(sampleProcedure, registry, index) {
+  const isHallucinatedRun = index % 2 === 1;
+  const bot = createBenchBot();
+  const execRes = await executeExperimentalProcedure(bot, sampleProcedure, {
+    actionRegistry: registry,
+    skipPostconditions: true
+  });
+  if (isHallucinatedRun) {
+    bot.inventory.clearSimItems();
+  }
+  const evalRes = await evaluateProcedureExecution(bot, sampleProcedure, execRes, {
+    objective: 'oak_planks'
+  });
+  return Boolean(
+    isHallucinatedRun &&
+    evalRes.data.status !== 'achieved' &&
+    evalRes.data.contradictions.length > 0
+  );
+}
+
+/**
+ * Exécuter séquentiellement les itérations du benchmark de cycle de vie procédural
+ * @param {ProcedureMemory} memory Instance de mémoire procédurale
+ * @param {object} sampleProcedure Procédure de référence
+ * @param {object} registry Registre d'actions
+ * @param {number} index Index courant
+ * @param {number} total Nombre total d'itérations
+ * @returns {Promise<void>} Promesse résolue à la fin de la séquence
+ */
+async function runLifecycleSequence(memory, sampleProcedure, registry, index, total) {
+  if (index >= total) return;
+
+  const bot = createBenchBot();
+  const execRes = await executeExperimentalProcedure(bot, sampleProcedure, { actionRegistry: registry });
+  const evalRes = await evaluateProcedureExecution(bot, sampleProcedure, execRes, { objective: 'oak_planks' });
+  await memory.recordEvaluation('harvest_wood_and_craft_planks', evalRes.data, {
+    executionTrace: execRes.data.trace,
+    context: { scenarioId: `bench_scen_${index}` }
+  });
+  memory.getKnowledge('oak_planks');
+
+  await runLifecycleSequence(memory, sampleProcedure, registry, index + 1, total);
+}
+
+/**
  * Exécuter la suite complète de benchmarks d'OllaCraft et afficher un rapport structuré
+ * @returns {Promise<void>} Promesse résolue après l'affichage du rapport
  */
 async function runBenchmarks() {
   const registry = createDefaultRegistry();
@@ -129,7 +181,6 @@ async function runBenchmarks() {
     }
   });
 
-  // Mesurer : Validation statique et sémantique DSL
   const validationIterations = 1000;
   const tValStart = performance.now();
   for (let i = 0; i < validationIterations; i++) {
@@ -140,51 +191,24 @@ async function runBenchmarks() {
   const valAvgMs = tValTotal / validationIterations;
   const valOpsPerSec = Math.round((validationIterations / tValTotal) * 1000);
 
-  // Mesurer : Exécution supervisée + Évaluation indépendante + Détection de contradictions
   const execIterations = 100;
-  let falsePositivesCaught = 0;
   const tExecStart = performance.now();
-  for (let i = 0; i < execIterations; i++) {
-    const isHallucinatedRun = i % 2 === 1;
-    const bot = createBenchBot();
-    const execRes = await executeExperimentalProcedure(bot, sampleProcedure, {
-      actionRegistry: registry,
-      skipPostconditions: true
-    });
-    if (isHallucinatedRun) {
-      bot.inventory.clearSimItems();
-    }
-    const evalRes = await evaluateProcedureExecution(bot, sampleProcedure, execRes, {
-      objective: 'oak_planks'
-    });
-    if (isHallucinatedRun && evalRes.data.status !== 'achieved' && evalRes.data.contradictions.length > 0) {
-      falsePositivesCaught++;
-    }
-  }
+  const execResults = await Promise.all(
+    Array.from({ length: execIterations }, (_, idx) => runSingleExecutionIteration(sampleProcedure, registry, idx))
+  );
+  const falsePositivesCaught = execResults.filter(Boolean).length;
   const tExecTotal = performance.now() - tExecStart;
   const execAvgMs = tExecTotal / execIterations;
   const falsePositiveCatchRate = (falsePositivesCaught / (execIterations / 2)) * 100;
 
-  // Mesurer : Cycle de vie 4.6 (Promotion, Versionnement, Extraction de connaissances)
   const lifecycleIterations = 200;
   const tLifeStart = performance.now();
   const memory = new ProcedureMemory();
   memory.register(sampleProcedure);
-
-  for (let i = 0; i < lifecycleIterations; i++) {
-    const bot = createBenchBot();
-    const execRes = await executeExperimentalProcedure(bot, sampleProcedure, { actionRegistry: registry });
-    const evalRes = await evaluateProcedureExecution(bot, sampleProcedure, execRes, { objective: 'oak_planks' });
-    await memory.recordEvaluation('harvest_wood_and_craft_planks', evalRes.data, {
-      executionTrace: execRes.data.trace,
-      context: { scenarioId: `bench_scen_${i}` }
-    });
-    memory.getKnowledge('oak_planks');
-  }
+  await runLifecycleSequence(memory, sampleProcedure, registry, 0, lifecycleIterations);
   const tLifeTotal = performance.now() - tLifeStart;
   const lifeAvgMs = tLifeTotal / lifecycleIterations;
 
-  // Mesurer : Scan 3D unifié de l'environnement (Rayon 16 blocs = 33x33x33 = 35 937 voxels)
   const scanBot = createBenchBot();
   const scanIterations = 10;
   const tScanStart = performance.now();
@@ -194,18 +218,15 @@ async function runBenchmarks() {
   const tScanTotal = performance.now() - tScanStart;
   const scanAvgMs = tScanTotal / scanIterations;
 
-  // Simuler : Économie d'appels LLM et de tokens sur 10 épisodes d'un objectif à 3 étapes
   const episodes = 10;
   const stepsPerObjective = 3;
   const avgTokensPerPlayerCall = 650;
   const avgTokensPerManagerCall = 520;
   const avgTokensPerGeneratorCall = 900;
 
-  // Calculer : Coût en ReAct pur sans mémoire procédurale (3 appels Joueur + 1 appel Manager par épisode)
   const reactLlmCalls = episodes * (stepsPerObjective + 1);
   const reactTotalTokens = episodes * (stepsPerObjective * avgTokensPerPlayerCall + avgTokensPerManagerCall);
 
-  // Calculer : Coût avec OllaCraft Phase 4 (1 génération initiale + 3 exécutions expérimentales supervisées, puis 7 exécutions validées directes)
   const procLlmCalls = 1 + 3;
   const procTotalTokens = avgTokensPerGeneratorCall + 3 * avgTokensPerManagerCall;
   const tokenSavingsPct = (((reactTotalTokens - procTotalTokens) / reactTotalTokens) * 100).toFixed(1);

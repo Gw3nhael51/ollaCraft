@@ -87,12 +87,24 @@ function compareValues(actual, expected, operator = 'gte') {
  * @returns {boolean} Vrai si l'inventaire est observable
  */
 function isInventoryObservable(bot) {
-  if (!bot || !bot.inventory) return false;
+  if (!bot?.inventory) return false;
   return (
     typeof bot.inventory.items === 'function' ||
     Array.isArray(bot.inventory.items) ||
     Array.isArray(bot.inventory.slots)
   );
+}
+
+/**
+ * Extraire la liste des objets de l'inventaire du bot
+ * @param {object} bot Instance du bot Mineflayer
+ * @returns {Array<object>} Liste des objets présents dans l'inventaire
+ */
+function extractInventoryItemsList(bot) {
+  if (typeof bot.inventory.items === 'function') {
+    return bot.inventory.items();
+  }
+  return Array.isArray(bot.inventory.items) ? bot.inventory.items : [];
 }
 
 /**
@@ -111,9 +123,7 @@ function getInventoryItemCount(bot, itemName) {
     perceptionCount = countItem(bot, itemName);
   }
 
-  const items = typeof bot.inventory.items === 'function'
-    ? bot.inventory.items()
-    : (Array.isArray(bot.inventory.items) ? bot.inventory.items : []);
+  const items = extractInventoryItemsList(bot);
 
   let directCount = 0;
   const cleanName = typeof itemName === 'string' ? itemName.toLowerCase().trim() : null;
@@ -155,8 +165,8 @@ function resolveEquipmentSlot(bot, destination) {
     try {
       const slot = bot.getEquipmentDestSlot(destination);
       if (typeof slot === 'number') return slot;
-    } catch {
-      // Ignorer : Replier sur la correspondance standard des emplacements
+    } catch (error) {
+      if (!error) return null;
     }
   }
 
@@ -224,7 +234,7 @@ function observeEquippedItem(bot, destination = 'hand') {
  */
 function evaluateInventoryItem(bot, assertion) {
   const itemName = assertion.item || assertion.itemName;
-  const expectedCount = assertion.count !== undefined ? assertion.count : (assertion.expected !== undefined ? assertion.expected : 1);
+  const expectedCount = assertion.count ?? assertion.expected ?? 1;
   const operator = assertion.operator || 'gte';
 
   if (typeof itemName !== 'string' || itemName.trim().length === 0) {
@@ -435,7 +445,7 @@ function observeContainerItems(bot, context = {}) {
  */
 function evaluateContainerItem(bot, assertion, context = {}) {
   const itemName = assertion.item || assertion.itemName;
-  const expectedCount = assertion.count !== undefined ? assertion.count : (assertion.expected !== undefined ? assertion.expected : 1);
+  const expectedCount = assertion.count ?? assertion.expected ?? 1;
   const operator = assertion.operator || 'gte';
 
   if (typeof itemName !== 'string' || itemName.trim().length === 0) {
@@ -492,12 +502,12 @@ function evaluateContainerItem(bot, assertion, context = {}) {
  * @returns {{ passed: boolean, status: string, verifiable: boolean, actual: any, expected: any, operator: string, message: string|null }}
  */
 function evaluateEntityState(bot, assertion) {
-  const entityId = assertion.entityId !== undefined ? assertion.entityId : assertion.id;
+  const entityId = assertion.entityId ?? assertion.id;
   const entityName = assertion.entity || assertion.entityName || assertion.name || assertion.target;
-  const radius = typeof assertion.radius === 'number' ? assertion.radius : (typeof assertion.maxDistance === 'number' ? assertion.maxDistance : 32);
-  const expectedState = assertion.type === 'entity_eliminated'
-    ? 'eliminated'
-    : (assertion.state || (assertion.expected !== undefined ? assertion.expected : 'eliminated'));
+  const fallbackRadius = typeof assertion.maxDistance === 'number' ? assertion.maxDistance : 32;
+  const radius = typeof assertion.radius === 'number' ? assertion.radius : fallbackRadius;
+  const fallbackState = assertion.state || (assertion.expected ?? 'eliminated');
+  const expectedState = assertion.type === 'entity_eliminated' ? 'eliminated' : fallbackState;
 
   if (entityId === undefined && (typeof entityName !== 'string' || entityName.trim().length === 0)) {
     return {
@@ -511,7 +521,7 @@ function evaluateEntityState(bot, assertion) {
     };
   }
 
-  if (!bot || !bot.entities || typeof bot.entities !== 'object') {
+  if (!bot?.entities || typeof bot.entities !== 'object') {
     return {
       passed: false,
       status: 'unknown',
@@ -531,9 +541,10 @@ function evaluateEntityState(bot, assertion) {
       (entity.health === undefined || entity.health > 0)
     );
     const actualState = isAlive ? 'alive' : 'eliminated';
+    const aliveOrRawState = (expectedState === 'present' || expectedState === true) ? 'alive' : expectedState;
     const normalizedExpected = (expectedState === 'dead' || expectedState === 'absent' || expectedState === false)
       ? 'eliminated'
-      : (expectedState === 'present' || expectedState === true ? 'alive' : expectedState);
+      : aliveOrRawState;
     const passed = actualState === normalizedExpected;
 
     return {
@@ -614,7 +625,7 @@ function evaluateEntityState(bot, assertion) {
  * @returns {{ passed: boolean, status: string, verifiable: boolean, actual: any, expected: any, operator: string, message: string|null }}
  */
 function evaluateBotHealth(bot, assertion) {
-  const expected = assertion.value !== undefined ? assertion.value : (assertion.expected !== undefined ? assertion.expected : 1);
+  const expected = assertion.value ?? assertion.expected ?? 1;
   const operator = assertion.operator || 'gte';
 
   if (!bot || typeof bot.health !== 'number') {
@@ -650,7 +661,7 @@ function evaluateBotHealth(bot, assertion) {
  * @returns {{ passed: boolean, status: string, verifiable: boolean, actual: any, expected: any, operator: string, message: string|null }}
  */
 function evaluateBotFood(bot, assertion) {
-  const expected = assertion.value !== undefined ? assertion.value : (assertion.expected !== undefined ? assertion.expected : 1);
+  const expected = assertion.value ?? assertion.expected ?? 1;
   const operator = assertion.operator || 'gte';
 
   if (!bot || typeof bot.food !== 'number') {
@@ -988,12 +999,12 @@ function parseObjectiveDescriptor(rawObjective, procedure = null) {
 
   if (typeof source === 'object') {
     const kind = String(source.type || source.kind || 'item').toLowerCase().trim();
-    const target = typeof source.target === 'string'
-      ? source.target.toLowerCase().trim()
-      : (typeof source.item === 'string' ? source.item.toLowerCase().trim() : null);
+    const rawTargetStr = typeof source.target === 'string' ? source.target : source.item;
+    const target = typeof rawTargetStr === 'string' ? rawTargetStr.toLowerCase().trim() : null;
+    const defaultQuestCount = target && config.QUEST_AMOUNT?.[target] ? config.QUEST_AMOUNT[target] : 1;
     const count = typeof source.count === 'number' && source.count > 0
       ? source.count
-      : (target && config.QUEST_AMOUNT?.[target] ? config.QUEST_AMOUNT[target] : 1);
+      : defaultQuestCount;
     return {
       kind,
       target,
@@ -1058,7 +1069,7 @@ function parseObjectiveDescriptor(rawObjective, procedure = null) {
  */
 async function evaluateObjective(bot, rawObjective, options = {}) {
   const descriptor = parseObjectiveDescriptor(rawObjective, options.procedure || null);
-  if (!descriptor || !descriptor.target) {
+  if (!descriptor?.target) {
     return {
       achieved: false,
       partiallyAchieved: false,
@@ -1162,7 +1173,7 @@ async function evaluateObjective(bot, rawObjective, options = {}) {
     let placedBlock = null;
     if (typeof bot.findBlock === 'function') {
       placedBlock = bot.findBlock({
-        matching: (b) => b && b.name === target,
+        matching: (b) => b?.name === target,
         maxDistance: 32
       });
     }
@@ -1222,6 +1233,18 @@ async function evaluateObjective(bot, rawObjective, options = {}) {
 }
 
 /**
+ * Extraire le tableau des étapes exécutées depuis une trace d'exécution
+ * @param {object} trace Trace d'exécution brute ou normalisée
+ * @returns {Array<object>} Tableau des étapes
+ */
+function extractTraceSteps(trace) {
+  if (Array.isArray(trace?.steps)) {
+    return trace.steps;
+  }
+  return Array.isArray(trace?.stepTraces) ? trace.stepTraces : [];
+}
+
+/**
  * Détecter les contradictions entre les affirmations de la trace du Runner et l'état réel de Minecraft
  * @param {object} bot Instance du bot Mineflayer
  * @param {object} executionTrace Trace d'exécution issue du Runner
@@ -1229,18 +1252,16 @@ async function evaluateObjective(bot, rawObjective, options = {}) {
  */
 function detectTraceContradictions(bot, executionTrace) {
   const contradictions = [];
-  const steps = Array.isArray(executionTrace?.steps)
-    ? executionTrace.steps
-    : (Array.isArray(executionTrace?.stepTraces) ? executionTrace.stepTraces : []);
+  const steps = extractTraceSteps(executionTrace);
 
   if (steps.length === 0 || !bot) {
     return contradictions;
   }
 
   steps.forEach((step, idx) => {
-    if (!step || !step.success) return;
+    if (!step?.success) return;
 
-    const subsequentSteps = steps.slice(idx + 1).filter(s => s && s.success);
+    const subsequentSteps = steps.slice(idx + 1).filter(s => s?.success);
     const params = step.parameters || {};
     const output = step.output || {};
 
@@ -1343,9 +1364,7 @@ function detectResourceShortage(executionTrace, failedConditions = []) {
     return true;
   }
 
-  const steps = Array.isArray(executionTrace.steps)
-    ? executionTrace.steps
-    : (Array.isArray(executionTrace.stepTraces) ? executionTrace.stepTraces : []);
+  const steps = extractTraceSteps(executionTrace);
 
   for (const step of steps) {
     if (step && !step.success && RESOURCE_SHORTAGE_REASONS.has(step.reason)) {
@@ -1431,9 +1450,7 @@ function computeEvaluationConfidence({
 async function evaluateProcedureExecution(bot, procedure, executionTrace, options = {}) {
   const procedureId = procedure?.id || executionTrace?.procedureId || 'unknown_procedure';
   const normalizedTrace = executionTrace?.trace || executionTrace?.data?.trace || executionTrace?.data || executionTrace || {};
-  const steps = Array.isArray(normalizedTrace.steps)
-    ? normalizedTrace.steps
-    : (Array.isArray(normalizedTrace.stepTraces) ? normalizedTrace.stepTraces : []);
+  const steps = extractTraceSteps(normalizedTrace);
 
   const stepResults = normalizedTrace.stepResults || {};
   if (Object.keys(stepResults).length === 0) {

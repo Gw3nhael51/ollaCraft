@@ -103,7 +103,6 @@ test('4.6.1 Evaluation Recording: Stores trace, evaluator result, conditions, fa
   assert.equal(firstRecord.updatedProcedure.metadata.executionCount, 1);
   assert.equal(firstRecord.updatedProcedure.metadata.evaluationHistory.length, 1);
 
-  // Vérifier : Ignorer un second enregistrement portant le même executionId
   const duplicateAttempt = await memory.recordEvaluation('craft_stone_pickaxe', evaluation, {
     executionTrace: trace,
     context: { scenarioId: 'world_seed_1' }
@@ -117,7 +116,6 @@ test('4.6.1 Evaluation Recording: Stores trace, evaluator result, conditions, fa
 test('4.6.2 Promotion Policy: Requires 3 verified independent successes and excludes resource shortages from penalties', () => {
   let proc = buildSampleProc('craft_stone_pickaxe');
 
-  // Enregistrer : Première réussite (scénario A)
   let res = applyEvaluationToLifecycle(proc, buildEval(), {
     context: { scenarioId: 'scenario_a' },
     requireIndependentScenarios: true
@@ -125,7 +123,6 @@ test('4.6.2 Promotion Policy: Requires 3 verified independent successes and excl
   proc = res.updatedProcedure;
   assert.equal(proc.status, 'experimental');
 
-  // Enregistrer : Échec lié à un manque de ressources (ne doit pas pénaliser la promotion)
   res = applyEvaluationToLifecycle(
     proc,
     buildEval({
@@ -147,7 +144,6 @@ test('4.6.2 Promotion Policy: Requires 3 verified independent successes and excl
   assert.equal(proc.metadata.penalizableFailureCount, 0);
   assert.equal(proc.metadata.failureBreakdown.resource_shortage, 1);
 
-  // Enregistrer : Deuxième et troisième réussites mais clonées sur le même scenario_a
   res = applyEvaluationToLifecycle(proc, buildEval(), {
     context: { scenarioId: 'scenario_a' },
     requireIndependentScenarios: true
@@ -160,12 +156,10 @@ test('4.6.2 Promotion Policy: Requires 3 verified independent successes and excl
   });
   proc = res.updatedProcedure;
 
-  // Vérifier : Refuser la promotion car les 3 réussites proviennent du même scénario répété
   assert.equal(proc.status, 'experimental');
   assert.equal(res.promotionAnalysis.eligible, false);
   assert.equal(res.promotionAnalysis.distinctScenarioCount, 1);
 
-  // Enregistrer : Réussite dans un scénario indépendant (scenario_b)
   res = applyEvaluationToLifecycle(proc, buildEval(), {
     context: { scenarioId: 'scenario_b' },
     requireIndependentScenarios: true
@@ -217,7 +211,6 @@ test('4.6.3 Failure Classification & Deprecation: Distinguishes failure categori
     FAILURE_CATEGORIES.OBJECTIVE_NOT_ACHIEVED
   );
 
-  // Tester : Cinq échecs de ressources consécutifs ne déprécient JAMAIS la procédure
   let proc = buildSampleProc('mine_diamond', { status: 'validated' });
   for (let i = 0; i < 5; i++) {
     const out = applyEvaluationToLifecycle(
@@ -236,7 +229,6 @@ test('4.6.3 Failure Classification & Deprecation: Distinguishes failure categori
   assert.equal(proc.status, 'validated');
   assert.equal(proc.metadata.deprecationCandidate, false);
 
-  // Tester : Trois échecs techniques consécutifs dans des conditions valides déprécient la procédure
   for (let i = 0; i < 3; i++) {
     const out = applyEvaluationToLifecycle(
       proc,
@@ -299,11 +291,9 @@ test('4.6.4 Versioning & Improvement: Creates experimental v2 linked to validate
     assert.equal(v2.metadata.rootId, 'craft_stone_pickaxe');
     assert.deepEqual(v2.metadata.lineage, ['craft_stone_pickaxe']);
 
-    // Vérifier : La v1 validée est intacte en mémoire
     assert.equal(memory.get('craft_stone_pickaxe').status, 'validated');
     assert.equal(memory.get('craft_stone_pickaxe').version, 1);
 
-    // Enregistrer : Un échec technique sur la v2 expérimentale
     await memory.recordEvaluation(
       v2.id,
       buildEval({
@@ -358,7 +348,6 @@ test('4.6.5 Knowledge Exploitation: Exposes validated procedures, success rates,
     name: 'Craft Stone Pickaxe Experimental Variant'
   });
 
-  // Enregistrer : Un échec de ressources sur la variante v2 pour alimenter les limites connues et l'historique d'échecs
   await memory.recordEvaluation(
     'craft_stone_pickaxe_v2',
     buildEval({

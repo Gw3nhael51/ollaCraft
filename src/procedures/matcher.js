@@ -191,7 +191,7 @@ class ObjectiveGenerationTracker {
   importState(data) {
     if (!Array.isArray(data)) return;
     for (const item of data) {
-      if (item && item.objectiveKey) {
+      if (item?.objectiveKey) {
         this.attempts.set(item.objectiveKey, { ...item });
       }
     }

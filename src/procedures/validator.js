@@ -610,9 +610,9 @@ function validateProcedure(procedure, actionRegistry, options = {}) {
   const preconditionedItems = new Set();
   if (Array.isArray(procedure.preconditions)) {
     for (const pre of procedure.preconditions) {
-      if (pre && pre.type === 'inventory_item') {
+      if (pre?.type === 'inventory_item') {
         const item = pre.item || pre.itemName;
-        const count = pre.count !== undefined ? pre.count : (pre.expected !== undefined ? pre.expected : 1);
+        const count = pre.count ?? pre.expected ?? 1;
         const op = normalizeOperator(pre.operator || 'gte');
         if (typeof item === 'string' && count > 0 && op !== 'lt' && op !== 'eq') {
           preconditionedItems.add(item);
@@ -841,7 +841,7 @@ function validateProcedure(procedure, actionRegistry, options = {}) {
         const producer = firstItemProductionStep.get(targetItem);
         const alreadyAcquired = acquiredItemsSoFar.has(targetItem);
 
-        if (!alreadyAcquired && producer && producer.index > index) {
+        if (!alreadyAcquired && producer?.index > index) {
           errors.push(createValidationError(
             'MISSING_LOGICAL_DEPENDENCY',
             `Step '${step.id}' (${step.action}) uses item '${targetItem}' before step '${producer.stepId}' (${producer.action}) produces or acquires it`,

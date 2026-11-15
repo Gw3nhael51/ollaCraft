@@ -24,10 +24,10 @@ class ActionRegistry {
    */
   register(actionDefinition) {
     if (!actionDefinition || typeof actionDefinition.id !== 'string') {
-      throw new Error("Action definition must provide a valid 'id' string");
+      throw new TypeError("Action definition must provide a valid 'id' string");
     }
     if (typeof actionDefinition.handler !== 'function') {
-      throw new Error(`Action '${actionDefinition.id}' must provide an executable handler function`);
+      throw new TypeError(`Action '${actionDefinition.id}' must provide an executable handler function`);
     }
 
     this.actions.set(actionDefinition.id, {

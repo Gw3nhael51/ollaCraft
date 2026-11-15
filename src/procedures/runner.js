@@ -74,9 +74,10 @@ function buildExecutionTrace({
  * @returns {{ safe: boolean, reason: string|null }} Verdict de sécurité
  */
 function checkStepSafety(step, resolvedParams, options = {}) {
+  const defaultList = Array.isArray(options.dangerousActions) ? options.dangerousActions : [];
   const dangerousActions = options.dangerousActions instanceof Set
     ? options.dangerousActions
-    : new Set(Array.isArray(options.dangerousActions) ? options.dangerousActions : []);
+    : new Set(defaultList);
 
   if (dangerousActions.has(step.action)) {
     return {
@@ -224,7 +225,7 @@ async function executeProcedure(bot, procedure, options = {}) {
   for (const [paramName, paramDef] of Object.entries(procedure.parameters || {})) {
     if (inputs[paramName] !== undefined) {
       resolvedParameters[paramName] = inputs[paramName];
-    } else if (paramDef && paramDef.default !== undefined) {
+    } else if (paramDef?.default !== undefined) {
       resolvedParameters[paramName] = paramDef.default;
     }
   }
@@ -285,7 +286,7 @@ async function executeProcedure(bot, procedure, options = {}) {
   }
 
   const executePipeline = async () => {
-    if (!options.skipPreconditions && procedure.preconditions && procedure.preconditions.length > 0) {
+    if (!options.skipPreconditions && procedure.preconditions?.length > 0) {
       const preResult = await evaluatePreconditions(bot, procedure.preconditions, context);
       if (!preResult.success) {
         return createResult(
@@ -457,7 +458,7 @@ async function executeProcedure(bot, procedure, options = {}) {
     }
 
     let postResult = null;
-    if (!options.skipPostconditions && procedure.postconditions && procedure.postconditions.length > 0) {
+    if (!options.skipPostconditions && procedure.postconditions?.length > 0) {
       postResult = await evaluatePostconditions(bot, procedure.postconditions, context);
       if (!postResult.success) {
         return createResult(
