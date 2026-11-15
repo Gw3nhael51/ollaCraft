@@ -24,8 +24,8 @@ const STATUS_WEIGHTS = Object.freeze({
 function sanitizeProcedureId(rawId) {
   const cleaned = String(rawId || 'experimental_proc')
     .toLowerCase()
-    .replace(/[^a-z0-9_-]+/g, '_')
-    .replace(/^_+|_+$/g, '')
+    .replaceAll(/[^a-z0-9_-]+/g, '_')
+    .replaceAll(/^_+|_+$/g, '')
     .slice(0, 48);
 
   return cleaned.length > 0 ? cleaned : 'experimental_proc';
@@ -69,7 +69,7 @@ function generateUniqueProcedureId(baseId, existingIds = []) {
  */
 function updateProcedureStats(procedure, successOrEvaluation, options = {}) {
   if (!procedure || typeof procedure !== 'object') {
-    throw new Error('Procedure must be a valid object');
+    throw new TypeError('Procedure must be a valid object');
   }
 
   if (successOrEvaluation && typeof successOrEvaluation === 'object') {
@@ -87,14 +87,10 @@ function updateProcedureStats(procedure, successOrEvaluation, options = {}) {
 
   let nextStatus = procedure.status || 'experimental';
 
-  if (nextStatus === 'experimental') {
-    if (executionCount >= 3 && confidenceScore >= 0.75) {
-      nextStatus = 'validated';
-    }
-  } else if (nextStatus === 'validated') {
-    if (executionCount >= 5 && confidenceScore < 0.50) {
-      nextStatus = 'deprecated';
-    }
+  if (nextStatus === 'experimental' && executionCount >= 3 && confidenceScore >= 0.75) {
+    nextStatus = 'validated';
+  } else if (nextStatus === 'validated' && executionCount >= 5 && confidenceScore < 0.5) {
+    nextStatus = 'deprecated';
   }
 
   return {
@@ -132,7 +128,7 @@ function selectBestProcedure(procedures, criteria = {}) {
       return false;
     }
 
-    const confidence = proc.metadata?.confidenceScore !== undefined ? proc.metadata.confidenceScore : 0.5;
+    const confidence = proc.metadata?.confidenceScore === undefined ? 0.5 : proc.metadata.confidenceScore;
     if (confidence < minConfidence) {
       return false;
     }
@@ -151,14 +147,14 @@ function selectBestProcedure(procedures, criteria = {}) {
   }
 
   candidates.sort((a, b) => {
-    const weightA = STATUS_WEIGHTS[a.status] !== undefined ? STATUS_WEIGHTS[a.status] : 1;
-    const weightB = STATUS_WEIGHTS[b.status] !== undefined ? STATUS_WEIGHTS[b.status] : 1;
+    const weightA = STATUS_WEIGHTS[a.status] === undefined ? 1 : STATUS_WEIGHTS[a.status];
+    const weightB = STATUS_WEIGHTS[b.status] === undefined ? 1 : STATUS_WEIGHTS[b.status];
     if (weightA !== weightB) {
       return weightB - weightA;
     }
 
-    const confA = a.metadata?.confidenceScore !== undefined ? a.metadata.confidenceScore : 0.5;
-    const confB = b.metadata?.confidenceScore !== undefined ? b.metadata.confidenceScore : 0.5;
+    const confA = a.metadata?.confidenceScore === undefined ? 0.5 : a.metadata.confidenceScore;
+    const confB = b.metadata?.confidenceScore === undefined ? 0.5 : b.metadata.confidenceScore;
     if (confA !== confB) {
       return confB - confA;
     }
@@ -169,6 +165,79 @@ function selectBestProcedure(procedures, criteria = {}) {
   });
 
   return candidates[0];
+}
+
+/**
+ * Collecter les identifiants existants sur disque et vérifier les collisions avec une procédure validée
+ * @param {string|null} targetStorageDir Répertoire de stockage sur disque
+ * @param {object} candidateProcedure Procédure candidate
+ * @param {Set<string>} existingIds Ensemble des identifiants en mémoire à enrichir
+ * @param {boolean} rejectOnValidatedCollision Interdire la collision avec une procédure validée
+ * @returns {Promise<object|null>} Résultat d'erreur en cas de collision interdite ou null
+ */
+async function collectDiskIdsAndCheckCollision(targetStorageDir, candidateProcedure, existingIds, rejectOnValidatedCollision) {
+  if (!targetStorageDir) return null;
+
+  const diskList = await listProcedures(targetStorageDir);
+  if (diskList.success && Array.isArray(diskList.data?.procedures)) {
+    for (const diskProc of diskList.data.procedures) {
+      existingIds.add(diskProc.id);
+      if (diskProc.id === candidateProcedure.id && diskProc.status === 'validated' && rejectOnValidatedCollision) {
+        return createResult(
+          false,
+          'validated_overwrite_forbidden',
+          { id: candidateProcedure.id, existingProcedure: diskProc },
+          `Cannot overwrite existing validated procedure '${candidateProcedure.id}' on disk`
+        );
+      }
+    }
+    return null;
+  }
+
+  if (candidateProcedure.id) {
+    const diskLoaded = await loadProcedure(candidateProcedure.id, targetStorageDir);
+    if (diskLoaded.success && diskLoaded.data?.procedure) {
+      existingIds.add(candidateProcedure.id);
+    }
+  }
+  return null;
+}
+
+/**
+ * Calculer la version et la lignée d'une procédure expérimentale candidate
+ * @param {object} candidateProcedure Procédure candidate
+ * @param {object|null} parentProcedure Procédure parente éventuelle
+ * @param {string} uniqueId Identifiant unique attribué
+ * @returns {{ resolvedVersion: number, rootId: string, parentId: string|null, lineage: string[] }} Métadonnées de lignée
+ */
+function resolveCandidateLineage(candidateProcedure, parentProcedure, uniqueId) {
+  const baseMetadata = candidateProcedure.metadata || {};
+  const candidateVer = Number.isInteger(candidateProcedure.version) && candidateProcedure.version >= 1
+    ? candidateProcedure.version
+    : 1;
+  const resolvedVersion = parentProcedure
+    ? Math.max((parentProcedure.version || 1) + 1, candidateVer)
+    : candidateVer;
+
+  const rootId = baseMetadata.rootId ||
+    parentProcedure?.metadata?.rootId ||
+    parentProcedure?.id ||
+    candidateProcedure.id ||
+    uniqueId;
+
+  const parentId = baseMetadata.parentId || parentProcedure?.id || null;
+  let lineage = [];
+  if (Array.isArray(baseMetadata.lineage)) {
+    lineage = [...baseMetadata.lineage];
+  } else if (Array.isArray(parentProcedure?.metadata?.lineage)) {
+    lineage = [...parentProcedure.metadata.lineage];
+  }
+
+  if (parentId && !lineage.includes(parentId)) {
+    lineage.push(parentId);
+  }
+
+  return { resolvedVersion, rootId, parentId, lineage };
 }
 
 /**
@@ -196,7 +265,7 @@ async function registerExperimentalProcedure(memory, candidateProcedure, options
   const targetStorageDir = options.storageDir || memory.storageDir || null;
 
   const existingInMem = candidateProcedure.id ? memory.get(candidateProcedure.id) : null;
-  if (existingInMem && existingInMem.status === 'validated' && options.rejectOnValidatedCollision) {
+  if (existingInMem?.status === 'validated' && options.rejectOnValidatedCollision) {
     return createResult(
       false,
       'validated_overwrite_forbidden',
@@ -206,32 +275,13 @@ async function registerExperimentalProcedure(memory, candidateProcedure, options
   }
 
   const existingIds = new Set(memory.getAll().map(p => p.id));
-
-  if (targetStorageDir) {
-    const diskList = await listProcedures(targetStorageDir);
-    if (diskList.success && Array.isArray(diskList.data?.procedures)) {
-      for (const diskProc of diskList.data.procedures) {
-        existingIds.add(diskProc.id);
-        if (
-          diskProc.id === candidateProcedure.id &&
-          diskProc.status === 'validated' &&
-          options.rejectOnValidatedCollision
-        ) {
-          return createResult(
-            false,
-            'validated_overwrite_forbidden',
-            { id: candidateProcedure.id, existingProcedure: diskProc },
-            `Cannot overwrite existing validated procedure '${candidateProcedure.id}' on disk`
-          );
-        }
-      }
-    } else if (candidateProcedure.id) {
-      const diskLoaded = await loadProcedure(candidateProcedure.id, targetStorageDir);
-      if (diskLoaded.success && diskLoaded.data?.procedure) {
-        existingIds.add(candidateProcedure.id);
-      }
-    }
-  }
+  const diskCollision = await collectDiskIdsAndCheckCollision(
+    targetStorageDir,
+    candidateProcedure,
+    existingIds,
+    Boolean(options.rejectOnValidatedCollision)
+  );
+  if (diskCollision) return diskCollision;
 
   const parentProcedure = options.parentProcedure || existingInMem || null;
   const uniqueId = generateUniqueProcedureId(
@@ -239,30 +289,11 @@ async function registerExperimentalProcedure(memory, candidateProcedure, options
     existingIds
   );
 
-  const now = new Date().toISOString();
-  const baseMetadata = candidateProcedure.metadata || {};
-
-  // Calculer : Incrémenter la version et préserver la lignée si une procédure parente existe
-  const resolvedVersion = parentProcedure
-    ? Math.max((parentProcedure.version || 1) + 1, candidateProcedure.version || 1)
-    : (Number.isInteger(candidateProcedure.version) && candidateProcedure.version >= 1
-        ? candidateProcedure.version
-        : 1);
-
-  const rootId = baseMetadata.rootId ||
-    parentProcedure?.metadata?.rootId ||
-    parentProcedure?.id ||
-    candidateProcedure.id ||
-    uniqueId;
-
-  const parentId = baseMetadata.parentId || parentProcedure?.id || null;
-  const lineage = Array.isArray(baseMetadata.lineage)
-    ? [...baseMetadata.lineage]
-    : (Array.isArray(parentProcedure?.metadata?.lineage) ? [...parentProcedure.metadata.lineage] : []);
-
-  if (parentId && !lineage.includes(parentId)) {
-    lineage.push(parentId);
-  }
+  const { resolvedVersion, rootId, parentId, lineage } = resolveCandidateLineage(
+    candidateProcedure,
+    parentProcedure,
+    uniqueId
+  );
 
   const preparedProcedure = {
     ...candidateProcedure,
@@ -276,15 +307,13 @@ async function registerExperimentalProcedure(memory, candidateProcedure, options
     return createResult(
       false,
       'validation_failed',
-      {
-        errors: validation.errors,
-        warnings: validation.warnings,
-        analysis: validation.analysis
-      },
+      { errors: validation.errors, warnings: validation.warnings, analysis: validation.analysis },
       `Semantic validation failed: ${validation.errors.join('; ')}`
     );
   }
 
+  const now = new Date().toISOString();
+  const baseMetadata = candidateProcedure.metadata || {};
   const finalProcedure = {
     ...preparedProcedure,
     status: 'experimental',
@@ -296,8 +325,8 @@ async function registerExperimentalProcedure(memory, candidateProcedure, options
       successCount: 0,
       failureCount: 0,
       penalizableFailureCount: 0,
-      confidenceScore: baseMetadata.confidenceScore !== undefined ? baseMetadata.confidenceScore : 0.5,
-      effectiveConfidenceScore: baseMetadata.effectiveConfidenceScore !== undefined ? baseMetadata.effectiveConfidenceScore : 0.5,
+      confidenceScore: baseMetadata.confidenceScore ?? 0.5,
+      effectiveConfidenceScore: baseMetadata.effectiveConfidenceScore ?? 0.5,
       rootId,
       parentId,
       parentVersion: parentProcedure ? (parentProcedure.version || 1) : null,
@@ -402,7 +431,7 @@ class ProcedureMemory {
   /**
    * Créer et enregistrer une nouvelle version expérimentale dérivée d'une procédure existante
    * @param {string} baseProcedureId Identifiant de la procédure d'origine
-   * @param {object} candidateChanges Modifications proposées (étapes, préconditions, postconditions)
+   * @param {object} [candidateChanges={}] Modifications proposées (étapes, préconditions, postconditions)
    * @param {object} [options={}] Options de validation et de persistance
    * @returns {Promise<{ success: boolean, reason: string, data: object|null, error: string|null }>} Résultat de création de la version
    */

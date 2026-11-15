@@ -87,6 +87,7 @@ function createBenchBot(opts = {}) {
 
 /**
  * Exécuter la suite complète de benchmarks d'OllaCraft et afficher un rapport structuré
+ * @returns {Promise<void>} Promesse résolue après l'affichage du rapport
  */
 async function runBenchmarks() {
   const registry = createDefaultRegistry();
@@ -129,7 +130,6 @@ async function runBenchmarks() {
     }
   });
 
-  // Mesurer : Validation statique et sémantique DSL
   const validationIterations = 1000;
   const tValStart = performance.now();
   for (let i = 0; i < validationIterations; i++) {
@@ -140,7 +140,6 @@ async function runBenchmarks() {
   const valAvgMs = tValTotal / validationIterations;
   const valOpsPerSec = Math.round((validationIterations / tValTotal) * 1000);
 
-  // Mesurer : Exécution supervisée + Évaluation indépendante + Détection de contradictions
   const execIterations = 100;
   let falsePositivesCaught = 0;
   const tExecStart = performance.now();
@@ -165,7 +164,6 @@ async function runBenchmarks() {
   const execAvgMs = tExecTotal / execIterations;
   const falsePositiveCatchRate = (falsePositivesCaught / (execIterations / 2)) * 100;
 
-  // Mesurer : Cycle de vie 4.6 (Promotion, Versionnement, Extraction de connaissances)
   const lifecycleIterations = 200;
   const tLifeStart = performance.now();
   const memory = new ProcedureMemory();
@@ -184,7 +182,6 @@ async function runBenchmarks() {
   const tLifeTotal = performance.now() - tLifeStart;
   const lifeAvgMs = tLifeTotal / lifecycleIterations;
 
-  // Mesurer : Scan 3D unifié de l'environnement (Rayon 16 blocs = 33x33x33 = 35 937 voxels)
   const scanBot = createBenchBot();
   const scanIterations = 10;
   const tScanStart = performance.now();
@@ -194,18 +191,15 @@ async function runBenchmarks() {
   const tScanTotal = performance.now() - tScanStart;
   const scanAvgMs = tScanTotal / scanIterations;
 
-  // Simuler : Économie d'appels LLM et de tokens sur 10 épisodes d'un objectif à 3 étapes
   const episodes = 10;
   const stepsPerObjective = 3;
   const avgTokensPerPlayerCall = 650;
   const avgTokensPerManagerCall = 520;
   const avgTokensPerGeneratorCall = 900;
 
-  // Calculer : Coût en ReAct pur sans mémoire procédurale (3 appels Joueur + 1 appel Manager par épisode)
   const reactLlmCalls = episodes * (stepsPerObjective + 1);
   const reactTotalTokens = episodes * (stepsPerObjective * avgTokensPerPlayerCall + avgTokensPerManagerCall);
 
-  // Calculer : Coût avec OllaCraft Phase 4 (1 génération initiale + 3 exécutions expérimentales supervisées, puis 7 exécutions validées directes)
   const procLlmCalls = 1 + 3;
   const procTotalTokens = avgTokensPerGeneratorCall + 3 * avgTokensPerManagerCall;
   const tokenSavingsPct = (((reactTotalTokens - procTotalTokens) / reactTotalTokens) * 100).toFixed(1);
