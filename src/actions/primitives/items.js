@@ -270,7 +270,7 @@ function checkConsumptionEffect(bot, itemName, before, includeSaturation = false
   const finalSaturation = bot.foodSaturation ?? before.saturation;
 
   const baseChanged = finalCount < before.count || finalFood > before.food || finalHealth > before.health;
-  const consumed = includeSaturation ? (baseChanged || finalSaturation > before.saturation) : baseChanged;
+  const consumed = Boolean(baseChanged || (includeSaturation && finalSaturation > before.saturation));
 
   return {
     consumed,

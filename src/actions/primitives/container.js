@@ -440,7 +440,7 @@ async function transferItem(bot, containerWindow, sourceSlot, destSlot, count = 
     const finalSource = containerWindow.slots[sourceSlot];
     const finalDest = containerWindow.slots[destSlot];
     const transferred = (!finalSource || finalSource.count < initialSourceCount) &&
-      Boolean(finalDest && finalDest.count > initialDestCount);
+      Boolean(finalDest?.count > initialDestCount);
 
     if (transferred) {
       return createResult(true, 'transferred', { sourceSlot, destSlot, count }, null);

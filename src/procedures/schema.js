@@ -221,7 +221,7 @@ function resolveReference(refString, context) {
     let current = stepResult;
     for (const segment of parsed.path) {
       if (current === null || current === undefined || typeof current !== 'object') {
-        throw new Error(`Reference '${refString}' could not traverse property '${segment}' on non-object`);
+        throw new TypeError(`Reference '${refString}' could not traverse property '${segment}' on non-object`);
       }
       current = current[segment];
     }

@@ -13,13 +13,13 @@ const MAX_CORRECTION_ATTEMPTS = 2;
  */
 function extractProcedureJson(rawText) {
   if (typeof rawText !== 'string' || rawText.trim().length === 0) {
-    throw new Error('Empty response from model');
+    throw new TypeError('Empty response from model');
   }
 
   let cleaned = rawText.trim();
 
-  const markdownMatch = cleaned.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
-  if (markdownMatch && markdownMatch[1]) {
+  const markdownMatch = /```(?:json)?\s*([\s\S]*?)\s*```/i.exec(cleaned);
+  if (markdownMatch?.[1]) {
     cleaned = markdownMatch[1].trim();
   }
 
