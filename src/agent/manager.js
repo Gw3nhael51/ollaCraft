@@ -357,14 +357,18 @@ const MANAGER_HEARTBEAT_INTERVAL = 3;
  * @returns {boolean} Vrai si le cycle Manager doit s'exécuter
  */
 function shouldRunManager(bot, currentState = state, objectiveChanged = false) {
-  if (objectiveChanged || !currentState.managerSubGoal) return true;
-  if (currentState.lastActionResult && !currentState.lastActionResult.success) return true;
-  if (detectActionLoop(currentState.actionHistory || [])) return true;
-
   const { isInventoryCluttered } = require('../actions/behaviors/items/storage');
-  if (isInventoryCluttered(bot)) return true;
+  const hasFailedAction = Boolean(currentState.lastActionResult && !currentState.lastActionResult.success);
+  const hasReachedHeartbeat = (currentState.cyclesSinceLastManager || 0) + 1 >= MANAGER_HEARTBEAT_INTERVAL;
 
-  return (currentState.cyclesSinceLastManager || 0) + 1 >= MANAGER_HEARTBEAT_INTERVAL;
+  return Boolean(
+    objectiveChanged ||
+    !currentState.managerSubGoal ||
+    hasFailedAction ||
+    detectActionLoop(currentState.actionHistory || []) ||
+    isInventoryCluttered(bot) ||
+    hasReachedHeartbeat
+  );
 }
 
 /**
