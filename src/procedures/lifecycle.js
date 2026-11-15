@@ -26,6 +26,15 @@ const DEFAULT_DEPRECATION_POLICY = Object.freeze({
 });
 
 /**
+ * Retirer les suffixes de version ou d'expérimentation d'un identifiant de procédure
+ * @param {string} id Identifiant à nettoyer
+ * @returns {string} Identifiant racine
+ */
+function stripVersionSuffix(id) {
+  return String(id || '').replace(/_v\d+$/, '').replace(/_exp_\d+$/, '');
+}
+
+/**
  * Générer un identifiant unique d'exécution pour prévenir les doubles comptabilisations
  * @param {string} [procedureId='proc'] Identifiant de la procédure exécutée
  * @returns {string} Identifiant d'exécution unique
@@ -36,6 +45,21 @@ function generateExecutionId(procedureId = 'proc') {
 }
 
 /**
+ * Résumer les étapes d'une trace d'exécution pour le calcul de signature de scénario
+ * @param {object} executionTrace Trace du Runner
+ * @returns {Array<object>} Étapes résumées
+ */
+function summarizeTraceStepsForScenario(executionTrace) {
+  const steps = Array.isArray(executionTrace?.steps) ? executionTrace.steps : [];
+  return steps.map(s => ({
+    id: s.stepId || s.id,
+    action: s.action,
+    params: s.parameters || {},
+    outputPos: s.output?.position || s.output?.placedPosition || null
+  }));
+}
+
+/**
  * Calculer une empreinte de scénario pour mesurer l'indépendance entre plusieurs exécutions
  * @param {object} [executionTrace={}] Trace du Runner
  * @param {object} [evaluation={}] Résultat de l'Evaluator
@@ -43,34 +67,21 @@ function generateExecutionId(procedureId = 'proc') {
  * @returns {string} Clé de scénario normalisée
  */
 function computeScenarioSignature(executionTrace = {}, evaluation = {}, context = {}) {
-  if (typeof context.scenarioId === 'string' && context.scenarioId.trim().length > 0) {
-    return context.scenarioId.trim();
+  const explicitScenario = context.scenarioId || executionTrace.scenarioId;
+  if (typeof explicitScenario === 'string' && explicitScenario.trim().length > 0) {
+    return explicitScenario.trim();
   }
 
-  if (typeof executionTrace.scenarioId === 'string' && executionTrace.scenarioId.trim().length > 0) {
-    return executionTrace.scenarioId.trim();
-  }
-
-  const steps = Array.isArray(executionTrace?.steps) ? executionTrace.steps : [];
-  const stepParamSummary = steps.map(s => ({
-    id: s.stepId || s.id,
-    action: s.action,
-    params: s.parameters || {},
-    outputPos: s.output?.position || s.output?.placedPosition || null
-  }));
-
+  const verifiedFacts = Array.isArray(evaluation?.verifiedFacts) ? evaluation.verifiedFacts : [];
   const payload = {
     parameters: context.parameters || executionTrace.parameters || {},
     botPosition: context.botPosition || null,
     worldSeed: context.worldSeed || null,
-    verifiedActuals: Array.isArray(evaluation?.verifiedFacts)
-      ? evaluation.verifiedFacts.map(f => ({ type: f.type, target: f.target, actual: f.actual }))
-      : [],
-    steps: stepParamSummary
+    verifiedActuals: verifiedFacts.map(f => ({ type: f.type, target: f.target, actual: f.actual })),
+    steps: summarizeTraceStepsForScenario(executionTrace)
   };
 
-  const serialized = JSON.stringify(payload);
-  const hash = crypto.createHash('sha256').update(serialized).digest('hex').slice(0, 12);
+  const hash = crypto.createHash('sha256').update(JSON.stringify(payload)).digest('hex').slice(0, 12);
   return `scen_${hash}`;
 }
 
@@ -100,31 +111,18 @@ function classifyFailureCause(evaluation = {}, executionTrace = {}) {
   }
 
   const hasContradictions = Array.isArray(evaluation.contradictions) && evaluation.contradictions.length > 0;
-  if (
-    evaluation.status === 'achieved' &&
+  const isCompleteSuccess = evaluation.status === 'achieved' &&
     evaluation.objectiveAchieved === true &&
     evaluation.postconditionsPassed === true &&
-    !hasContradictions
-  ) {
-    return null;
-  }
+    !hasContradictions;
 
-  if (hasContradictions) {
-    return FAILURE_CATEGORIES.CONTRADICTION;
-  }
-
-  if (evaluation.resourceShortage === true) {
-    return FAILURE_CATEGORIES.RESOURCE_SHORTAGE;
-  }
-
-  if (isEvaluationInconclusive(evaluation)) {
-    return FAILURE_CATEGORIES.INCONCLUSIVE;
-  }
-
+  if (isCompleteSuccess) return null;
+  if (hasContradictions) return FAILURE_CATEGORIES.CONTRADICTION;
+  if (evaluation.resourceShortage === true) return FAILURE_CATEGORIES.RESOURCE_SHORTAGE;
+  if (isEvaluationInconclusive(evaluation)) return FAILURE_CATEGORIES.INCONCLUSIVE;
   if (evaluation.executionSuccess === false || executionTrace?.success === false) {
     return FAILURE_CATEGORIES.EXECUTION_ERROR;
   }
-
   return FAILURE_CATEGORIES.OBJECTIVE_NOT_ACHIEVED;
 }
 
@@ -149,29 +147,26 @@ function extractStepTraces(normalizedTrace) {
 function buildTraceSummaryObject(normalizedTrace, normalizedEval, steps) {
   const failedStep = steps.find(s => s && !s.success) || null;
   const defaultStatus = normalizedTrace.success ? 'completed' : 'failed';
-  const executionSuccess = normalizedEval.executionSuccess === undefined
-    ? Boolean(normalizedTrace.success)
-    : Boolean(normalizedEval.executionSuccess);
-
-  let failedStepId = normalizedTrace.failedStepId || null;
-  let failedStepAction = null;
-  let failureReason = normalizedTrace.reason || null;
-
-  if (failedStep) {
-    failedStepId = failedStep.stepId || failedStep.id || null;
-    failedStepAction = failedStep.action || null;
-    failureReason = failedStep.reason || failedStep.error || null;
-  }
+  const executionSuccess = Boolean(normalizedEval.executionSuccess ?? normalizedTrace.success);
 
   return {
     runnerStatus: normalizedTrace.status || defaultStatus,
     executionSuccess,
     stepsExecuted: steps.length,
     durationMs: normalizedTrace.executionDurationMs || normalizedTrace.durationMs || 0,
-    failedStepId,
-    failedStepAction,
-    failureReason
+    failedStepId: failedStep?.stepId || failedStep?.id || normalizedTrace.failedStepId || null,
+    failedStepAction: failedStep?.action || null,
+    failureReason: failedStep?.reason || failedStep?.error || normalizedTrace.reason || null
   };
+}
+
+/**
+ * Copier un tableau de conditions d'évaluation ou retourner un tableau vide
+ * @param {any} arr Valeur candidate
+ * @returns {Array<object>} Tableau cloné
+ */
+function cloneConditionArray(arr) {
+  return Array.isArray(arr) ? [...arr] : [];
 }
 
 /**
@@ -181,10 +176,10 @@ function buildTraceSummaryObject(normalizedTrace, normalizedEval, steps) {
  * @returns {object} Résumé structuré de l'évaluation
  */
 function buildEvaluationSummaryObject(normalizedEval, isSuccess) {
-  const verifiedFacts = Array.isArray(normalizedEval.verifiedFacts) ? [...normalizedEval.verifiedFacts] : [];
-  const failedConditions = Array.isArray(normalizedEval.failedConditions) ? [...normalizedEval.failedConditions] : [];
-  const unknownConditions = Array.isArray(normalizedEval.unknownConditions) ? [...normalizedEval.unknownConditions] : [];
-  const contradictions = Array.isArray(normalizedEval.contradictions) ? [...normalizedEval.contradictions] : [];
+  const verifiedFacts = cloneConditionArray(normalizedEval.verifiedFacts);
+  const failedConditions = cloneConditionArray(normalizedEval.failedConditions);
+  const unknownConditions = cloneConditionArray(normalizedEval.unknownConditions);
+  const contradictions = cloneConditionArray(normalizedEval.contradictions);
   const fallbackConfidence = isSuccess ? 1 : 0;
   const confidence = typeof normalizedEval.confidence === 'number' ? normalizedEval.confidence : fallbackConfidence;
 
@@ -240,6 +235,8 @@ function buildEvaluationRecord({
     normalizedEval.postconditionsPassed === true;
 
   const defaultEvalStatus = isSuccess ? 'achieved' : 'not_achieved';
+  const isNonPenalizableCategory = failureCategory === FAILURE_CATEGORIES.RESOURCE_SHORTAGE ||
+    failureCategory === FAILURE_CATEGORIES.INCONCLUSIVE;
 
   return {
     executionId,
@@ -251,14 +248,29 @@ function buildEvaluationRecord({
     success: isSuccess,
     status: normalizedEval.status || defaultEvalStatus,
     failureCategory,
-    penalizableFailure: Boolean(
-      !isSuccess &&
-      failureCategory !== FAILURE_CATEGORIES.RESOURCE_SHORTAGE &&
-      failureCategory !== FAILURE_CATEGORIES.INCONCLUSIVE
-    ),
+    penalizableFailure: Boolean(!isSuccess && !isNonPenalizableCategory),
     traceSummary: buildTraceSummaryObject(normalizedTrace, normalizedEval, steps),
     evaluationSummary: buildEvaluationSummaryObject(normalizedEval, isSuccess)
   };
+}
+
+/**
+ * Vérifier si une entrée d'historique satisfait tous les critères d'une réussite qualifiée
+ * @param {object} entry Entrée d'historique d'évaluation
+ * @param {number} minEvaluationConfidence Confiance minimale exigée
+ * @returns {boolean} Vrai si la réussite est qualifiée
+ */
+function isQualifiedSuccessEntry(entry, minEvaluationConfidence) {
+  const evalSum = entry.evaluationSummary || {};
+  return (
+    entry.success === true &&
+    entry.status === 'achieved' &&
+    evalSum.objectiveAchieved === true &&
+    evalSum.postconditionsPassed === true &&
+    evalSum.observabilitySufficient === true &&
+    evalSum.contradictionsCount === 0 &&
+    evalSum.confidence >= minEvaluationConfidence
+  );
 }
 
 /**
@@ -279,23 +291,8 @@ function evaluatePromotionEligibility(evaluationHistory = [], policy = {}) {
   const reasons = [];
 
   const nonArtificial = history.filter(entry => !entry.artificialRepetition);
-
-  const qualifiedSuccesses = nonArtificial.filter(entry => {
-    const evalSum = entry.evaluationSummary || {};
-    return (
-      entry.success === true &&
-      entry.status === 'achieved' &&
-      evalSum.objectiveAchieved === true &&
-      evalSum.postconditionsPassed === true &&
-      evalSum.observabilitySufficient === true &&
-      evalSum.contradictionsCount === 0 &&
-      evalSum.confidence >= cfg.minEvaluationConfidence
-    );
-  });
-
-  const distinctScenarios = new Set(
-    qualifiedSuccesses.map(entry => entry.scenarioKey || entry.executionId)
-  );
+  const qualifiedSuccesses = nonArtificial.filter(entry => isQualifiedSuccessEntry(entry, cfg.minEvaluationConfidence));
+  const distinctScenarios = new Set(qualifiedSuccesses.map(entry => entry.scenarioKey || entry.executionId));
 
   const relevantExecutions = nonArtificial.filter(entry =>
     entry.failureCategory !== FAILURE_CATEGORIES.RESOURCE_SHORTAGE &&
@@ -313,9 +310,7 @@ function evaluatePromotionEligibility(evaluationHistory = [], policy = {}) {
   );
 
   if (qualifiedSuccesses.length < cfg.minSuccessfulExecutions) {
-    reasons.push(
-      `Requires at least ${cfg.minSuccessfulExecutions} fully verified successes (found ${qualifiedSuccesses.length})`
-    );
+    reasons.push(`Requires at least ${cfg.minSuccessfulExecutions} fully verified successes (found ${qualifiedSuccesses.length})`);
   }
 
   const requiredDistinct = policy.requireIndependentScenarios === false
@@ -323,21 +318,15 @@ function evaluatePromotionEligibility(evaluationHistory = [], policy = {}) {
     : Math.min(cfg.minDistinctScenarios, cfg.minSuccessfulExecutions);
 
   if (distinctScenarios.size < requiredDistinct) {
-    reasons.push(
-      `Requires at least ${requiredDistinct} independent execution scenarios (found ${distinctScenarios.size})`
-    );
+    reasons.push(`Requires at least ${requiredDistinct} independent execution scenarios (found ${distinctScenarios.size})`);
   }
 
   if (effectiveConfidence < cfg.minEffectiveConfidence) {
-    reasons.push(
-      `Effective confidence ${effectiveConfidence} is below threshold ${cfg.minEffectiveConfidence}`
-    );
+    reasons.push(`Effective confidence ${effectiveConfidence} is below threshold ${cfg.minEffectiveConfidence}`);
   }
 
   if (recentContradictions > cfg.maxRecentContradictions) {
-    reasons.push(
-      `Recent executions contain ${recentContradictions} trace contradiction(s)`
-    );
+    reasons.push(`Recent executions contain ${recentContradictions} trace contradiction(s)`);
   }
 
   return {
@@ -472,6 +461,45 @@ function resolveNextLifecycleStatus(currentStatus, promotionAnalysis, deprecatio
 }
 
 /**
+ * Calculer les compteurs et la répartition d'échecs mis à jour après une évaluation
+ * @param {object} metadata Métadonnées actuelles de la procédure
+ * @param {object} finalRecord Enregistrement d'évaluation courant
+ * @returns {object} Compteurs et score de confiance mis à jour
+ */
+function computeUpdatedExecutionCounters(metadata, finalRecord) {
+  const nextBreakdown = {
+    resource_shortage: 0,
+    execution_error: 0,
+    objective_not_achieved: 0,
+    contradiction: 0,
+    inconclusive: 0,
+    ...metadata.failureBreakdown
+  };
+  if (finalRecord.failureCategory && Object.hasOwn(nextBreakdown, finalRecord.failureCategory)) {
+    nextBreakdown[finalRecord.failureCategory] += 1;
+  }
+
+  const executionCount = (metadata.executionCount || 0) + 1;
+  const successCount = (metadata.successCount || 0) + (finalRecord.success ? 1 : 0);
+  const failureCount = (metadata.failureCount || 0) + (finalRecord.success ? 0 : 1);
+  const penalizableFailureCount = (metadata.penalizableFailureCount || 0) + (finalRecord.penalizableFailure ? 1 : 0);
+
+  const qualifiedTotal = successCount + penalizableFailureCount;
+  const fallbackConf = metadata.confidenceScore ?? 0.5;
+  const rawConfidence = qualifiedTotal > 0 ? Number((successCount / qualifiedTotal).toFixed(3)) : fallbackConf;
+  const confidenceScore = Math.max(0, Math.min(1, rawConfidence));
+
+  return {
+    executionCount,
+    successCount,
+    failureCount,
+    penalizableFailureCount,
+    confidenceScore,
+    nextBreakdown
+  };
+}
+
+/**
  * Appliquer un enregistrement d'évaluation au cycle de vie d'une procédure sans double comptabilisation
  * @param {object} procedure Objet procédure à mettre à jour
  * @param {object} evaluationInput Résultat de l'Evaluator ou enregistrement structuré
@@ -494,7 +522,8 @@ function applyEvaluationToLifecycle(procedure, evaluationInput, options = {}) {
   const metadata = procedure.metadata || {};
   const existingHistory = Array.isArray(metadata.evaluationHistory) ? [...metadata.evaluationHistory] : [];
 
-  const record = evaluationInput?.executionId && evaluationInput?.evaluationSummary
+  const isAlreadyRecord = Boolean(evaluationInput?.executionId && evaluationInput?.evaluationSummary);
+  const record = isAlreadyRecord
     ? evaluationInput
     : buildEvaluationRecord({
         procedure,
@@ -524,28 +553,7 @@ function applyEvaluationToLifecycle(procedure, evaluationInput, options = {}) {
   const finalRecord = isDuplicateScenarioBurst ? { ...record, artificialRepetition: true } : record;
   const maxHistory = options.maxHistoryEntries || DEFAULT_PROMOTION_POLICY.maxHistoryEntries;
   const updatedHistory = [...existingHistory, finalRecord].slice(-maxHistory);
-
-  const nextBreakdown = {
-    resource_shortage: 0,
-    execution_error: 0,
-    objective_not_achieved: 0,
-    contradiction: 0,
-    inconclusive: 0,
-    ...metadata.failureBreakdown
-  };
-  if (finalRecord.failureCategory && Object.hasOwn(nextBreakdown, finalRecord.failureCategory)) {
-    nextBreakdown[finalRecord.failureCategory] += 1;
-  }
-
-  const executionCount = (metadata.executionCount || 0) + 1;
-  const successCount = (metadata.successCount || 0) + (finalRecord.success ? 1 : 0);
-  const failureCount = (metadata.failureCount || 0) + (finalRecord.success ? 0 : 1);
-  const penalizableFailureCount = (metadata.penalizableFailureCount || 0) + (finalRecord.penalizableFailure ? 1 : 0);
-
-  const qualifiedTotal = successCount + penalizableFailureCount;
-  const fallbackConf = metadata.confidenceScore === undefined ? 0.5 : metadata.confidenceScore;
-  const rawConfidence = qualifiedTotal > 0 ? Number((successCount / qualifiedTotal).toFixed(3)) : fallbackConf;
-  const confidenceScore = Math.max(0, Math.min(1, rawConfidence));
+  const counters = computeUpdatedExecutionCounters(metadata, finalRecord);
 
   const promotionAnalysis = evaluatePromotionEligibility(updatedHistory, {
     requireIndependentScenarios: options.requireIndependentScenarios ?? false,
@@ -570,13 +578,13 @@ function applyEvaluationToLifecycle(procedure, evaluationInput, options = {}) {
     status: nextStatus,
     metadata: {
       ...metadata,
-      executionCount,
-      successCount,
-      failureCount,
-      penalizableFailureCount,
-      confidenceScore,
+      executionCount: counters.executionCount,
+      successCount: counters.successCount,
+      failureCount: counters.failureCount,
+      penalizableFailureCount: counters.penalizableFailureCount,
+      confidenceScore: counters.confidenceScore,
       effectiveConfidenceScore: promotionAnalysis.effectiveConfidence,
-      failureBreakdown: nextBreakdown,
+      failureBreakdown: counters.nextBreakdown,
       deprecationCandidate: deprecationAnalysis.deprecationCandidate,
       deprecationReasons: deprecationAnalysis.reasons,
       knownLimitations: extractKnownLimitations(updatedHistory, procedure),
@@ -599,30 +607,45 @@ function applyEvaluationToLifecycle(procedure, evaluationInput, options = {}) {
 }
 
 /**
+ * Formater le message de limitation associé à une entrée d'échec
+ * @param {object} entry Entrée d'évaluation en échec
+ * @returns {string|null} Description de la limitation ou null
+ */
+function formatLimitationMessage(entry) {
+  if (!entry || entry.success) return null;
+
+  if (entry.failureCategory === FAILURE_CATEGORIES.RESOURCE_SHORTAGE) {
+    const reason = entry.traceSummary?.failureReason || 'missing_resources';
+    return `Sensitive to resource shortage (${reason})`;
+  }
+  if (entry.failureCategory === FAILURE_CATEGORIES.EXECUTION_ERROR) {
+    const stepId = entry.traceSummary?.failedStepId || 'unknown_step';
+    const action = entry.traceSummary?.failedStepAction || 'action';
+    const reason = entry.traceSummary?.failureReason || 'failed';
+    return `Step '${stepId}' (${action}) prone to execution error (${reason})`;
+  }
+  if (entry.failureCategory === FAILURE_CATEGORIES.CONTRADICTION) {
+    return 'World state contradiction observed after step completion';
+  }
+  if (entry.failureCategory === FAILURE_CATEGORIES.OBJECTIVE_NOT_ACHIEVED) {
+    return 'Steps may complete without achieving the target objective';
+  }
+  return null;
+}
+
+/**
  * Extraire les limites connues d'une procédure à partir de son historique d'évaluations
  * @param {Array<object>} [evaluationHistory=[]] Historique des évaluations
  * @param {object} [procedure=null] Définition de la procédure
  * @returns {Array<string>} Liste synthétique des limites identifiées
  */
 function extractKnownLimitations(evaluationHistory = [], procedure = null) {
-  const limitations = new Set(Array.isArray(procedure?.metadata?.knownLimitations) ? procedure.metadata.knownLimitations : []);
+  const initial = Array.isArray(procedure?.metadata?.knownLimitations) ? procedure.metadata.knownLimitations : [];
+  const limitations = new Set(initial);
 
   for (const entry of evaluationHistory) {
-    if (!entry || entry.success) continue;
-
-    if (entry.failureCategory === FAILURE_CATEGORIES.RESOURCE_SHORTAGE) {
-      const reason = entry.traceSummary?.failureReason || 'missing_resources';
-      limitations.add(`Sensitive to resource shortage (${reason})`);
-    } else if (entry.failureCategory === FAILURE_CATEGORIES.EXECUTION_ERROR) {
-      const stepId = entry.traceSummary?.failedStepId || 'unknown_step';
-      const action = entry.traceSummary?.failedStepAction || 'action';
-      const reason = entry.traceSummary?.failureReason || 'failed';
-      limitations.add(`Step '${stepId}' (${action}) prone to execution error (${reason})`);
-    } else if (entry.failureCategory === FAILURE_CATEGORIES.CONTRADICTION) {
-      limitations.add('World state contradiction observed after step completion');
-    } else if (entry.failureCategory === FAILURE_CATEGORIES.OBJECTIVE_NOT_ACHIEVED) {
-      limitations.add('Steps may complete without achieving the target objective');
-    }
+    const message = formatLimitationMessage(entry);
+    if (message) limitations.add(message);
   }
 
   return Array.from(limitations);
@@ -660,24 +683,22 @@ function createVersionedProcedure(baseProcedure, candidateChanges = {}, uniqueId
     throw new TypeError('Valid baseProcedure with an id is required to create a new version');
   }
 
-  const rootId = baseProcedure.metadata?.rootId || baseProcedure.id.replace(/_v\d+$/, '').replace(/_exp_\d+$/, '');
+  const rootId = baseProcedure.metadata?.rootId || stripVersionSuffix(baseProcedure.id);
   const parentVersion = Number.isInteger(baseProcedure.version) ? baseProcedure.version : 1;
   const requestedVersion = Number.isInteger(candidateChanges.version) ? candidateChanges.version : 2;
   const nextVersion = Math.max(parentVersion + 1, requestedVersion);
 
-  const taken = existingIds instanceof Set ? existingIds : new Set(existingIds);
+  const taken = new Set(existingIds);
   taken.add(baseProcedure.id);
 
   const versionedId = resolveAvailableVersionId(`${rootId}_v${nextVersion}`, taken, uniqueIdGenerator);
   const now = new Date().toISOString();
-  const parentLineage = Array.isArray(baseProcedure.metadata?.lineage) ? [...baseProcedure.metadata.lineage] : [];
-  if (!parentLineage.includes(baseProcedure.id)) {
-    parentLineage.push(baseProcedure.id);
-  }
-
-  const baseTags = Array.isArray(baseProcedure.metadata?.tags) ? baseProcedure.metadata.tags : [];
-  const nextTags = Array.isArray(candidateChanges.metadata?.tags) ? candidateChanges.metadata.tags : [];
-  const mergedTags = Array.from(new Set([...baseTags, ...nextTags, rootId]));
+  const parentLineage = Array.from(new Set([...(baseProcedure.metadata?.lineage || []), baseProcedure.id]));
+  const mergedTags = Array.from(new Set([
+    ...(baseProcedure.metadata?.tags || []),
+    ...(candidateChanges.metadata?.tags || []),
+    rootId
+  ]));
 
   const hasCustomSteps = Array.isArray(candidateChanges.steps) && candidateChanges.steps.length > 0;
 
@@ -689,8 +710,8 @@ function createVersionedProcedure(baseProcedure, candidateChanges = {}, uniqueId
     name: candidateChanges.name || `${baseProcedure.name} (v${nextVersion})`,
     status: 'experimental',
     steps: hasCustomSteps ? candidateChanges.steps : baseProcedure.steps,
-    preconditions: Array.isArray(candidateChanges.preconditions) ? candidateChanges.preconditions : (baseProcedure.preconditions || []),
-    postconditions: Array.isArray(candidateChanges.postconditions) ? candidateChanges.postconditions : (baseProcedure.postconditions || []),
+    preconditions: candidateChanges.preconditions || baseProcedure.preconditions || [],
+    postconditions: candidateChanges.postconditions || baseProcedure.postconditions || [],
     parameters: candidateChanges.parameters || baseProcedure.parameters || {},
     metadata: {
       author: candidateChanges.metadata?.author || 'ollama_generator',
@@ -749,9 +770,8 @@ function computeAverageSuccessDuration(proc) {
  */
 function compareProcedureVersions(versionA, versionB) {
   if (!versionA || !versionB) {
-    const validOne = versionA || versionB || null;
     return {
-      preferred: validOne,
+      preferred: versionA || versionB || null,
       fallback: null,
       comparison: null
     };
@@ -763,10 +783,11 @@ function compareProcedureVersions(versionA, versionB) {
   const durB = computeAverageSuccessDuration(versionB);
 
   const execB = versionB.metadata?.executionCount || 0;
+  const sameConfFasterValidated = confB === confA && versionB.status === 'validated' && durB <= durA;
   const candidateOutperforms = Boolean(
     versionB.status !== 'deprecated' &&
     execB >= 3 &&
-    (confB > confA || (confB === confA && versionB.status === 'validated' && durB <= durA))
+    (confB > confA || sameConfFasterValidated)
   );
 
   let preferred = versionA.status === 'deprecated' ? versionB : versionA;
@@ -816,6 +837,28 @@ function matchesKnowledgeObjective(proc, cleanObj) {
 }
 
 /**
+ * Collecter les échecs passés d'une procédure sous forme d'entrées synthétiques
+ * @param {object} proc Procédure analysée
+ * @returns {Array<object>} Liste des échecs formatés
+ */
+function collectPastFailuresForProcedure(proc) {
+  const history = proc.metadata?.evaluationHistory || [];
+  return history
+    .filter(entry => entry && !entry.success)
+    .map(entry => ({
+      executionId: entry.executionId,
+      procedureId: proc.id,
+      procedureVersion: proc.version || 1,
+      timestamp: entry.timestamp,
+      failureCategory: entry.failureCategory,
+      failedStepId: entry.traceSummary?.failedStepId || null,
+      failedStepAction: entry.traceSummary?.failedStepAction || null,
+      reason: entry.traceSummary?.failureReason || null,
+      resourceShortage: Boolean(entry.evaluationSummary?.resourceShortage)
+    }));
+}
+
+/**
  * Agréger les préconditions, limites et échecs passés d'une collection de procédures
  * @param {Array<object>} matching Procédures retenues
  * @returns {{
@@ -839,33 +882,15 @@ function aggregateHistoricalKnowledge(matching) {
     const meta = proc.metadata || {};
     totalExecutions += meta.executionCount || 0;
     totalSuccesses += meta.successCount || 0;
-    const procPenalizable = meta.penalizableFailureCount === undefined ? (meta.failureCount || 0) : meta.penalizableFailureCount;
-    totalPenalizableFailures += procPenalizable;
+    totalPenalizableFailures += meta.penalizableFailureCount ?? meta.failureCount ?? 0;
 
     for (const pre of proc.preconditions || []) {
-      const key = JSON.stringify(pre);
-      if (!preconditionMap.has(key)) preconditionMap.set(key, pre);
+      preconditionMap.set(JSON.stringify(pre), pre);
     }
-
     for (const lim of meta.knownLimitations || []) {
       limitationsSet.add(lim);
     }
-
-    for (const entry of meta.evaluationHistory || []) {
-      if (entry && !entry.success) {
-        pastFailures.push({
-          executionId: entry.executionId,
-          procedureId: proc.id,
-          procedureVersion: proc.version || 1,
-          timestamp: entry.timestamp,
-          failureCategory: entry.failureCategory,
-          failedStepId: entry.traceSummary?.failedStepId || null,
-          failedStepAction: entry.traceSummary?.failedStepAction || null,
-          reason: entry.traceSummary?.failureReason || null,
-          resourceShortage: Boolean(entry.evaluationSummary?.resourceShortage)
-        });
-      }
-    }
+    pastFailures.push(...collectPastFailuresForProcedure(proc));
   }
 
   return {
@@ -876,6 +901,20 @@ function aggregateHistoricalKnowledge(matching) {
     knownLimitations: Array.from(limitationsSet),
     pastFailures
   };
+}
+
+/**
+ * Trier un tableau de procédures par score de confiance effectif décroissant
+ * @param {Array<object>} arr Tableau de procédures
+ * @returns {Array<object>} Tableau trié
+ */
+function sortProceduresByQuality(arr) {
+  return [...arr].sort((a, b) => {
+    const confA = a.metadata?.effectiveConfidenceScore ?? a.metadata?.confidenceScore ?? 0.5;
+    const confB = b.metadata?.effectiveConfidenceScore ?? b.metadata?.confidenceScore ?? 0.5;
+    if (confA !== confB) return confB - confA;
+    return (b.metadata?.executionCount || 0) - (a.metadata?.executionCount || 0);
+  });
 }
 
 /**
@@ -907,15 +946,8 @@ function buildProceduralKnowledgeSummary(procedures = [], objective = null) {
     ? list.filter(proc => matchesKnowledgeObjective(proc, cleanObj))
     : list.filter(Boolean);
 
-  const sortByQuality = (arr) => [...arr].sort((a, b) => {
-    const confA = a.metadata?.effectiveConfidenceScore ?? a.metadata?.confidenceScore ?? 0.5;
-    const confB = b.metadata?.effectiveConfidenceScore ?? b.metadata?.confidenceScore ?? 0.5;
-    if (confA !== confB) return confB - confA;
-    return (b.metadata?.executionCount || 0) - (a.metadata?.executionCount || 0);
-  });
-
-  const validatedProcedures = sortByQuality(matching.filter(p => p.status === 'validated'));
-  const experimentalVariants = sortByQuality(matching.filter(p => p.status === 'experimental'));
+  const validatedProcedures = sortProceduresByQuality(matching.filter(p => p.status === 'validated'));
+  const experimentalVariants = sortProceduresByQuality(matching.filter(p => p.status === 'experimental'));
   const deprecatedProcedures = matching.filter(p => p.status === 'deprecated');
 
   const secondaryExperimental = validatedProcedures[0] ? experimentalVariants[0] : experimentalVariants[1];
@@ -968,6 +1000,7 @@ module.exports = {
   FAILURE_CATEGORIES,
   DEFAULT_PROMOTION_POLICY,
   DEFAULT_DEPRECATION_POLICY,
+  stripVersionSuffix,
   generateExecutionId,
   computeScenarioSignature,
   classifyFailureCause,

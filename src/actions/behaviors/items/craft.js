@@ -138,11 +138,7 @@ function computeCraftOperations(bot, recipe, targetName, requestedQty) {
 async function reclaimPersonalCraftingGrid(bot, slotIndex = 1) {
   if (slotIndex > 4 || typeof bot.putAway !== 'function') return;
   if (bot.inventory?.slots?.[slotIndex]) {
-    try {
-      await bot.putAway(slotIndex);
-    } catch (err) {
-      void err;
-    }
+    await Promise.resolve(bot.putAway(slotIndex)).catch(() => false);
   }
   await reclaimPersonalCraftingGrid(bot, slotIndex + 1);
 }

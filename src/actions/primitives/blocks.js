@@ -57,11 +57,12 @@ function computeBotDistance(bot, targetPoint) {
  * @returns {Promise<void>} Promesse résolue après l'orientation
  */
 async function lookAtPointSafely(bot, targetPoint) {
-  if (typeof bot.lookAt !== 'function') return;
+  if (typeof bot.lookAt !== 'function') return false;
   try {
     await bot.lookAt(targetPoint);
-  } catch (err) {
-    void err;
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -258,11 +259,12 @@ async function breakBlockAt(bot, position, options = {}) {
   await lookAtPointSafely(bot, check.blockCenter);
 
   const cancelDigging = () => {
-    if (typeof bot.stopDigging !== 'function') return;
+    if (typeof bot.stopDigging !== 'function') return false;
     try {
       bot.stopDigging();
-    } catch (err) {
-      void err;
+      return true;
+    } catch {
+      return false;
     }
   };
 

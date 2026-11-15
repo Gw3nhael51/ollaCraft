@@ -4,6 +4,7 @@ const { createDefaultRegistry } = require('./registry');
 const { validateProcedure } = require('./validator');
 const { saveProcedure, loadProcedure, listProcedures } = require('./store');
 const {
+  stripVersionSuffix,
   applyEvaluationToLifecycle,
   createVersionedProcedure,
   compareProcedureVersions,
@@ -108,6 +109,24 @@ function updateProcedureStats(procedure, successOrEvaluation, options = {}) {
 }
 
 /**
+ * Comparer deux procédures candidates selon leur statut, confiance et nombre d'exécutions
+ * @param {object} a Première procédure
+ * @param {object} b Seconde procédure
+ * @returns {number} Ordre de tri
+ */
+function compareProcedureCandidates(a, b) {
+  const weightA = STATUS_WEIGHTS[a.status] ?? 1;
+  const weightB = STATUS_WEIGHTS[b.status] ?? 1;
+  if (weightA !== weightB) return weightB - weightA;
+
+  const confA = a.metadata?.confidenceScore ?? 0.5;
+  const confB = b.metadata?.confidenceScore ?? 0.5;
+  if (confA !== confB) return confB - confA;
+
+  return (b.metadata?.executionCount || 0) - (a.metadata?.executionCount || 0);
+}
+
+/**
  * Filtrer et classer les procédures selon leurs tags, leur statut et leur score de confiance
  * @param {Array<object>} procedures Collection de procédures candidates
  * @param {object} [criteria={}] Critères de sélection
@@ -124,46 +143,16 @@ function selectBestProcedure(procedures, criteria = {}) {
   const { tags = [], status, minConfidence = 0 } = criteria;
 
   const candidates = procedures.filter(proc => {
-    if (status && proc.status !== status) {
-      return false;
-    }
-
-    const confidence = proc.metadata?.confidenceScore === undefined ? 0.5 : proc.metadata.confidenceScore;
-    if (confidence < minConfidence) {
-      return false;
-    }
-
-    if (tags.length > 0) {
-      const procTags = new Set(proc.metadata?.tags || []);
-      const matchesAll = tags.every(t => procTags.has(t));
-      if (!matchesAll) return false;
-    }
-
-    return true;
+    if (status && proc.status !== status) return false;
+    const confidence = proc.metadata?.confidenceScore ?? 0.5;
+    if (confidence < minConfidence) return false;
+    if (tags.length === 0) return true;
+    const procTags = new Set(proc.metadata?.tags || []);
+    return tags.every(t => procTags.has(t));
   });
 
-  if (candidates.length === 0) {
-    return null;
-  }
-
-  candidates.sort((a, b) => {
-    const weightA = STATUS_WEIGHTS[a.status] === undefined ? 1 : STATUS_WEIGHTS[a.status];
-    const weightB = STATUS_WEIGHTS[b.status] === undefined ? 1 : STATUS_WEIGHTS[b.status];
-    if (weightA !== weightB) {
-      return weightB - weightA;
-    }
-
-    const confA = a.metadata?.confidenceScore === undefined ? 0.5 : a.metadata.confidenceScore;
-    const confB = b.metadata?.confidenceScore === undefined ? 0.5 : b.metadata.confidenceScore;
-    if (confA !== confB) {
-      return confB - confA;
-    }
-
-    const execA = a.metadata?.executionCount || 0;
-    const execB = b.metadata?.executionCount || 0;
-    return execB - execA;
-  });
-
+  if (candidates.length === 0) return null;
+  candidates.sort(compareProcedureCandidates);
   return candidates[0];
 }
 
@@ -226,18 +215,57 @@ function resolveCandidateLineage(candidateProcedure, parentProcedure, uniqueId) 
     uniqueId;
 
   const parentId = baseMetadata.parentId || parentProcedure?.id || null;
-  let lineage = [];
-  if (Array.isArray(baseMetadata.lineage)) {
-    lineage = [...baseMetadata.lineage];
-  } else if (Array.isArray(parentProcedure?.metadata?.lineage)) {
-    lineage = [...parentProcedure.metadata.lineage];
-  }
+  const sourceLineage = baseMetadata.lineage || parentProcedure?.metadata?.lineage || [];
+  const lineage = Array.isArray(sourceLineage) ? [...sourceLineage] : [];
 
   if (parentId && !lineage.includes(parentId)) {
     lineage.push(parentId);
   }
 
   return { resolvedVersion, rootId, parentId, lineage };
+}
+
+/**
+ * Construire l'objet procédure expérimental finalisé avec ses métadonnées initialisées
+ * @param {object} preparedProcedure Procédure validée avec identifiant et version
+ * @param {object} lineageInfo Informations de lignée calculées
+ * @param {object|null} parentProcedure Procédure parente éventuelle
+ * @param {object} validation Résultat de la validation sémantique
+ * @param {object} options Options d'enregistrement
+ * @returns {object} Procédure prête à être stockée et enregistrée
+ */
+function buildFinalExperimentalProcedure(preparedProcedure, lineageInfo, parentProcedure, validation, options) {
+  const now = new Date().toISOString();
+  const baseMetadata = preparedProcedure.metadata || {};
+  return {
+    ...preparedProcedure,
+    status: 'experimental',
+    metadata: {
+      author: baseMetadata.author || 'ollama_generator',
+      createdAt: baseMetadata.createdAt || now,
+      updatedAt: now,
+      executionCount: 0,
+      successCount: 0,
+      failureCount: 0,
+      penalizableFailureCount: 0,
+      confidenceScore: baseMetadata.confidenceScore ?? 0.5,
+      effectiveConfidenceScore: baseMetadata.effectiveConfidenceScore ?? 0.5,
+      rootId: lineageInfo.rootId,
+      parentId: lineageInfo.parentId,
+      parentVersion: parentProcedure ? (parentProcedure.version || 1) : null,
+      lineage: lineageInfo.lineage,
+      tags: Array.isArray(baseMetadata.tags) ? [...baseMetadata.tags] : [],
+      evaluationHistory: Array.isArray(baseMetadata.evaluationHistory) ? [...baseMetadata.evaluationHistory] : [],
+      knownLimitations: Array.isArray(baseMetadata.knownLimitations) ? [...baseMetadata.knownLimitations] : [],
+      generationMetadata: options.generationMetadata || baseMetadata.generationMetadata || null,
+      validationMetadata: {
+        valid: true,
+        validatedAt: now,
+        analysis: validation.analysis,
+        warningsCount: validation.warnings.length
+      }
+    }
+  };
 }
 
 /**
@@ -289,16 +317,11 @@ async function registerExperimentalProcedure(memory, candidateProcedure, options
     existingIds
   );
 
-  const { resolvedVersion, rootId, parentId, lineage } = resolveCandidateLineage(
-    candidateProcedure,
-    parentProcedure,
-    uniqueId
-  );
-
+  const lineageInfo = resolveCandidateLineage(candidateProcedure, parentProcedure, uniqueId);
   const preparedProcedure = {
     ...candidateProcedure,
     id: uniqueId,
-    version: resolvedVersion,
+    version: lineageInfo.resolvedVersion,
     status: 'experimental'
   };
 
@@ -312,37 +335,13 @@ async function registerExperimentalProcedure(memory, candidateProcedure, options
     );
   }
 
-  const now = new Date().toISOString();
-  const baseMetadata = candidateProcedure.metadata || {};
-  const finalProcedure = {
-    ...preparedProcedure,
-    status: 'experimental',
-    metadata: {
-      author: baseMetadata.author || 'ollama_generator',
-      createdAt: baseMetadata.createdAt || now,
-      updatedAt: now,
-      executionCount: 0,
-      successCount: 0,
-      failureCount: 0,
-      penalizableFailureCount: 0,
-      confidenceScore: baseMetadata.confidenceScore ?? 0.5,
-      effectiveConfidenceScore: baseMetadata.effectiveConfidenceScore ?? 0.5,
-      rootId,
-      parentId,
-      parentVersion: parentProcedure ? (parentProcedure.version || 1) : null,
-      lineage,
-      tags: Array.isArray(baseMetadata.tags) ? [...baseMetadata.tags] : [],
-      evaluationHistory: Array.isArray(baseMetadata.evaluationHistory) ? [...baseMetadata.evaluationHistory] : [],
-      knownLimitations: Array.isArray(baseMetadata.knownLimitations) ? [...baseMetadata.knownLimitations] : [],
-      generationMetadata: options.generationMetadata || baseMetadata.generationMetadata || null,
-      validationMetadata: {
-        valid: true,
-        validatedAt: now,
-        analysis: validation.analysis,
-        warningsCount: validation.warnings.length
-      }
-    }
-  };
+  const finalProcedure = buildFinalExperimentalProcedure(
+    preparedProcedure,
+    lineageInfo,
+    parentProcedure,
+    validation,
+    options
+  );
 
   let persistedPath = null;
   if (targetStorageDir) {
@@ -366,8 +365,8 @@ async function registerExperimentalProcedure(memory, candidateProcedure, options
   return createResult(true, 'registered', {
     id: finalProcedure.id,
     originalId: candidateProcedure.id || null,
-    parentId,
-    rootId,
+    parentId: lineageInfo.parentId,
+    rootId: lineageInfo.rootId,
     version: finalProcedure.version,
     renamed: finalProcedure.id !== candidateProcedure.id,
     procedure: finalProcedure,
@@ -425,7 +424,7 @@ class ProcedureMemory {
    * @returns {Promise<{ success: boolean, reason: string, data: object|null, error: string|null }>} Résultat de l'enregistrement
    */
   async registerExperimental(candidateProcedure, options = {}) {
-    return await registerExperimentalProcedure(this, candidateProcedure, options);
+    return registerExperimentalProcedure(this, candidateProcedure, options);
   }
 
   /**
@@ -449,7 +448,7 @@ class ProcedureMemory {
       existingIds
     );
 
-    return await this.registerExperimental(versionedCandidate, {
+    return this.registerExperimental(versionedCandidate, {
       ...options,
       parentProcedure: baseProc
     });
@@ -462,12 +461,11 @@ class ProcedureMemory {
    */
   getVersions(rootOrProcedureId) {
     const target = this.get(rootOrProcedureId);
-    const rootId = target?.metadata?.rootId ||
-      String(rootOrProcedureId || '').replace(/_v\d+$/, '').replace(/_exp_\d+$/, '');
+    const rootId = target?.metadata?.rootId || stripVersionSuffix(rootOrProcedureId);
 
     return this.getAll()
       .filter(p => {
-        const pRoot = p.metadata?.rootId || p.id.replace(/_v\d+$/, '').replace(/_exp_\d+$/, '');
+        const pRoot = p.metadata?.rootId || stripVersionSuffix(p.id);
         return p.id === rootOrProcedureId || pRoot === rootId || p.metadata?.parentId === rootOrProcedureId;
       })
       .sort((a, b) => (a.version || 1) - (b.version || 1));
