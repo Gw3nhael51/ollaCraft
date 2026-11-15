@@ -250,6 +250,23 @@ async function prepareCraftingStation(bot, state, item, targetName) {
 }
 
 /**
+ * Vérifier récursivement la réception de l'item fabriqué dans les emplacements d'inventaire
+ * @param {object} bot Instance du bot Mineflayer
+ * @param {string} normalizedTarget Nom de l'item fabriqué
+ * @param {number} countBefore Quantité possédée avant la fabrication
+ * @param {number} [retriesLeft=3] Nombre de tentatives restantes
+ * @returns {Promise<number>} Quantité détectée dans l'inventaire
+ */
+async function pollCraftedInventoryCount(bot, normalizedTarget, countBefore, retriesLeft = 3) {
+  const current = countItem(bot, normalizedTarget);
+  if (current > countBefore || retriesLeft <= 0) {
+    return current;
+  }
+  await bot.waitForTicks(5);
+  return pollCraftedInventoryCount(bot, normalizedTarget, countBefore, retriesLeft - 1);
+}
+
+/**
  * Attendre la synchronisation de l'inventaire après la fabrication et ramasser l'item au sol si besoin
  * @param {object} bot Instance du bot Mineflayer
  * @param {string} normalizedTarget Nom de l'item fabriqué
@@ -258,15 +275,11 @@ async function prepareCraftingStation(bot, state, item, targetName) {
  */
 async function waitForCraftedInventorySync(bot, normalizedTarget, countBefore) {
   await bot.waitForTicks(8);
-  let countAfter = countItem(bot, normalizedTarget);
-  for (let retry = 0; retry < 3 && countAfter <= countBefore; retry++) {
-    await bot.waitForTicks(5);
-    countAfter = countItem(bot, normalizedTarget);
+  const countAfter = await pollCraftedInventoryCount(bot, normalizedTarget, countBefore, 3);
+  if (countAfter > countBefore) {
+    return countAfter;
   }
-  if (countAfter <= countBefore) {
-    countAfter = await collectDroppedCraftItem(bot, normalizedTarget);
-  }
-  return countAfter;
+  return collectDroppedCraftItem(bot, normalizedTarget);
 }
 
 /**
