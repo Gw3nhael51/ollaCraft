@@ -3,10 +3,10 @@ const { createResult } = require('./result');
 const { stopMovement } = require('./movement');
 
 /**
- * Check whether a target entity is currently alive and active in the world
- * @param {object} bot Mineflayer bot instance
- * @param {object|null} targetEntity Target entity to inspect
- * @returns {{ valid: boolean, reason?: string }} Validity status and reason
+ * Vérifier si une entité cible est actuellement vivante et présente dans le monde
+ * @param {object} bot Instance du bot Mineflayer
+ * @param {object|null} targetEntity Entité cible à inspecter
+ * @returns {{ valid: boolean, reason?: string }} Statut de validité et motif éventuel
  */
 function inspectTargetEntity(bot, targetEntity) {
   if (!targetEntity || typeof targetEntity !== 'object') {
@@ -29,12 +29,12 @@ function inspectTargetEntity(bot, targetEntity) {
 }
 
 /**
- * Equip best available weapon from bot inventory
- * @param {object} bot Mineflayer bot instance
- * @returns {Promise<void>}
+ * Équiper la meilleure arme disponible dans l'inventaire du bot
+ * @param {object} bot Instance du bot Mineflayer
+ * @returns {Promise<boolean>} Vrai si une arme est équipée
  */
 async function autoEquipBestWeapon(bot) {
-  if (!bot.inventory?.items || typeof bot.equip !== 'function') return;
+  if (!bot.inventory?.items || typeof bot.equip !== 'function') return false;
 
   const weaponPriority = [
     'netherite_sword', 'diamond_sword', 'iron_sword', 'stone_sword', 'golden_sword', 'wooden_sword',
@@ -46,20 +46,36 @@ async function autoEquipBestWeapon(bot) {
     const weapon = items.find(i => i.name === weaponName);
     if (weapon) {
       if (bot.heldItem?.name !== weaponName) {
-        try {
-          await bot.equip(weapon, 'hand');
-        } catch {}
+        await Promise.resolve(bot.equip(weapon, 'hand')).catch(() => false);
       }
-      return;
+      return true;
     }
   }
+  return false;
 }
 
 /**
- * Orient bot gaze directly towards target entity
- * @param {object} bot Mineflayer bot instance
- * @param {object} targetEntity Target living entity
- * @returns {Promise<{ success: boolean, reason: string, data: object|null, error: string|null }>}
+ * Calculer la distance entre le bot et une entité cible
+ * @param {object} bot Instance du bot Mineflayer
+ * @param {object} targetEntity Entité cible
+ * @returns {number} Distance en blocs ou 999 si indéterminée
+ */
+function computeEntityDistance(bot, targetEntity) {
+  const botPos = bot.entity?.position;
+  const targetPos = targetEntity?.position;
+  if (!botPos || !targetPos) return 999;
+
+  if (typeof botPos.distanceTo === 'function') {
+    return botPos.distanceTo(targetPos);
+  }
+  return Math.hypot(botPos.x - targetPos.x, botPos.y - targetPos.y, botPos.z - targetPos.z);
+}
+
+/**
+ * Orienter le regard du bot directement vers l'entité cible
+ * @param {object} bot Instance du bot Mineflayer
+ * @param {object} targetEntity Entité vivante cible
+ * @returns {Promise<{ success: boolean, reason: string, data: object|null, error: string|null }>} Résultat normalisé
  */
 async function faceTarget(bot, targetEntity) {
   const check = inspectTargetEntity(bot, targetEntity);
@@ -87,15 +103,15 @@ async function faceTarget(bot, targetEntity) {
 }
 
 /**
- * Attack target entity with range, health, and weapon checks
- * @param {object} bot Mineflayer bot instance
- * @param {object} targetEntity Target living entity
- * @param {object} [options={}] Attack options
- * @param {number} [options.maxDistance=3.5] Maximum striking reach
- * @param {boolean} [options.autoEquipWeapon=true] Automatically equip best weapon
- * @param {number} [options.timeoutMs=0] Maximum wait duration
- * @param {AbortSignal} [options.abortSignal] External cancellation signal
- * @returns {Promise<{ success: boolean, reason: string, data: object|null, error: string|null }>}
+ * Attaquer une entité cible avec vérifications de portée, de santé et d'arme
+ * @param {object} bot Instance du bot Mineflayer
+ * @param {object} targetEntity Entité vivante cible
+ * @param {object} [options={}] Options d'attaque
+ * @param {number} [options.maxDistance=3.5] Portée maximale de frappe
+ * @param {boolean} [options.autoEquipWeapon=true] Équiper automatiquement la meilleure arme
+ * @param {number} [options.timeoutMs=0] Durée maximale d'attente en millisecondes
+ * @param {AbortSignal} [options.abortSignal] Signal d'annulation externe
+ * @returns {Promise<{ success: boolean, reason: string, data: object|null, error: string|null }>} Résultat normalisé
  */
 async function attackEntity(bot, targetEntity, options = {}) {
   const check = inspectTargetEntity(bot, targetEntity);
@@ -112,13 +128,8 @@ async function attackEntity(bot, targetEntity, options = {}) {
     return createResult(false, 'aborted', { entityId: targetEntity.id }, 'Attack operation aborted before start');
   }
 
-  const botPos = bot.entity?.position;
-  const targetPos = targetEntity.position;
-  if (botPos && targetPos) {
-    const distance = typeof botPos.distanceTo === 'function'
-      ? botPos.distanceTo(targetPos)
-      : Math.hypot(botPos.x - targetPos.x, botPos.y - targetPos.y, botPos.z - targetPos.z);
-
+  if (bot.entity?.position && targetEntity.position) {
+    const distance = computeEntityDistance(bot, targetEntity);
     if (distance > maxDistance) {
       return createResult(false, 'out_of_reach', {
         entityId: targetEntity.id,
@@ -134,23 +145,17 @@ async function attackEntity(bot, targetEntity, options = {}) {
 
   await faceTarget(bot, targetEntity);
 
-  const initialHealth = targetEntity.health !== undefined ? targetEntity.health : null;
-
+  const initialHealth = targetEntity.health ?? null;
   let timerId = null;
   let abortHandler = null;
   let isTimedOut = false;
   let isAborted = false;
   let finalized = false;
 
-  const cleanup = () => {
-    if (timerId) clearTimeout(timerId);
-    if (abortSignal && abortHandler) abortSignal.removeEventListener('abort', abortHandler);
-  };
-
   try {
     const attackPromise = (async () => {
       if (typeof bot.attack !== 'function') {
-        throw new Error('Bot does not support attack action');
+        throw new TypeError('Bot does not support attack action');
       }
       bot.attack(targetEntity);
     })();
@@ -186,7 +191,7 @@ async function attackEntity(bot, targetEntity, options = {}) {
     finalized = true;
 
     const postCheck = inspectTargetEntity(bot, targetEntity);
-    const postHealth = targetEntity.health !== undefined ? targetEntity.health : null;
+    const postHealth = targetEntity.health ?? null;
 
     if (!postCheck.valid && postCheck.reason === 'target_dead') {
       return createResult(true, 'attacked', {
@@ -197,7 +202,6 @@ async function attackEntity(bot, targetEntity, options = {}) {
     }
 
     const damaged = initialHealth !== null && postHealth !== null && postHealth < initialHealth;
-
     return createResult(true, 'attacked', {
       entityId: targetEntity.id,
       targetEliminated: Boolean(targetEntity.health <= 0 || targetEntity.isValid === false),
@@ -206,39 +210,38 @@ async function attackEntity(bot, targetEntity, options = {}) {
     }, null);
   } catch (err) {
     finalized = true;
-
     if (isAborted || abortSignal?.aborted) {
       return createResult(false, 'aborted', { entityId: targetEntity.id }, 'Attack operation aborted by caller');
     }
     if (isTimedOut) {
       return createResult(false, 'timeout', { entityId: targetEntity.id }, 'Attack operation timed out');
     }
-
     return createResult(false, 'error', { entityId: targetEntity.id }, String(err?.message || err));
   } finally {
-    cleanup();
+    if (timerId) clearTimeout(timerId);
+    if (abortSignal && abortHandler) abortSignal.removeEventListener('abort', abortHandler);
   }
 }
 
 /**
- * Legacy alias for attacking a target entity
- * @param {object} bot Mineflayer bot instance
- * @param {object} targetEntity Target living entity
- * @returns {Promise<any>}
+ * Alias de compatibilité pour attaquer une entité cible
+ * @param {object} bot Instance du bot Mineflayer
+ * @param {object} targetEntity Entité vivante cible
+ * @returns {Promise<object>} Résultat de l'attaque
  */
 async function attackTarget(bot, targetEntity) {
   return attackEntity(bot, targetEntity);
 }
 
 /**
- * Follow target entity dynamically while maintaining specified range
- * @param {object} bot Mineflayer bot instance
- * @param {object} targetEntity Target entity to follow
- * @param {object} [options={}] Follow options
- * @param {number} [options.range=2] Desired following distance
- * @param {number} [options.timeoutMs=0] Maximum tracking duration
- * @param {AbortSignal} [options.abortSignal] External cancellation signal
- * @returns {Promise<{ success: boolean, reason: string, data: object|null, error: string|null }>}
+ * Suivre dynamiquement une entité cible tout en maintenant la distance spécifiée
+ * @param {object} bot Instance du bot Mineflayer
+ * @param {object} targetEntity Entité cible à suivre
+ * @param {object} [options={}] Options de suivi
+ * @param {number} [options.range=2] Distance de suivi souhaitée
+ * @param {number} [options.timeoutMs=0] Durée maximale de poursuite en millisecondes
+ * @param {AbortSignal} [options.abortSignal] Signal d'annulation externe
+ * @returns {Promise<{ success: boolean, reason: string, data: object|null, error: string|null }>} Résultat normalisé
  */
 async function followEntity(bot, targetEntity, options = {}) {
   const check = inspectTargetEntity(bot, targetEntity);
@@ -250,28 +253,19 @@ async function followEntity(bot, targetEntity, options = {}) {
   const timeoutMs = options.timeoutMs || 0;
   const abortSignal = options.abortSignal;
 
-  const currentTaskId = (bot._activeNavigationTaskId = (bot._activeNavigationTaskId || 0) + 1);
-
-  const getDistance = () => {
-    const botPos = bot.entity?.position;
-    const targetPos = targetEntity.position;
-    if (botPos && targetPos) {
-      return typeof botPos.distanceTo === 'function'
-        ? botPos.distanceTo(targetPos)
-        : Math.hypot(botPos.x - targetPos.x, botPos.y - targetPos.y, botPos.z - targetPos.z);
-    }
-    return 999;
-  };
+  bot._activeNavigationTaskId = (bot._activeNavigationTaskId || 0) + 1;
+  const currentTaskId = bot._activeNavigationTaskId;
 
   if (abortSignal?.aborted) {
     stopMovement(bot);
     return createResult(false, 'aborted', { entityId: targetEntity.id }, 'Follow operation aborted before start');
   }
 
-  if (getDistance() <= range + 0.5) {
+  const initialDistance = computeEntityDistance(bot, targetEntity);
+  if (initialDistance <= range + 0.5) {
     return createResult(true, 'reached', {
       entityId: targetEntity.id,
-      distance: getDistance(),
+      distance: initialDistance,
       range
     }, null);
   }
@@ -285,16 +279,9 @@ async function followEntity(bot, targetEntity, options = {}) {
   let reachedRange = false;
   let finalized = false;
 
-  const cleanup = () => {
-    if (timerId) clearTimeout(timerId);
-    if (checkInterval) clearInterval(checkInterval);
-    if (abortSignal && abortHandler) abortSignal.removeEventListener('abort', abortHandler);
-  };
-
   try {
     const goal = new goals.GoalFollow(targetEntity, range);
-
-    if (bot.pathfinder && typeof bot.pathfinder.setGoal === 'function') {
+    if (typeof bot.pathfinder?.setGoal === 'function') {
       bot.pathfinder.setGoal(goal, true);
     }
 
@@ -316,8 +303,7 @@ async function followEntity(bot, targetEntity, options = {}) {
           return;
         }
 
-        const dist = getDistance();
-        if (dist <= range + 0.5) {
+        if (computeEntityDistance(bot, targetEntity) <= range + 0.5) {
           reachedRange = true;
           clearInterval(checkInterval);
           stopMovement(bot);
@@ -361,51 +347,41 @@ async function followEntity(bot, targetEntity, options = {}) {
     if (stopReason) {
       return createResult(false, stopReason, { entityId: targetEntity.id }, `Entity state changed during follow: ${stopReason}`);
     }
-
     if (isAborted || abortSignal?.aborted) {
       return createResult(false, 'aborted', { entityId: targetEntity.id }, 'Follow operation aborted by caller');
     }
-    if (isTimedOut) {
+    if (isTimedOut || !reachedRange) {
       return createResult(false, 'timeout', { entityId: targetEntity.id }, 'Follow operation timed out');
     }
 
-    if (reachedRange) {
-      return createResult(true, 'reached', {
-        entityId: targetEntity.id,
-        distance: getDistance(),
-        range
-      }, null);
-    }
-
-    return createResult(false, 'timeout', { entityId: targetEntity.id }, 'Target range was not reached');
+    return createResult(true, 'reached', {
+      entityId: targetEntity.id,
+      distance: computeEntityDistance(bot, targetEntity),
+      range
+    }, null);
   } catch (err) {
     finalized = true;
     stopMovement(bot);
 
-    if (bot._activeNavigationTaskId !== currentTaskId) {
-      return createResult(false, 'aborted', { entityId: targetEntity.id }, 'Follow superseded by newer task');
+    if (bot._activeNavigationTaskId !== currentTaskId || isAborted || abortSignal?.aborted) {
+      return createResult(false, 'aborted', { entityId: targetEntity.id }, 'Follow operation aborted by caller');
     }
-
     if (stopReason) {
       return createResult(false, stopReason, { entityId: targetEntity.id }, `Entity state changed: ${stopReason}`);
-    }
-
-    if (isAborted || abortSignal?.aborted) {
-      return createResult(false, 'aborted', { entityId: targetEntity.id }, 'Follow operation aborted by caller');
     }
     if (isTimedOut) {
       return createResult(false, 'timeout', { entityId: targetEntity.id }, 'Follow operation timed out');
     }
-
     return createResult(false, 'error', { entityId: targetEntity.id }, String(err?.message || err));
   } finally {
-    cleanup();
+    if (timerId) clearTimeout(timerId);
+    if (checkInterval) clearInterval(checkInterval);
+    if (abortSignal && abortHandler) abortSignal.removeEventListener('abort', abortHandler);
   }
 }
 
 module.exports = {
   inspectTargetEntity,
-  autoEquipBestWeapon,
   faceTarget,
   attackEntity,
   attackTarget,

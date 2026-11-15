@@ -2,8 +2,25 @@ const { goals } = require('mineflayer-pathfinder');
 const { createResult } = require('./result');
 
 /**
- * Stop all ongoing bot movements and active pathfinding
- * @param {object} bot Mineflayer bot instance
+ * Modifier un état de contrôle physique du bot sans propager d'exception
+ * @param {object} bot Instance du bot Mineflayer
+ * @param {string} control Nom du contrôle ('jump', 'forward', etc.)
+ * @param {boolean} state Valeur cible
+ * @returns {boolean} Vrai si l'état a été appliqué
+ */
+function setControlStateSafely(bot, control, state) {
+  if (typeof bot.setControlState !== 'function') return false;
+  try {
+    bot.setControlState(control, state);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Arrêter tous les mouvements en cours et la recherche de chemin active du bot
+ * @param {object} bot Instance du bot Mineflayer
  */
 function stopMovement(bot) {
   bot._activeNavigationTaskId = (bot._activeNavigationTaskId || 0) + 1;
@@ -16,7 +33,9 @@ function stopMovement(bot) {
       if (typeof bot.pathfinder.stop === 'function') {
         bot.pathfinder.stop();
       }
-    } catch {}
+    } catch {
+      // Ignored
+    }
   }
 
   if (typeof bot.clearControlStates === 'function') {
@@ -25,40 +44,47 @@ function stopMovement(bot) {
 
   const controls = ['forward', 'back', 'left', 'right', 'jump', 'sprint', 'sneak'];
   for (const control of controls) {
-    try {
-      if (typeof bot.setControlState === 'function') {
-        bot.setControlState(control, false);
-      }
-    } catch {}
+    setControlStateSafely(bot, control, false);
   }
 }
 
 /**
- * Clear all ongoing movement control states (legacy wrapper)
- * @param {object} bot Mineflayer bot instance
+ * Réinitialiser tous les contrôles de déplacement (alias de compatibilité)
+ * @param {object} bot Instance du bot Mineflayer
  */
 function clearMovementControls(bot) {
   stopMovement(bot);
 }
 
 /**
- * Navigate bot to target coordinates with robust lifecycle management
- * @param {object} bot Mineflayer bot instance
- * @param {number} x Target X coordinate
- * @param {number} y Target Y coordinate
- * @param {number} z Target Z coordinate
- * @param {object} [options={}] Movement options
- * @param {number} [options.range=1] Stopping distance range
- * @param {number} [options.timeoutMs=0] Maximum execution duration
- * @param {AbortSignal} [options.abortSignal] External cancellation signal
- * @returns {Promise<{ success: boolean, reason: string, data: object|null, error: string|null }>}
+ * Vérifier que trois coordonnées numériques sont finies et valides
+ * @param {number} x Coordonnée X
+ * @param {number} y Coordonnée Y
+ * @param {number} z Coordonnée Z
+ * @returns {boolean} Vrai si les coordonnées sont valides
+ */
+function areValidAxes(x, y, z) {
+  return (
+    typeof x === 'number' && Number.isFinite(x) &&
+    typeof y === 'number' && Number.isFinite(y) &&
+    typeof z === 'number' && Number.isFinite(z)
+  );
+}
+
+/**
+ * Naviguer vers des coordonnées cibles avec gestion complète du cycle de vie
+ * @param {object} bot Instance du bot Mineflayer
+ * @param {number} x Coordonnée X cible
+ * @param {number} y Coordonnée Y cible
+ * @param {number} z Coordonnée Z cible
+ * @param {object} [options={}] Options de déplacement
+ * @param {number} [options.range=1] Distance d'arrêt souhaitée
+ * @param {number} [options.timeoutMs=0] Durée maximale d'exécution en millisecondes
+ * @param {AbortSignal} [options.abortSignal] Signal d'annulation externe
+ * @returns {Promise<{ success: boolean, reason: string, data: object|null, error: string|null }>} Résultat normalisé
  */
 async function gotoCoordinates(bot, x, y, z, options = {}) {
-  if (
-    typeof x !== 'number' || !Number.isFinite(x) ||
-    typeof y !== 'number' || !Number.isFinite(y) ||
-    typeof z !== 'number' || !Number.isFinite(z)
-  ) {
+  if (!areValidAxes(x, y, z)) {
     return createResult(false, 'invalid_target', null, 'Target coordinates are invalid');
   }
 
@@ -75,7 +101,8 @@ async function gotoCoordinates(bot, x, y, z, options = {}) {
     };
   };
 
-  const currentTaskId = (bot._activeNavigationTaskId = (bot._activeNavigationTaskId || 0) + 1);
+  bot._activeNavigationTaskId = (bot._activeNavigationTaskId || 0) + 1;
+  const currentTaskId = bot._activeNavigationTaskId;
 
   if (abortSignal?.aborted) {
     stopMovement(bot);
@@ -88,23 +115,11 @@ async function gotoCoordinates(bot, x, y, z, options = {}) {
   let isAborted = false;
   let finalized = false;
 
-  const cleanupListeners = () => {
-    if (timerId) {
-      clearTimeout(timerId);
-      timerId = null;
-    }
-    if (abortSignal && abortHandler) {
-      abortSignal.removeEventListener('abort', abortHandler);
-      abortHandler = null;
-    }
-  };
-
   try {
     const goal = new goals.GoalNear(x, y, z, range);
-
     const navigationPromise = (async () => {
-      if (!bot.pathfinder || typeof bot.pathfinder.goto !== 'function') {
-        throw new Error('Pathfinder plugin is not initialized on bot');
+      if (typeof bot.pathfinder?.goto !== 'function') {
+        throw new TypeError('Pathfinder plugin is not initialized on bot');
       }
       await bot.pathfinder.goto(goal);
     })();
@@ -144,17 +159,12 @@ async function gotoCoordinates(bot, x, y, z, options = {}) {
     if (isTimedOut) {
       return createResult(false, 'timeout', getPositionData(), 'Navigation timed out');
     }
-    if (isAborted || abortSignal?.aborted) {
+    if (isAborted || abortSignal?.aborted || bot._activeNavigationTaskId !== currentTaskId) {
       return createResult(false, 'aborted', getPositionData(), 'Navigation aborted by caller');
     }
 
-    if (bot._activeNavigationTaskId !== currentTaskId) {
-      return createResult(false, 'aborted', getPositionData(), 'Navigation superseded by another movement task');
-    }
-
     const finalData = getPositionData();
-    const reached = finalData.distance <= range + 0.5;
-    if (reached) {
+    if (finalData.distance <= range + 0.5) {
       return createResult(true, 'reached', finalData, null);
     }
     return createResult(false, 'no_path', finalData, 'Target position was not reached within range');
@@ -165,34 +175,30 @@ async function gotoCoordinates(bot, x, y, z, options = {}) {
     if (isTimedOut) {
       return createResult(false, 'timeout', finalData, 'Navigation timed out');
     }
-    if (isAborted || abortSignal?.aborted) {
+    if (isAborted || abortSignal?.aborted || bot._activeNavigationTaskId !== currentTaskId) {
       return createResult(false, 'aborted', finalData, 'Navigation aborted by caller');
-    }
-
-    if (bot._activeNavigationTaskId !== currentTaskId) {
-      return createResult(false, 'aborted', finalData, 'Navigation superseded by another movement task');
     }
 
     const errMessage = String(err?.message || err || '');
     if (errMessage.toLowerCase().includes('path') || errMessage.includes('NoPath')) {
       return createResult(false, 'no_path', finalData, errMessage);
     }
-
     return createResult(false, 'error', finalData, errMessage);
   } finally {
-    cleanupListeners();
+    if (timerId) clearTimeout(timerId);
+    if (abortSignal && abortHandler) abortSignal.removeEventListener('abort', abortHandler);
   }
 }
 
 /**
- * Execute a controlled jump action with apex and physical tracking
- * @param {object} bot Mineflayer bot instance
- * @param {object} [options={}] Jump options
- * @param {number} [options.durationMs=350] Maximum jump key holding duration
- * @param {boolean} [options.waitForApex=false] Wait for apex before resolving
- * @param {number} [options.timeoutMs=1500] Maximum action wait duration
- * @param {AbortSignal} [options.abortSignal] External cancellation signal
- * @returns {Promise<{ success: boolean, reason: string, data: object|null, error: string|null }>}
+ * Exécuter un saut contrôlé avec suivi de l'apogée et de l'état physique
+ * @param {object} bot Instance du bot Mineflayer
+ * @param {object} [options={}] Options de saut
+ * @param {number} [options.durationMs=350] Durée maximale de maintien de la touche de saut
+ * @param {boolean} [options.waitForApex=false] Attendre l'apogée du saut avant de résoudre
+ * @param {number} [options.timeoutMs=1500] Durée maximale d'attente en millisecondes
+ * @param {AbortSignal} [options.abortSignal] Signal d'annulation externe
+ * @returns {Promise<{ success: boolean, reason: string, data: object|null, error: string|null }>} Résultat normalisé
  */
 async function jump(bot, options = {}) {
   const durationMs = typeof options.durationMs === 'number' ? options.durationMs : 350;
@@ -229,12 +235,7 @@ async function jump(bot, options = {}) {
       if (checkInterval) clearInterval(checkInterval);
       if (abortSignal && abortHandler) abortSignal.removeEventListener('abort', abortHandler);
 
-      try {
-        if (typeof bot.setControlState === 'function') {
-          bot.setControlState('jump', false);
-        }
-      } catch {}
-
+      setControlStateSafely(bot, 'jump', false);
       resolve(createResult(success, reason, getJumpData(peakY), errMessage));
     };
 
@@ -249,21 +250,17 @@ async function jump(bot, options = {}) {
       }, timeoutMs);
     }
 
-    try {
-      if (typeof bot.setControlState === 'function') {
+    if (typeof bot.setControlState === 'function') {
+      try {
         bot.setControlState('jump', true);
+      } catch (err) {
+        finalize(false, 'error', String(err?.message || err));
+        return;
       }
-    } catch (err) {
-      finalize(false, 'error', String(err?.message || err));
-      return;
     }
 
     keyReleaseTimer = setTimeout(() => {
-      try {
-        if (typeof bot.setControlState === 'function') {
-          bot.setControlState('jump', false);
-        }
-      } catch {}
+      setControlStateSafely(bot, 'jump', false);
       if (!waitForApex) {
         finalize(true, 'jumped', null);
       }
@@ -304,18 +301,13 @@ async function jump(bot, options = {}) {
 }
 
 /**
- * Look towards target world coordinate position
- * @param {object} bot Mineflayer bot instance
- * @param {{ x: number, y: number, z: number }} targetPos Position vector
- * @returns {Promise<{ success: boolean, reason: string, data: object|null, error: string|null }>}
+ * Orienter le regard du bot vers une position 3D dans le monde
+ * @param {object} bot Instance du bot Mineflayer
+ * @param {{ x: number, y: number, z: number }} targetPos Vecteur de position cible
+ * @returns {Promise<{ success: boolean, reason: string, data: object|null, error: string|null }>} Résultat normalisé
  */
 async function lookAtPosition(bot, targetPos) {
-  if (
-    !targetPos ||
-    typeof targetPos.x !== 'number' ||
-    typeof targetPos.y !== 'number' ||
-    typeof targetPos.z !== 'number'
-  ) {
+  if (!targetPos || !areValidAxes(targetPos.x, targetPos.y, targetPos.z)) {
     return createResult(false, 'invalid_target', null, 'Target position is invalid');
   }
 

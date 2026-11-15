@@ -16,25 +16,108 @@ const VALID_CONTAINER_NAMES = new Set([
 ]);
 
 /**
- * Check whether a block qualifies as an accessible item container
- * @param {object|null} block Block definition
- * @returns {boolean} True if block is a valid container
+ * Vérifier si un bloc correspond à un conteneur d'items accessible
+ * @param {object|null} block Définition du bloc
+ * @returns {boolean} Vrai si le bloc est un conteneur valide
  */
 function isContainerBlock(block) {
   if (!block || typeof block.name !== 'string') return false;
-  if (VALID_CONTAINER_NAMES.has(block.name)) return true;
-  if (block.name.endsWith('shulker_box')) return true;
-  return false;
+  return VALID_CONTAINER_NAMES.has(block.name) || block.name.endsWith('shulker_box');
 }
 
 /**
- * Open container block at specified position with reach and type validation
- * @param {object} bot Mineflayer bot instance
- * @param {object} containerBlock Target block (chest, furnace, barrel, etc.)
- * @param {object} [options={}] Operation options
- * @param {number} [options.timeoutMs=0] Maximum wait duration
- * @param {AbortSignal} [options.abortSignal] External cancellation signal
- * @returns {Promise<{ success: boolean, reason: string, data: object|null, error: string|null }>}
+ * Compter le nombre d'exemplaires d'un item dans une liste d'items
+ * @param {Array<object>} items Liste d'items à parcourir
+ * @param {string} itemName Nom de l'item recherché
+ * @returns {number} Quantité totale trouvée
+ */
+function sumMatchingItems(items, itemName) {
+  if (!Array.isArray(items)) return 0;
+  return items
+    .filter(i => i?.name === itemName)
+    .reduce((sum, i) => sum + (i.count || 1), 0);
+}
+
+/**
+ * Exécuter une opération de conteneur avec surveillance de timeout et de signal d'annulation
+ * @param {Function} operationFn Fonction asynchrone à exécuter
+ * @param {object} guards Options de surveillance
+ * @param {number} guards.timeoutMs Délai maximal en millisecondes
+ * @param {AbortSignal} [guards.abortSignal] Signal d'annulation externe
+ * @param {string} guards.abortMessage Message en cas d'annulation
+ * @param {string} guards.timeoutMessage Message en cas de dépassement de délai
+ * @returns {Promise<{ ok: boolean, value?: any, reason?: string, error?: string }>} Résultat de l'exécution
+ */
+async function runContainerOperationWithGuards(operationFn, guards) {
+  const { timeoutMs, abortSignal, abortMessage, timeoutMessage } = guards;
+  let timerId = null;
+  let abortHandler = null;
+  let isTimedOut = false;
+  let isAborted = false;
+
+  try {
+    const racePromises = [operationFn()];
+
+    if (abortSignal) {
+      const abortPromise = new Promise((_, reject) => {
+        abortHandler = () => {
+          isAborted = true;
+          reject(new Error(abortMessage));
+        };
+        abortSignal.addEventListener('abort', abortHandler, { once: true });
+      });
+      racePromises.push(abortPromise);
+    }
+
+    if (timeoutMs > 0) {
+      const timeoutPromise = new Promise((_, reject) => {
+        timerId = setTimeout(() => {
+          isTimedOut = true;
+          reject(new Error(timeoutMessage));
+        }, timeoutMs);
+      });
+      racePromises.push(timeoutPromise);
+    }
+
+    const value = await Promise.race(racePromises);
+    return { ok: true, value };
+  } catch (err) {
+    if (isAborted || abortSignal?.aborted) {
+      return { ok: false, reason: 'aborted', error: abortMessage };
+    }
+    if (isTimedOut) {
+      return { ok: false, reason: 'timeout', error: timeoutMessage };
+    }
+    return { ok: false, reason: 'error', error: String(err?.message || err || '') };
+  } finally {
+    if (timerId) clearTimeout(timerId);
+    if (abortSignal && abortHandler) abortSignal.removeEventListener('abort', abortHandler);
+  }
+}
+
+/**
+ * Fermer la fenêtre courante du bot sans propager d'erreur
+ * @param {object} bot Instance du bot Mineflayer
+ * @returns {boolean} Vrai si la fermeture a été exécutée
+ */
+function closeCurrentWindowSafely(bot) {
+  if (!bot.currentWindow || typeof bot.closeWindow !== 'function') return false;
+  try {
+    bot.closeWindow(bot.currentWindow);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Ouvrir un bloc conteneur avec validation de portée et de type
+ * @param {object} bot Instance du bot Mineflayer
+ * @param {object} containerBlock Bloc conteneur cible (coffre, fourneau, tonneau, etc.)
+ * @param {object} [options={}] Options de l'opération
+ * @param {number} [options.timeoutMs=0] Durée maximale d'attente en millisecondes
+ * @param {AbortSignal} [options.abortSignal] Signal d'annulation externe
+ * @returns {Promise<{ success: boolean, reason: string, data: object|null, error: string|null }>} Résultat normalisé
  */
 async function openContainer(bot, containerBlock, options = {}) {
   if (!containerBlock || typeof containerBlock !== 'object') {
@@ -65,97 +148,49 @@ async function openContainer(bot, containerBlock, options = {}) {
       }
     }
 
-    if (bot.currentWindow) {
-      try {
-        bot.closeWindow(bot.currentWindow);
-      } catch {}
-    }
+    closeCurrentWindowSafely(bot);
 
-    let timerId = null;
-    let abortHandler = null;
-    let isTimedOut = false;
-    let isAborted = false;
-
-    const cleanup = () => {
-      if (timerId) clearTimeout(timerId);
-      if (abortSignal && abortHandler) abortSignal.removeEventListener('abort', abortHandler);
-    };
-
-    try {
-      const openPromise = (async () => {
+    const outcome = await runContainerOperationWithGuards(
+      async () => {
         if (typeof bot.openContainer !== 'function') {
-          throw new Error('Bot does not support openContainer action');
+          throw new TypeError('Bot does not support openContainer action');
         }
-        return await bot.openContainer(containerBlock);
-      })();
-
-      const racePromises = [openPromise];
-
-      if (abortSignal) {
-        const abortPromise = new Promise((_, reject) => {
-          abortHandler = () => {
-            isAborted = true;
-            reject(new Error('Open container aborted by caller'));
-          };
-          abortSignal.addEventListener('abort', abortHandler, { once: true });
-        });
-        racePromises.push(abortPromise);
+        return bot.openContainer(containerBlock);
+      },
+      {
+        timeoutMs,
+        abortSignal,
+        abortMessage: 'Open container aborted by caller',
+        timeoutMessage: 'Open container timed out'
       }
+    );
 
-      if (timeoutMs > 0) {
-        const timeoutPromise = new Promise((_, reject) => {
-          timerId = setTimeout(() => {
-            isTimedOut = true;
-            reject(new Error('Open container timed out'));
-          }, timeoutMs);
-        });
-        racePromises.push(timeoutPromise);
-      }
-
-      const window = await Promise.race(racePromises);
-
-      if (window || bot.currentWindow) {
-        return createResult(true, 'opened', {
-          window: window || bot.currentWindow,
-          containerType: containerBlock.name,
-          position: containerBlock.position
-        }, null);
-      }
-
-      return createResult(false, 'error', null, 'Container window was not established after opening');
-    } catch (err) {
-      if (bot.currentWindow) {
-        return createResult(true, 'opened', {
-          window: bot.currentWindow,
-          containerType: containerBlock.name,
-          position: containerBlock.position
-        }, null);
-      }
-
-      if (isAborted || abortSignal?.aborted) {
-        return createResult(false, 'aborted', null, 'Open container aborted by caller');
-      }
-      if (isTimedOut) {
-        return createResult(false, 'timeout', null, 'Open container timed out');
-      }
-
-      return createResult(false, 'error', null, String(err?.message || err));
-    } finally {
-      cleanup();
+    const activeWin = outcome.value || bot.currentWindow;
+    if (activeWin) {
+      return createResult(true, 'opened', {
+        window: activeWin,
+        containerType: containerBlock.name,
+        position: containerBlock.position
+      }, null);
     }
+
+    if (!outcome.ok) {
+      return createResult(false, outcome.reason, null, outcome.error);
+    }
+    return createResult(false, 'error', null, 'Container window was not established after opening');
   });
 }
 
 /**
- * Deposit item from player inventory into open container window
- * @param {object} bot Mineflayer bot instance
- * @param {object} containerWindow Open container window instance
- * @param {string} itemName Name of item to deposit
- * @param {number} [count=1] Number of items to deposit
- * @param {object} [options={}] Operation options
- * @param {number} [options.timeoutMs=0] Maximum wait duration
- * @param {AbortSignal} [options.abortSignal] External cancellation signal
- * @returns {Promise<{ success: boolean, reason: string, data: object|null, error: string|null }>}
+ * Déposer un item de l'inventaire du joueur dans la fenêtre de conteneur ouverte
+ * @param {object} bot Instance du bot Mineflayer
+ * @param {object} containerWindow Fenêtre de conteneur ouverte
+ * @param {string} itemName Nom de l'item à déposer
+ * @param {number} [count=1] Quantité d'items à déposer
+ * @param {object} [options={}] Options de l'opération
+ * @param {number} [options.timeoutMs=0] Durée maximale d'attente en millisecondes
+ * @param {AbortSignal} [options.abortSignal] Signal d'annulation externe
+ * @returns {Promise<{ success: boolean, reason: string, data: object|null, error: string|null }>} Résultat normalisé
  */
 async function depositItem(bot, containerWindow, itemName, count = 1, options = {}) {
   if (!containerWindow || bot.currentWindow !== containerWindow) {
@@ -174,8 +209,9 @@ async function depositItem(bot, containerWindow, itemName, count = 1, options = 
       return createResult(false, 'aborted', { itemName, count }, 'Deposit operation aborted before start');
     }
 
-    const availableItem = bot.inventory?.items?.().find(i => i.name === itemName);
-    const availableCount = bot.inventory?.items?.().filter(i => i.name === itemName).reduce((sum, i) => sum + (i.count || 1), 0) || 0;
+    const playerItems = bot.inventory?.items?.() || [];
+    const availableItem = playerItems.find(i => i.name === itemName);
+    const availableCount = sumMatchingItems(playerItems, itemName);
 
     if (!availableItem || availableCount < count) {
       return createResult(false, 'missing_item', {
@@ -185,106 +221,66 @@ async function depositItem(bot, containerWindow, itemName, count = 1, options = 
       }, 'Insufficient item quantity in player inventory to deposit');
     }
 
-    const initialContainerCount = typeof containerWindow.containerItems === 'function'
-      ? containerWindow.containerItems().filter(i => i.name === itemName).reduce((sum, i) => sum + (i.count || 1), 0)
-      : 0;
+    const readContainerCount = (fallback) => (
+      typeof containerWindow.containerItems === 'function'
+        ? sumMatchingItems(containerWindow.containerItems(), itemName)
+        : fallback
+    );
 
-    let timerId = null;
-    let abortHandler = null;
-    let isTimedOut = false;
-    let isAborted = false;
+    const initialContainerCount = readContainerCount(0);
 
-    const cleanup = () => {
-      if (timerId) clearTimeout(timerId);
-      if (abortSignal && abortHandler) abortSignal.removeEventListener('abort', abortHandler);
-    };
-
-    try {
-      const depositPromise = (async () => {
+    const outcome = await runContainerOperationWithGuards(
+      async () => {
         if (typeof containerWindow.deposit !== 'function') {
-          throw new Error('Container window does not support deposit action');
+          throw new TypeError('Container window does not support deposit action');
         }
         await containerWindow.deposit(availableItem.type, null, count);
-      })();
-
-      const racePromises = [depositPromise];
-
-      if (abortSignal) {
-        const abortPromise = new Promise((_, reject) => {
-          abortHandler = () => {
-            isAborted = true;
-            reject(new Error('Deposit operation aborted by caller'));
-          };
-          abortSignal.addEventListener('abort', abortHandler, { once: true });
-        });
-        racePromises.push(abortPromise);
+      },
+      {
+        timeoutMs,
+        abortSignal,
+        abortMessage: 'Deposit operation aborted by caller',
+        timeoutMessage: 'Deposit operation timed out'
       }
+    );
 
-      if (timeoutMs > 0) {
-        const timeoutPromise = new Promise((_, reject) => {
-          timerId = setTimeout(() => {
-            isTimedOut = true;
-            reject(new Error('Deposit operation timed out'));
-          }, timeoutMs);
-        });
-        racePromises.push(timeoutPromise);
+    const fallbackAfter = outcome.ok ? initialContainerCount + count : initialContainerCount;
+    const finalContainerCount = readContainerCount(fallbackAfter);
+    const depositedCount = finalContainerCount - initialContainerCount;
+
+    if (depositedCount === count) {
+      return createResult(true, 'deposited', { itemName, depositedCount }, null);
+    }
+
+    if (!outcome.ok) {
+      if (outcome.reason === 'aborted' || outcome.reason === 'timeout') {
+        return createResult(false, outcome.reason, { itemName, count }, outcome.error);
       }
-
-      await Promise.race(racePromises);
-
-      const finalContainerCount = typeof containerWindow.containerItems === 'function'
-        ? containerWindow.containerItems().filter(i => i.name === itemName).reduce((sum, i) => sum + (i.count || 1), 0)
-        : initialContainerCount + count;
-
-      const depositedCount = finalContainerCount - initialContainerCount;
-      if (depositedCount === count) {
-        return createResult(true, 'deposited', { itemName, depositedCount }, null);
-      }
-
-      return createResult(false, 'error', {
-        itemName,
-        depositedCount,
-        expectedCount: count
-      }, 'Deposited quantity did not match expected count');
-    } catch (err) {
-      const finalContainerCount = typeof containerWindow.containerItems === 'function'
-        ? containerWindow.containerItems().filter(i => i.name === itemName).reduce((sum, i) => sum + (i.count || 1), 0)
-        : initialContainerCount;
-
-      const depositedCount = finalContainerCount - initialContainerCount;
-      if (depositedCount === count) {
-        return createResult(true, 'deposited', { itemName, depositedCount }, null);
-      }
-
-      if (isAborted || abortSignal?.aborted) {
-        return createResult(false, 'aborted', { itemName, count }, 'Deposit operation aborted by caller');
-      }
-      if (isTimedOut) {
-        return createResult(false, 'timeout', { itemName, count }, 'Deposit operation timed out');
-      }
-
-      const errMessage = String(err?.message || err || '');
-      if (errMessage.toLowerCase().includes('full') || errMessage.toLowerCase().includes('space')) {
+      const lowerErr = outcome.error.toLowerCase();
+      if (lowerErr.includes('full') || lowerErr.includes('space')) {
         return createResult(false, 'container_full', { itemName }, 'Container has no room to accept deposited item');
       }
-
-      return createResult(false, 'error', { itemName }, errMessage);
-    } finally {
-      cleanup();
+      return createResult(false, 'error', { itemName }, outcome.error);
     }
+
+    return createResult(false, 'error', {
+      itemName,
+      depositedCount,
+      expectedCount: count
+    }, 'Deposited quantity did not match expected count');
   });
 }
 
 /**
- * Withdraw item from open container into player inventory
- * @param {object} bot Mineflayer bot instance
- * @param {object} containerWindow Open container window instance
- * @param {string} itemName Name of item to withdraw
- * @param {number} [count=1] Number of items to withdraw
- * @param {object} [options={}] Operation options
- * @param {number} [options.timeoutMs=0] Maximum wait duration
- * @param {AbortSignal} [options.abortSignal] External cancellation signal
- * @returns {Promise<{ success: boolean, reason: string, data: object|null, error: string|null }>}
+ * Retirer un item d'un conteneur ouvert vers l'inventaire du joueur
+ * @param {object} bot Instance du bot Mineflayer
+ * @param {object} containerWindow Fenêtre de conteneur ouverte
+ * @param {string} itemName Nom de l'item à retirer
+ * @param {number} [count=1] Quantité d'items à retirer
+ * @param {object} [options={}] Options de l'opération
+ * @param {number} [options.timeoutMs=0] Durée maximale d'attente en millisecondes
+ * @param {AbortSignal} [options.abortSignal] Signal d'annulation externe
+ * @returns {Promise<{ success: boolean, reason: string, data: object|null, error: string|null }>} Résultat normalisé
  */
 async function withdrawItem(bot, containerWindow, itemName, count = 1, options = {}) {
   if (!containerWindow || bot.currentWindow !== containerWindow) {
@@ -308,7 +304,7 @@ async function withdrawItem(bot, containerWindow, itemName, count = 1, options =
       : [];
 
     const availableItem = containerItems.find(i => i.name === itemName);
-    const availableCount = containerItems.filter(i => i.name === itemName).reduce((sum, i) => sum + (i.count || 1), 0);
+    const availableCount = sumMatchingItems(containerItems, itemName);
 
     if (!availableItem || availableCount < count) {
       return createResult(false, 'missing_item', {
@@ -318,101 +314,61 @@ async function withdrawItem(bot, containerWindow, itemName, count = 1, options =
       }, 'Insufficient item quantity in container to withdraw');
     }
 
-    const initialPlayerCount = bot.inventory?.items?.().filter(i => i.name === itemName).reduce((sum, i) => sum + (i.count || 1), 0) || 0;
+    const initialPlayerCount = sumMatchingItems(bot.inventory?.items?.() || [], itemName);
 
-    let timerId = null;
-    let abortHandler = null;
-    let isTimedOut = false;
-    let isAborted = false;
-
-    const cleanup = () => {
-      if (timerId) clearTimeout(timerId);
-      if (abortSignal && abortHandler) abortSignal.removeEventListener('abort', abortHandler);
-    };
-
-    try {
-      const withdrawPromise = (async () => {
+    const outcome = await runContainerOperationWithGuards(
+      async () => {
         if (typeof containerWindow.withdraw !== 'function') {
-          throw new Error('Container window does not support withdraw action');
+          throw new TypeError('Container window does not support withdraw action');
         }
         await containerWindow.withdraw(availableItem.type, null, count);
-      })();
-
-      const racePromises = [withdrawPromise];
-
-      if (abortSignal) {
-        const abortPromise = new Promise((_, reject) => {
-          abortHandler = () => {
-            isAborted = true;
-            reject(new Error('Withdraw operation aborted by caller'));
-          };
-          abortSignal.addEventListener('abort', abortHandler, { once: true });
-        });
-        racePromises.push(abortPromise);
+      },
+      {
+        timeoutMs,
+        abortSignal,
+        abortMessage: 'Withdraw operation aborted by caller',
+        timeoutMessage: 'Withdraw operation timed out'
       }
+    );
 
-      if (timeoutMs > 0) {
-        const timeoutPromise = new Promise((_, reject) => {
-          timerId = setTimeout(() => {
-            isTimedOut = true;
-            reject(new Error('Withdraw operation timed out'));
-          }, timeoutMs);
-        });
-        racePromises.push(timeoutPromise);
+    const fallbackAfter = outcome.ok ? initialPlayerCount + count : initialPlayerCount;
+    const finalPlayerCount = sumMatchingItems(bot.inventory?.items?.() || [], itemName) || fallbackAfter;
+    const withdrawnCount = finalPlayerCount - initialPlayerCount;
+
+    if (withdrawnCount === count) {
+      return createResult(true, 'withdrawn', { itemName, withdrawnCount }, null);
+    }
+
+    if (!outcome.ok) {
+      if (outcome.reason === 'aborted' || outcome.reason === 'timeout') {
+        return createResult(false, outcome.reason, { itemName, count }, outcome.error);
       }
-
-      await Promise.race(racePromises);
-
-      const finalPlayerCount = bot.inventory?.items?.().filter(i => i.name === itemName).reduce((sum, i) => sum + (i.count || 1), 0) || (initialPlayerCount + count);
-      const withdrawnCount = finalPlayerCount - initialPlayerCount;
-
-      if (withdrawnCount === count) {
-        return createResult(true, 'withdrawn', { itemName, withdrawnCount }, null);
-      }
-
-      return createResult(false, 'error', {
-        itemName,
-        withdrawnCount,
-        expectedCount: count
-      }, 'Withdrawn quantity did not match expected count');
-    } catch (err) {
-      const finalPlayerCount = bot.inventory?.items?.().filter(i => i.name === itemName).reduce((sum, i) => sum + (i.count || 1), 0) || initialPlayerCount;
-      const withdrawnCount = finalPlayerCount - initialPlayerCount;
-
-      if (withdrawnCount === count) {
-        return createResult(true, 'withdrawn', { itemName, withdrawnCount }, null);
-      }
-
-      if (isAborted || abortSignal?.aborted) {
-        return createResult(false, 'aborted', { itemName, count }, 'Withdraw operation aborted by caller');
-      }
-      if (isTimedOut) {
-        return createResult(false, 'timeout', { itemName, count }, 'Withdraw operation timed out');
-      }
-
-      const errMessage = String(err?.message || err || '');
-      if (errMessage.toLowerCase().includes('full') || errMessage.toLowerCase().includes('space')) {
+      const lowerErr = outcome.error.toLowerCase();
+      if (lowerErr.includes('full') || lowerErr.includes('space')) {
         return createResult(false, 'inventory_full', { itemName }, 'Player inventory has no room to receive withdrawn item');
       }
-
-      return createResult(false, 'error', { itemName }, errMessage);
-    } finally {
-      cleanup();
+      return createResult(false, 'error', { itemName }, outcome.error);
     }
+
+    return createResult(false, 'error', {
+      itemName,
+      withdrawnCount,
+      expectedCount: count
+    }, 'Withdrawn quantity did not match expected count');
   });
 }
 
 /**
- * Transfer item quantity between two specific slots within the container window
- * @param {object} bot Mineflayer bot instance
- * @param {object} containerWindow Open container window instance
- * @param {number} sourceSlot Source slot index
- * @param {number} destSlot Destination slot index
- * @param {number} [count=1] Number of items to transfer
- * @param {object} [options={}] Operation options
- * @param {number} [options.timeoutMs=0] Maximum wait duration
- * @param {AbortSignal} [options.abortSignal] External cancellation signal
- * @returns {Promise<{ success: boolean, reason: string, data: object|null, error: string|null }>}
+ * Transférer une quantité d'items entre deux emplacements spécifiques de la fenêtre de conteneur
+ * @param {object} bot Instance du bot Mineflayer
+ * @param {object} containerWindow Fenêtre de conteneur ouverte
+ * @param {number} sourceSlot Index de l'emplacement source
+ * @param {number} destSlot Index de l'emplacement de destination
+ * @param {number} [count=1] Quantité d'items à transférer
+ * @param {object} [options={}] Options de l'opération
+ * @param {number} [options.timeoutMs=0] Durée maximale d'attente en millisecondes
+ * @param {AbortSignal} [options.abortSignal] Signal d'annulation externe
+ * @returns {Promise<{ success: boolean, reason: string, data: object|null, error: string|null }>} Résultat normalisé
  */
 async function transferItem(bot, containerWindow, sourceSlot, destSlot, count = 1, options = {}) {
   if (!containerWindow || bot.currentWindow !== containerWindow) {
@@ -441,100 +397,63 @@ async function transferItem(bot, containerWindow, sourceSlot, destSlot, count = 
     }
 
     const sourceItem = containerWindow.slots[sourceSlot];
-    if (!sourceItem || (sourceItem.count || 1) < count) {
+    const initialSourceCount = sourceItem ? (sourceItem.count || 1) : 0;
+    if (!sourceItem || initialSourceCount < count) {
       return createResult(false, 'missing_item', {
         sourceSlot,
         required: count,
-        available: sourceItem ? (sourceItem.count || 1) : 0
+        available: initialSourceCount
       }, 'Source slot does not contain enough items to transfer');
     }
 
-    const initialSourceCount = sourceItem.count || 1;
     const destItem = containerWindow.slots[destSlot];
     const initialDestCount = destItem ? (destItem.count || 1) : 0;
 
-    let timerId = null;
-    let abortHandler = null;
-    let isTimedOut = false;
-    let isAborted = false;
-
-    const cleanup = () => {
-      if (timerId) clearTimeout(timerId);
-      if (abortSignal && abortHandler) abortSignal.removeEventListener('abort', abortHandler);
-    };
-
-    try {
-      const transferPromise = (async () => {
+    const outcome = await runContainerOperationWithGuards(
+      async () => {
         if (typeof containerWindow.transferSlot === 'function') {
           await containerWindow.transferSlot(sourceSlot, destSlot, count);
-        } else if (typeof bot.clickWindow === 'function') {
+          return;
+        }
+        if (typeof bot.clickWindow === 'function') {
           await bot.clickWindow(sourceSlot, 0, 0);
           await bot.clickWindow(destSlot, 0, 0);
-        } else {
-          throw new Error('Bot does not support slot transfer action');
+          return;
         }
-      })();
-
-      const racePromises = [transferPromise];
-
-      if (abortSignal) {
-        const abortPromise = new Promise((_, reject) => {
-          abortHandler = () => {
-            isAborted = true;
-            reject(new Error('Transfer operation aborted by caller'));
-          };
-          abortSignal.addEventListener('abort', abortHandler, { once: true });
-        });
-        racePromises.push(abortPromise);
+        throw new TypeError('Bot does not support slot transfer action');
+      },
+      {
+        timeoutMs,
+        abortSignal,
+        abortMessage: 'Transfer operation aborted by caller',
+        timeoutMessage: 'Transfer operation timed out'
       }
+    );
 
-      if (timeoutMs > 0) {
-        const timeoutPromise = new Promise((_, reject) => {
-          timerId = setTimeout(() => {
-            isTimedOut = true;
-            reject(new Error('Transfer operation timed out'));
-          }, timeoutMs);
-        });
-        racePromises.push(timeoutPromise);
+    if (!outcome.ok) {
+      if (outcome.reason === 'aborted' || outcome.reason === 'timeout') {
+        return createResult(false, outcome.reason, { sourceSlot, destSlot, count }, outcome.error);
       }
-
-      await Promise.race(racePromises);
-
-      const finalSource = containerWindow.slots[sourceSlot];
-      const finalDest = containerWindow.slots[destSlot];
-
-      const transferred = (!finalSource || finalSource.count < initialSourceCount) &&
-        (finalDest && finalDest.count > initialDestCount);
-
-      if (transferred) {
-        return createResult(true, 'transferred', {
-          sourceSlot,
-          destSlot,
-          count
-        }, null);
-      }
-
-      return createResult(false, 'error', { sourceSlot, destSlot }, 'Slot quantities did not change after transfer');
-    } catch (err) {
-      if (isAborted || abortSignal?.aborted) {
-        return createResult(false, 'aborted', { sourceSlot, destSlot, count }, 'Transfer operation aborted by caller');
-      }
-      if (isTimedOut) {
-        return createResult(false, 'timeout', { sourceSlot, destSlot, count }, 'Transfer operation timed out');
-      }
-
-      return createResult(false, 'error', { sourceSlot, destSlot }, String(err?.message || err));
-    } finally {
-      cleanup();
+      return createResult(false, 'error', { sourceSlot, destSlot }, outcome.error);
     }
+
+    const finalSource = containerWindow.slots[sourceSlot];
+    const finalDest = containerWindow.slots[destSlot];
+    const transferred = (!finalSource || finalSource.count < initialSourceCount) &&
+      Boolean(finalDest && finalDest.count > initialDestCount);
+
+    if (transferred) {
+      return createResult(true, 'transferred', { sourceSlot, destSlot, count }, null);
+    }
+    return createResult(false, 'error', { sourceSlot, destSlot }, 'Slot quantities did not change after transfer');
   });
 }
 
 /**
- * Close currently open container window cleanly
- * @param {object} bot Mineflayer bot instance
- * @param {object} [containerWindow=null] Open window instance
- * @returns {Promise<{ success: boolean, reason: string, data: object|null, error: string|null }>}
+ * Fermer proprement la fenêtre de conteneur actuellement ouverte
+ * @param {object} bot Instance du bot Mineflayer
+ * @param {object|null} [containerWindow=null] Instance de la fenêtre ouverte
+ * @returns {Promise<{ success: boolean, reason: string, data: object|null, error: string|null }>} Résultat normalisé
  */
 async function closeContainer(bot, containerWindow = null) {
   const windowToClose = containerWindow || bot.currentWindow;
@@ -545,7 +464,7 @@ async function closeContainer(bot, containerWindow = null) {
   try {
     if (typeof bot.closeWindow === 'function') {
       bot.closeWindow(windowToClose || bot.currentWindow);
-    } else if (windowToClose && typeof windowToClose.close === 'function') {
+    } else if (typeof windowToClose?.close === 'function') {
       windowToClose.close();
     }
 
