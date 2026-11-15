@@ -15,9 +15,9 @@ const ALWAYS_EDIBLE_ITEMS = new Set([
 ]);
 
 /**
- * Retrieve minecraft-data registry from bot instance
- * @param {object} bot Mineflayer bot instance
- * @returns {object|null} Minecraft data registry
+ * Récupérer le registre minecraft-data depuis l'instance du bot
+ * @param {object} bot Instance du bot Mineflayer
+ * @returns {object|null} Registre de données Minecraft
  */
 function getRegistry(bot) {
   if (bot.registry) return bot.registry;
@@ -30,17 +30,19 @@ function getRegistry(bot) {
 }
 
 /**
- * Resolve target inventory slot number for destination name
- * @param {object} bot Mineflayer bot instance
- * @param {string} destination Destination slot identifier
- * @returns {number|null} Target slot index
+ * Résoudre le numéro d'emplacement d'inventaire correspondant au nom de destination
+ * @param {object} bot Instance du bot Mineflayer
+ * @param {string} destination Identifiant de l'emplacement de destination
+ * @returns {number|null} Index de l'emplacement cible
  */
 function getDestinationSlot(bot, destination) {
   if (typeof bot.getEquipmentDestSlot === 'function') {
     try {
       const slot = bot.getEquipmentDestSlot(destination);
       if (typeof slot === 'number') return slot;
-    } catch {}
+    } catch {
+      return null;
+    }
   }
 
   switch (destination) {
@@ -49,21 +51,21 @@ function getDestinationSlot(bot, destination) {
     case 'legs': return 7;
     case 'feet': return 8;
     case 'off-hand': return 45;
-    case 'hand': return bot.quickBarSlot !== undefined ? 36 + bot.quickBarSlot : 36;
+    case 'hand': return bot.quickBarSlot === undefined ? 36 : 36 + bot.quickBarSlot;
     default: return null;
   }
 }
 
 /**
- * Check whether an item is currently equipped in target destination
- * @param {object} bot Mineflayer bot instance
- * @param {string} itemName Expected item name
- * @param {string} destination Destination name
- * @returns {boolean} True if item is equipped
+ * Vérifier si un item est actuellement équipé dans la destination cible
+ * @param {object} bot Instance du bot Mineflayer
+ * @param {string} itemName Nom de l'item attendu
+ * @param {string} destination Nom de la destination
+ * @returns {boolean} Vrai si l'item est équipé
  */
 function isItemEquipped(bot, itemName, destination) {
-  if (destination === 'hand') {
-    if (bot.heldItem && bot.heldItem.name === itemName) return true;
+  if (destination === 'hand' && bot.heldItem?.name === itemName) {
+    return true;
   }
 
   const slot = getDestinationSlot(bot, destination);
@@ -71,7 +73,7 @@ function isItemEquipped(bot, itemName, destination) {
     return bot.inventory.slots[slot].name === itemName;
   }
 
-  if (bot.equipment && bot.equipment[destination]) {
+  if (bot.equipment?.[destination]) {
     return bot.equipment[destination].name === itemName;
   }
 
@@ -79,10 +81,10 @@ function isItemEquipped(bot, itemName, destination) {
 }
 
 /**
- * Count total units of an item available in bot inventory
- * @param {object} bot Mineflayer bot instance
- * @param {string|number} itemKey Item name or numeric id
- * @returns {number} Available quantity
+ * Compter le nombre total d'unités d'un item disponibles dans l'inventaire du bot
+ * @param {object} bot Instance du bot Mineflayer
+ * @param {string|number} itemKey Nom ou identifiant numérique de l'item
+ * @returns {number} Quantité disponible
  */
 function countInventoryItem(bot, itemKey) {
   if (!bot.inventory?.items) return 0;
@@ -95,40 +97,34 @@ function countInventoryItem(bot, itemKey) {
 }
 
 /**
- * Check if an item can be consumed based on minecraft data and food properties
- * @param {object|null} registry Minecraft data registry
- * @param {string} itemName Item name to test
- * @returns {boolean} True if item is consumable
+ * Vérifier si un item peut être consommé selon ses propriétés alimentaires dans minecraft-data
+ * @param {object|null} registry Registre de données Minecraft
+ * @param {string} itemName Nom de l'item à tester
+ * @returns {boolean} Vrai si l'item est consommable
  */
 function isConsumable(registry, itemName) {
   if (ALWAYS_EDIBLE_ITEMS.has(itemName)) return true;
   if (typeof itemName === 'string' && itemName.endsWith('_potion')) return true;
-
-  if (registry?.foodsByName && registry.foodsByName[itemName]) return true;
+  if (registry?.foodsByName?.[itemName]) return true;
 
   const itemDef = registry?.itemsByName?.[itemName];
-  if (itemDef && (itemDef.foodPoints !== undefined || itemDef.food !== undefined)) {
-    return true;
-  }
-
-  return false;
+  return Boolean(itemDef && (itemDef.foodPoints !== undefined || itemDef.food !== undefined));
 }
 
 /**
- * Check if an item can be eaten when food bar is full
- * @param {string} itemName Item name
- * @returns {boolean} True if edible at full hunger
+ * Vérifier si un item peut être consommé même lorsque la barre de faim est pleine
+ * @param {string} itemName Nom de l'item
+ * @returns {boolean} Vrai si consommable à satiété maximale
  */
 function isEdibleAtFullHunger(itemName) {
   if (ALWAYS_EDIBLE_ITEMS.has(itemName)) return true;
-  if (typeof itemName === 'string' && itemName.endsWith('_potion')) return true;
-  return false;
+  return typeof itemName === 'string' && itemName.endsWith('_potion');
 }
 
 /**
- * Determine whether recipe requires a 3x3 crafting table block
- * @param {object} recipe Recipe instance
- * @returns {boolean} True if crafting table required
+ * Déterminer si une recette nécessite une grille 3x3 d'établi
+ * @param {object} recipe Instance de la recette
+ * @returns {boolean} Vrai si un établi est requis
  */
 function recipeRequiresTable(recipe) {
   if (recipe.requiresTable !== undefined) {
@@ -140,22 +136,75 @@ function recipeRequiresTable(recipe) {
     if (recipe.inShape.some(row => Array.isArray(row) && row.length > 2)) return true;
   }
 
-  if (Array.isArray(recipe.ingredients) && recipe.ingredients.length > 4) {
-    return true;
-  }
-
-  return false;
+  return Array.isArray(recipe.ingredients) && recipe.ingredients.length > 4;
 }
 
 /**
- * Equip specified item to target inventory slot
- * @param {object} bot Mineflayer bot instance
- * @param {string} itemName Item name to equip
- * @param {string} [destination='hand'] Destination slot ('hand', 'head', 'torso', 'legs', 'feet', 'off-hand')
- * @param {object} [options={}] Operation options
- * @param {number} [options.timeoutMs=0] Maximum wait duration
- * @param {AbortSignal} [options.abortSignal] External cancellation signal
- * @returns {Promise<{ success: boolean, reason: string, data: object|null, error: string|null }>}
+ * Exécuter une action d'inventaire asynchrone sous surveillance de timeout et d'annulation
+ * @param {Function} actionFn Fonction asynchrone à exécuter
+ * @param {object} guards Options de surveillance
+ * @param {number} guards.timeoutMs Délai maximal en millisecondes
+ * @param {AbortSignal} [guards.abortSignal] Signal d'annulation externe
+ * @param {string} guards.abortMessage Message en cas d'annulation
+ * @param {string} guards.timeoutMessage Message en cas de dépassement de délai
+ * @returns {Promise<{ ok: boolean, reason?: string, error?: string }>} Résultat de l'exécution
+ */
+async function runItemOperationWithGuards(actionFn, guards) {
+  const { timeoutMs, abortSignal, abortMessage, timeoutMessage } = guards;
+  let timerId = null;
+  let abortHandler = null;
+  let isTimedOut = false;
+  let isAborted = false;
+
+  try {
+    const racePromises = [actionFn()];
+
+    if (abortSignal) {
+      const abortPromise = new Promise((_, reject) => {
+        abortHandler = () => {
+          isAborted = true;
+          reject(new Error(abortMessage));
+        };
+        abortSignal.addEventListener('abort', abortHandler, { once: true });
+      });
+      racePromises.push(abortPromise);
+    }
+
+    if (timeoutMs > 0) {
+      const timeoutPromise = new Promise((_, reject) => {
+        timerId = setTimeout(() => {
+          isTimedOut = true;
+          reject(new Error(timeoutMessage));
+        }, timeoutMs);
+      });
+      racePromises.push(timeoutPromise);
+    }
+
+    await Promise.race(racePromises);
+    return { ok: true };
+  } catch (err) {
+    if (isAborted || abortSignal?.aborted) {
+      return { ok: false, reason: 'aborted', error: abortMessage };
+    }
+    if (isTimedOut) {
+      return { ok: false, reason: 'timeout', error: timeoutMessage };
+    }
+    return { ok: false, reason: 'error', error: String(err?.message || err) };
+  } finally {
+    if (timerId) clearTimeout(timerId);
+    if (abortSignal && abortHandler) abortSignal.removeEventListener('abort', abortHandler);
+  }
+}
+
+/**
+ * Équiper l'item spécifié dans l'emplacement d'inventaire cible
+ * @param {object} bot Instance du bot Mineflayer
+ * @param {string} itemName Nom de l'item à équiper
+ * @param {string} [destination='hand'] Emplacement cible ('hand', 'head', 'torso', 'legs', 'feet', 'off-hand')
+ * @param {object} [options={}] Options de l'opération
+ * @param {number} [options.timeoutMs=0] Durée maximale d'attente en millisecondes
+ * @param {AbortSignal} [options.abortSignal] Signal d'annulation externe
+ * @returns {Promise<{ success: boolean, reason: string, data: object|null, error: string|null }>} Résultat normalisé
  */
 async function equipItem(bot, itemName, destination = 'hand', options = {}) {
   if (!VALID_DESTINATIONS.includes(destination)) {
@@ -181,81 +230,67 @@ async function equipItem(bot, itemName, destination = 'hand', options = {}) {
       return createResult(false, 'missing_item', { itemName, destination }, 'Item not found in inventory');
     }
 
-    let timerId = null;
-    let abortHandler = null;
-    let isTimedOut = false;
-    let isAborted = false;
-
-    const cleanup = () => {
-      if (timerId) clearTimeout(timerId);
-      if (abortSignal && abortHandler) abortSignal.removeEventListener('abort', abortHandler);
-    };
-
-    try {
-      const equipPromise = (async () => {
+    const outcome = await runItemOperationWithGuards(
+      async () => {
         if (typeof bot.equip !== 'function') {
-          throw new Error('Bot does not support equip action');
+          throw new TypeError('Bot does not support equip action');
         }
         await bot.equip(item, destination);
-      })();
-
-      const racePromises = [equipPromise];
-
-      if (abortSignal) {
-        const abortPromise = new Promise((_, reject) => {
-          abortHandler = () => {
-            isAborted = true;
-            reject(new Error('Equip operation aborted by caller'));
-          };
-          abortSignal.addEventListener('abort', abortHandler, { once: true });
-        });
-        racePromises.push(abortPromise);
+      },
+      {
+        timeoutMs,
+        abortSignal,
+        abortMessage: 'Equip operation aborted by caller',
+        timeoutMessage: 'Equip operation timed out'
       }
+    );
 
-      if (timeoutMs > 0) {
-        const timeoutPromise = new Promise((_, reject) => {
-          timerId = setTimeout(() => {
-            isTimedOut = true;
-            reject(new Error('Equip operation timed out'));
-          }, timeoutMs);
-        });
-        racePromises.push(timeoutPromise);
-      }
-
-      await Promise.race(racePromises);
-
-      if (isItemEquipped(bot, itemName, destination)) {
-        return createResult(true, 'equipped', { itemName, destination }, null);
-      }
-
-      return createResult(false, 'error', { itemName, destination }, 'Item was not found in destination slot after equip');
-    } catch (err) {
-      if (isItemEquipped(bot, itemName, destination)) {
-        return createResult(true, 'equipped', { itemName, destination }, null);
-      }
-
-      if (isAborted || abortSignal?.aborted) {
-        return createResult(false, 'aborted', { itemName, destination }, 'Equip operation aborted by caller');
-      }
-      if (isTimedOut) {
-        return createResult(false, 'timeout', { itemName, destination }, 'Equip operation timed out');
-      }
-
-      return createResult(false, 'error', { itemName, destination }, String(err?.message || err));
-    } finally {
-      cleanup();
+    if (isItemEquipped(bot, itemName, destination)) {
+      return createResult(true, 'equipped', { itemName, destination }, null);
     }
+    if (!outcome.ok) {
+      return createResult(false, outcome.reason, { itemName, destination }, outcome.error);
+    }
+    return createResult(false, 'error', { itemName, destination }, 'Item was not found in destination slot after equip');
   });
 }
 
 /**
- * Consume food or drink item from inventory
- * @param {object} bot Mineflayer bot instance
- * @param {string} itemName Food or beverage item name
- * @param {object} [options={}] Operation options
- * @param {number} [options.timeoutMs=0] Maximum wait duration
- * @param {AbortSignal} [options.abortSignal] External cancellation signal
- * @returns {Promise<{ success: boolean, reason: string, data: object|null, error: string|null }>}
+ * Vérifier si la consommation d'un aliment ou breuvage a modifié l'état du bot
+ * @param {object} bot Instance du bot Mineflayer
+ * @param {string} itemName Nom de l'item consommé
+ * @param {object} before État initial avant consommation
+ * @param {boolean} [includeSaturation=false] Prendre en compte la variation de saturation
+ * @returns {{ consumed: boolean, payload: object }} Résultat de vérification
+ */
+function checkConsumptionEffect(bot, itemName, before, includeSaturation = false) {
+  const finalCount = countInventoryItem(bot, itemName);
+  const finalFood = bot.food ?? before.food;
+  const finalHealth = bot.health ?? before.health;
+  const finalSaturation = bot.foodSaturation ?? before.saturation;
+
+  const baseChanged = finalCount < before.count || finalFood > before.food || finalHealth > before.health;
+  const consumed = includeSaturation ? (baseChanged || finalSaturation > before.saturation) : baseChanged;
+
+  return {
+    consumed,
+    payload: {
+      itemName,
+      consumedCount: before.count - finalCount,
+      food: finalFood,
+      health: finalHealth
+    }
+  };
+}
+
+/**
+ * Consommer un aliment ou une boisson depuis l'inventaire
+ * @param {object} bot Instance du bot Mineflayer
+ * @param {string} itemName Nom de l'aliment ou de la boisson
+ * @param {object} [options={}] Options de l'opération
+ * @param {number} [options.timeoutMs=0] Durée maximale d'attente en millisecondes
+ * @param {AbortSignal} [options.abortSignal] Signal d'annulation externe
+ * @returns {Promise<{ success: boolean, reason: string, data: object|null, error: string|null }>} Résultat normalisé
  */
 async function consumeItem(bot, itemName, options = {}) {
   return withInventoryLock(bot, async () => {
@@ -276,7 +311,7 @@ async function consumeItem(bot, itemName, options = {}) {
       return createResult(false, 'not_consumable', { itemName }, 'Item cannot be consumed as food or drink');
     }
 
-    const currentFood = bot.food !== undefined ? bot.food : 20;
+    const currentFood = bot.food ?? 20;
     if (currentFood >= 20 && !isEdibleAtFullHunger(itemName)) {
       return createResult(false, 'not_hungry', { itemName, food: currentFood }, 'Bot hunger is full and item is not always edible');
     }
@@ -290,107 +325,117 @@ async function consumeItem(bot, itemName, options = {}) {
       }
     }
 
-    const initialHealth = bot.health !== undefined ? bot.health : 20;
-    const initialSaturation = bot.foodSaturation !== undefined ? bot.foodSaturation : 0;
-
-    let timerId = null;
-    let abortHandler = null;
-    let isTimedOut = false;
-    let isAborted = false;
-
-    const cleanup = () => {
-      if (timerId) clearTimeout(timerId);
-      if (abortSignal && abortHandler) abortSignal.removeEventListener('abort', abortHandler);
+    const beforeState = {
+      count: initialCount,
+      food: currentFood,
+      health: bot.health ?? 20,
+      saturation: bot.foodSaturation ?? 0
     };
 
-    try {
-      const consumePromise = (async () => {
+    const outcome = await runItemOperationWithGuards(
+      async () => {
         if (typeof bot.consume !== 'function') {
-          throw new Error('Bot does not support consume action');
+          throw new TypeError('Bot does not support consume action');
         }
         await bot.consume();
-      })();
-
-      const racePromises = [consumePromise];
-
-      if (abortSignal) {
-        const abortPromise = new Promise((_, reject) => {
-          abortHandler = () => {
-            isAborted = true;
-            reject(new Error('Consume operation aborted by caller'));
-          };
-          abortSignal.addEventListener('abort', abortHandler, { once: true });
-        });
-        racePromises.push(abortPromise);
+      },
+      {
+        timeoutMs,
+        abortSignal,
+        abortMessage: 'Consume operation aborted by caller',
+        timeoutMessage: 'Consume operation timed out'
       }
+    );
 
-      if (timeoutMs > 0) {
-        const timeoutPromise = new Promise((_, reject) => {
-          timerId = setTimeout(() => {
-            isTimedOut = true;
-            reject(new Error('Consume operation timed out'));
-          }, timeoutMs);
-        });
-        racePromises.push(timeoutPromise);
-      }
-
-      await Promise.race(racePromises);
-
-      const finalCount = countInventoryItem(bot, itemName);
-      const finalFood = bot.food !== undefined ? bot.food : currentFood;
-      const finalHealth = bot.health !== undefined ? bot.health : initialHealth;
-      const finalSaturation = bot.foodSaturation !== undefined ? bot.foodSaturation : initialSaturation;
-
-      const consumed = finalCount < initialCount || finalFood > currentFood || finalHealth > initialHealth || finalSaturation > initialSaturation;
-
-      if (consumed) {
-        return createResult(true, 'consumed', {
-          itemName,
-          consumedCount: initialCount - finalCount,
-          food: finalFood,
-          health: finalHealth
-        }, null);
-      }
-
-      return createResult(false, 'error', { itemName }, 'Item state was not modified after consumption');
-    } catch (err) {
-      const finalCount = countInventoryItem(bot, itemName);
-      const finalFood = bot.food !== undefined ? bot.food : currentFood;
-      const finalHealth = bot.health !== undefined ? bot.health : initialHealth;
-
-      if (finalCount < initialCount || finalFood > currentFood || finalHealth > initialHealth) {
-        return createResult(true, 'consumed', {
-          itemName,
-          consumedCount: initialCount - finalCount,
-          food: finalFood,
-          health: finalHealth
-        }, null);
-      }
-
-      if (isAborted || abortSignal?.aborted) {
-        return createResult(false, 'aborted', { itemName }, 'Consume operation aborted by caller');
-      }
-      if (isTimedOut) {
-        return createResult(false, 'timeout', { itemName }, 'Consume operation timed out');
-      }
-
-      return createResult(false, 'error', { itemName }, String(err?.message || err));
-    } finally {
-      cleanup();
+    const effect = checkConsumptionEffect(bot, itemName, beforeState, outcome.ok);
+    if (effect.consumed) {
+      return createResult(true, 'consumed', effect.payload, null);
     }
+    if (!outcome.ok) {
+      return createResult(false, outcome.reason, { itemName }, outcome.error);
+    }
+    return createResult(false, 'error', { itemName }, 'Item state was not modified after consumption');
   });
 }
 
 /**
- * Craft recipe using crafting table block or player 2x2 grid
- * @param {object} bot Mineflayer bot instance
- * @param {object} recipe Recipe instance from registry
- * @param {number} [count=1] Number of crafting operations
- * @param {object|null} [tableBlock=null] Placed crafting table block if 3x3
- * @param {object} [options={}] Operation options
- * @param {number} [options.timeoutMs=0] Maximum wait duration
- * @param {AbortSignal} [options.abortSignal] External cancellation signal
- * @returns {Promise<{ success: boolean, reason: string, data: object|null, error: string|null }>}
+ * Compter la quantité possédée de l'item produit par une recette
+ * @param {object} bot Instance du bot Mineflayer
+ * @param {string|null} resultName Nom de l'item produit
+ * @param {number|undefined} resultId Identifiant numérique de l'item produit
+ * @returns {number} Quantité présente dans l'inventaire
+ */
+function countRecipeResultItem(bot, resultName, resultId) {
+  if (resultName) return countInventoryItem(bot, resultName);
+  if (resultId !== undefined) return countInventoryItem(bot, resultId);
+  return 0;
+}
+
+/**
+ * Valider la présence et la portée de l'établi si la recette l'exige
+ * @param {object} bot Instance du bot Mineflayer
+ * @param {object} recipe Recette à vérifier
+ * @param {object|null} tableBlock Bloc d'établi fourni
+ * @returns {object|null} Résultat d'erreur ou null si valide
+ */
+function validateCraftingTableAccess(bot, recipe, tableBlock) {
+  if (!recipeRequiresTable(recipe)) return null;
+  if (!tableBlock || tableBlock.name !== 'crafting_table') {
+    return createResult(false, 'missing_table', null, 'Crafting table required for 3x3 recipe');
+  }
+
+  const botPos = bot.entity?.position;
+  const tablePos = tableBlock.position;
+  if (!botPos || !tablePos) return null;
+
+  const distance = typeof botPos.distanceTo === 'function'
+    ? botPos.distanceTo(tablePos)
+    : Math.hypot(botPos.x - tablePos.x, botPos.y - tablePos.y, botPos.z - tablePos.z);
+
+  if (distance > 4.5) {
+    return createResult(false, 'out_of_reach', { distance, maxDistance: 4.5 }, 'Crafting table is out of reach');
+  }
+  return null;
+}
+
+/**
+ * Vérifier que tous les ingrédients requis par le delta de la recette sont disponibles
+ * @param {object} bot Instance du bot Mineflayer
+ * @param {object} recipe Recette à vérifier
+ * @param {number} count Nombre d'exécutions
+ * @param {object|null} registry Registre de données Minecraft
+ * @returns {object|null} Résultat d'erreur en cas d'ingrédient manquant ou null
+ */
+function validateRecipeIngredients(bot, recipe, count, registry) {
+  if (!Array.isArray(recipe.delta)) return null;
+
+  for (const ingredient of recipe.delta) {
+    if (ingredient.count >= 0) continue;
+    const required = Math.abs(ingredient.count) * count;
+    const key = ingredient.id === undefined ? ingredient.name : ingredient.id;
+    const available = countInventoryItem(bot, key);
+    if (available < required) {
+      const ingredientName = registry?.items?.[ingredient.id]?.name || ingredient.name || String(ingredient.id);
+      return createResult(false, 'missing_ingredients', {
+        ingredient: ingredientName,
+        required,
+        available
+      }, `Insufficient ingredient: ${ingredientName}`);
+    }
+  }
+  return null;
+}
+
+/**
+ * Fabriquer une recette via un établi posé ou la grille personnelle 2x2 du joueur
+ * @param {object} bot Instance du bot Mineflayer
+ * @param {object} recipe Instance de recette issue du registre
+ * @param {number} [count=1] Nombre d'opérations de fabrication
+ * @param {object|null} [tableBlock=null] Bloc d'établi posé si 3x3
+ * @param {object} [options={}] Options de l'opération
+ * @param {number} [options.timeoutMs=0] Durée maximale d'attente en millisecondes
+ * @param {AbortSignal} [options.abortSignal] Signal d'annulation externe
+ * @returns {Promise<{ success: boolean, reason: string, data: object|null, error: string|null }>} Résultat normalisé
  */
 async function craftRecipe(bot, recipe, count = 1, tableBlock = null, options = {}) {
   if (!recipe || typeof recipe !== 'object') {
@@ -410,147 +455,66 @@ async function craftRecipe(bot, recipe, count = 1, tableBlock = null, options = 
       return createResult(false, 'aborted', null, 'Craft operation aborted before start');
     }
 
-    const needsTable = recipeRequiresTable(recipe);
-    if (needsTable) {
-      if (!tableBlock || tableBlock.name !== 'crafting_table') {
-        return createResult(false, 'missing_table', null, 'Crafting table required for 3x3 recipe');
-      }
+    const tableError = validateCraftingTableAccess(bot, recipe, tableBlock);
+    if (tableError) return tableError;
 
-      const botPos = bot.entity?.position;
-      const tablePos = tableBlock.position;
-      if (botPos && tablePos) {
-        const distance = typeof botPos.distanceTo === 'function'
-          ? botPos.distanceTo(tablePos)
-          : Math.hypot(botPos.x - tablePos.x, botPos.y - tablePos.y, botPos.z - tablePos.z);
-
-        if (distance > 4.5) {
-          return createResult(false, 'out_of_reach', { distance, maxDistance: 4.5 }, 'Crafting table is out of reach');
-        }
-      }
-    }
-
-    if (Array.isArray(recipe.delta)) {
-      for (const ingredient of recipe.delta) {
-        if (ingredient.count < 0) {
-          const required = Math.abs(ingredient.count) * count;
-          const key = ingredient.id !== undefined ? ingredient.id : ingredient.name;
-          const available = countInventoryItem(bot, key);
-          if (available < required) {
-            const ingredientName = registry?.items?.[ingredient.id]?.name || ingredient.name || String(ingredient.id);
-            return createResult(false, 'missing_ingredients', {
-              ingredient: ingredientName,
-              required,
-              available
-            }, `Insufficient ingredient: ${ingredientName}`);
-          }
-        }
-      }
-    }
+    const ingredientError = validateRecipeIngredients(bot, recipe, count, registry);
+    if (ingredientError) return ingredientError;
 
     const resultId = recipe.result?.id;
-    const resultName = registry?.items?.[resultId]?.name || (typeof recipe.result?.name === 'string' ? recipe.result.name : null);
+    const fallbackResultName = typeof recipe.result?.name === 'string' ? recipe.result.name : null;
+    const resultName = registry?.items?.[resultId]?.name || fallbackResultName;
     const resultPerCraft = recipe.result?.count || 1;
     const expectedOutputCount = resultPerCraft * count;
 
-    const initialResultCount = resultName ? countInventoryItem(bot, resultName) : (resultId !== undefined ? countInventoryItem(bot, resultId) : 0);
-
+    const initialResultCount = countRecipeResultItem(bot, resultName, resultId);
     const emptySlots = bot.inventory?.slots ? bot.inventory.slots.slice(9, 45).filter(s => s === null).length : 0;
     if (emptySlots === 0 && initialResultCount === 0) {
       return createResult(false, 'inventory_full', null, 'Inventory has no free slots to receive crafted output');
     }
 
-    let timerId = null;
-    let abortHandler = null;
-    let isTimedOut = false;
-    let isAborted = false;
-
-    const cleanup = () => {
-      if (timerId) clearTimeout(timerId);
-      if (abortSignal && abortHandler) abortSignal.removeEventListener('abort', abortHandler);
-    };
-
-    try {
-      const craftPromise = (async () => {
+    const outcome = await runItemOperationWithGuards(
+      async () => {
         if (typeof bot.craft !== 'function') {
-          throw new Error('Bot does not support craft action');
+          throw new TypeError('Bot does not support craft action');
         }
         await bot.craft(recipe, count, tableBlock);
-      })();
-
-      const racePromises = [craftPromise];
-
-      if (abortSignal) {
-        const abortPromise = new Promise((_, reject) => {
-          abortHandler = () => {
-            isAborted = true;
-            reject(new Error('Craft operation aborted by caller'));
-          };
-          abortSignal.addEventListener('abort', abortHandler, { once: true });
-        });
-        racePromises.push(abortPromise);
+      },
+      {
+        timeoutMs,
+        abortSignal,
+        abortMessage: 'Craft operation aborted by caller',
+        timeoutMessage: 'Craft operation timed out'
       }
+    );
 
-      if (timeoutMs > 0) {
-        const timeoutPromise = new Promise((_, reject) => {
-          timerId = setTimeout(() => {
-            isTimedOut = true;
-            reject(new Error('Craft operation timed out'));
-          }, timeoutMs);
-        });
-        racePromises.push(timeoutPromise);
-      }
+    const finalResultCount = countRecipeResultItem(bot, resultName, resultId);
+    const gainedCount = finalResultCount - initialResultCount;
 
-      await Promise.race(racePromises);
-
-      const finalResultCount = resultName ? countInventoryItem(bot, resultName) : (resultId !== undefined ? countInventoryItem(bot, resultId) : 0);
-      const gainedCount = finalResultCount - initialResultCount;
-
-      if (gainedCount > 0) {
-        return createResult(true, 'crafted', {
-          item: resultName || resultId,
-          count,
-          gainedCount,
-          expectedCount: expectedOutputCount
-        }, null);
-      }
-
-      return createResult(false, 'error', null, 'No crafted items were added to inventory after crafting');
-    } catch (err) {
-      const finalResultCount = resultName ? countInventoryItem(bot, resultName) : (resultId !== undefined ? countInventoryItem(bot, resultId) : 0);
-      const gainedCount = finalResultCount - initialResultCount;
-
-      if (gainedCount > 0) {
-        return createResult(true, 'crafted', {
-          item: resultName || resultId,
-          count,
-          gainedCount,
-          expectedCount: expectedOutputCount
-        }, null);
-      }
-
-      if (isAborted || abortSignal?.aborted) {
-        return createResult(false, 'aborted', null, 'Craft operation aborted by caller');
-      }
-      if (isTimedOut) {
-        return createResult(false, 'timeout', null, 'Craft operation timed out');
-      }
-
-      return createResult(false, 'error', null, String(err?.message || err));
-    } finally {
-      cleanup();
+    if (gainedCount > 0) {
+      return createResult(true, 'crafted', {
+        item: resultName || resultId,
+        count,
+        gainedCount,
+        expectedCount: expectedOutputCount
+      }, null);
     }
+    if (!outcome.ok) {
+      return createResult(false, outcome.reason, null, outcome.error);
+    }
+    return createResult(false, 'error', null, 'No crafted items were added to inventory after crafting');
   });
 }
 
 /**
- * Drop item from inventory onto the ground
- * @param {object} bot Mineflayer bot instance
- * @param {string} itemName Item name to drop
- * @param {number} [count=1] Quantity to drop
- * @param {object} [options={}] Operation options
- * @param {number} [options.timeoutMs=0] Maximum wait duration
- * @param {AbortSignal} [options.abortSignal] External cancellation signal
- * @returns {Promise<{ success: boolean, reason: string, data: object|null, error: string|null }>}
+ * Jeter un item de l'inventaire au sol
+ * @param {object} bot Instance du bot Mineflayer
+ * @param {string} itemName Nom de l'item à jeter
+ * @param {number} [count=1] Quantité à jeter
+ * @param {object} [options={}] Options de l'opération
+ * @param {number} [options.timeoutMs=0] Durée maximale d'attente en millisecondes
+ * @param {AbortSignal} [options.abortSignal] Signal d'annulation externe
+ * @returns {Promise<{ success: boolean, reason: string, data: object|null, error: string|null }>} Résultat normalisé
  */
 async function dropItem(bot, itemName, count = 1, options = {}) {
   if (!Number.isInteger(count) || count <= 0) {
@@ -576,89 +540,45 @@ async function dropItem(bot, itemName, count = 1, options = {}) {
 
     const item = bot.inventory.items().find(i => i.name === itemName);
 
-    let timerId = null;
-    let abortHandler = null;
-    let isTimedOut = false;
-    let isAborted = false;
-
-    const cleanup = () => {
-      if (timerId) clearTimeout(timerId);
-      if (abortSignal && abortHandler) abortSignal.removeEventListener('abort', abortHandler);
-    };
-
-    try {
-      const dropPromise = (async () => {
+    const outcome = await runItemOperationWithGuards(
+      async () => {
         if (typeof bot.toss === 'function') {
           await bot.toss(item.type, null, count);
-        } else if (typeof bot.tossStack === 'function') {
-          await bot.tossStack(item);
-        } else {
-          throw new Error('Bot does not support toss action');
+          return;
         }
-      })();
-
-      const racePromises = [dropPromise];
-
-      if (abortSignal) {
-        const abortPromise = new Promise((_, reject) => {
-          abortHandler = () => {
-            isAborted = true;
-            reject(new Error('Drop operation aborted by caller'));
-          };
-          abortSignal.addEventListener('abort', abortHandler, { once: true });
-        });
-        racePromises.push(abortPromise);
+        if (typeof bot.tossStack === 'function') {
+          await bot.tossStack(item);
+          return;
+        }
+        throw new TypeError('Bot does not support toss action');
+      },
+      {
+        timeoutMs,
+        abortSignal,
+        abortMessage: 'Drop operation aborted by caller',
+        timeoutMessage: 'Drop operation timed out'
       }
+    );
 
-      if (timeoutMs > 0) {
-        const timeoutPromise = new Promise((_, reject) => {
-          timerId = setTimeout(() => {
-            isTimedOut = true;
-            reject(new Error('Drop operation timed out'));
-          }, timeoutMs);
-        });
-        racePromises.push(timeoutPromise);
-      }
+    const finalCount = countInventoryItem(bot, itemName);
+    const droppedCount = initialCount - finalCount;
 
-      await Promise.race(racePromises);
-
-      const finalCount = countInventoryItem(bot, itemName);
-      const droppedCount = initialCount - finalCount;
-
-      if (droppedCount === count) {
-        return createResult(true, 'dropped', { itemName, droppedCount }, null);
-      }
-
-      return createResult(false, 'error', {
-        itemName,
-        droppedCount,
-        expectedCount: count
-      }, 'Inventory reduction did not match requested drop count');
-    } catch (err) {
-      const finalCount = countInventoryItem(bot, itemName);
-      const droppedCount = initialCount - finalCount;
-
-      if (droppedCount === count) {
-        return createResult(true, 'dropped', { itemName, droppedCount }, null);
-      }
-
-      if (isAborted || abortSignal?.aborted) {
-        return createResult(false, 'aborted', { itemName, count }, 'Drop operation aborted by caller');
-      }
-      if (isTimedOut) {
-        return createResult(false, 'timeout', { itemName, count }, 'Drop operation timed out');
-      }
-
-      return createResult(false, 'error', { itemName }, String(err?.message || err));
-    } finally {
-      cleanup();
+    if (droppedCount === count) {
+      return createResult(true, 'dropped', { itemName, droppedCount }, null);
     }
+    if (!outcome.ok) {
+      return createResult(false, outcome.reason, { itemName, count }, outcome.error);
+    }
+    return createResult(false, 'error', {
+      itemName,
+      droppedCount,
+      expectedCount: count
+    }, 'Inventory reduction did not match requested drop count');
   });
 }
 
 module.exports = {
   VALID_DESTINATIONS,
-  withInventoryLock,
   equipItem,
   consumeItem,
   craftRecipe,
