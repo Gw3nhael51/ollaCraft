@@ -8,8 +8,8 @@ An autonomous Minecraft survival agent powered by local Large Language Models (L
 
 - **Local LLM Intelligence:** Operates 100% locally and privately using Ollama (supporting models such as `qwen3.5:9B`, `qwen2.5:27b`, `llama3.1:8b`, or similar) with strict JSON Structured Outputs.
 - **Autonomous Procedural Learning Engine (Phase 4):** Generates, validates, executes, and evaluates declarative multi-step procedures (`src/procedures/`). Distinguishes technical step completion from real-world objective achievement, detects trace contradictions, and promotes reliable procedures from `experimental` to `validated` while reducing LLM token usage by **up to 90%**.
-- **Two-Tier Event-Driven ReAct Decision Loop:** Structured cycle of **Perception -> Prompt Synthesis -> LLM Reasoning / Validated Procedure Dispatch -> Physical Verification -> Event-Driven Supervisor Review**.
-- **Anti-Looping Strategy Manager:** A supervisor pass monitors action history, detects repeated failures or ping-pong loops, prioritizes validated procedures from `ProcedureMemory`, and sanitizes directives against real inventory and recipe constraints.
+- **Two-Tier Event-Driven ReAct Decision Loop:** Structured cycle of **Perception -> Dependency Plan / Prompt Synthesis -> Validated Procedure Bypass or LLM Reasoning -> Physical Verification -> Event-Driven Supervisor Review**.
+- **Anti-Looping Strategy Manager:** A supervisor pass monitors action history, detects repeated failures or ping-pong loops, prioritizes validated procedures from `ProcedureMemory` (bypassing Player LLM calls), and sanitizes directives against real inventory, terrain, and furnace/table accessibility constraints.
 - **Autonomous Progression Chain:** Naturally advances through survival tiers:
 
 ```mermaid
@@ -75,9 +75,11 @@ flowchart TD
 │   │   ├── primitives/        # Verified primitives (movement, blocks, items, container, combat, locks)
 │   │   └── behaviors/         # High-level skills (mine, craft, smelt, place, navigate, combat, storage, portal)
 │   ├── procedures/            # Procedural Learning Engine (schema, registry, validator, matcher, generator, runner, evaluator, lifecycle, memory, store)
-│   ├── perception/            # Unified 3D scanner (environment.js), inventory & advancements
-│   └── minecraft/             # Offline WikiCraft lookups (wiki.js, wikiData.js)
-├── test/                      # 171 automated unit and E2E integration tests
+│   ├── perception/            # Unified 3D scanner with TTL bad-block sync (environment.js), inventory & advancements
+│   └── minecraft/             # Offline WikiCraft lookups (wiki.js, wikiData.js) & dependency resolver (knowledge.js)
+├── data/procedures/           # Persisted JSON procedures (mounted via Docker volume ./data:/app/data)
+├── test/                      # 180 automated unit and E2E integration tests
+├── docker-compose.yml         # Minecraft Paper server + ollacraft-bot service with /app/data persistence
 ├── .env.example               # Template for environment variables
 ├── ARCHITECTURE.md            # Detailed schematics, sequence diagrams & benchmark metrics
 ├── package.json               # Dependencies and scripts (test, benchmark)
@@ -180,16 +182,17 @@ Players can interact with and command the bot directly using in-game chat:
 | `MC_PORT` | `25565` | Minecraft server port. |
 | `MC_USERNAME` | `Herobrine` | In-game player name for the bot. |
 | `MC_PASSWORD` | *(Empty)* | Password used for server `/register` or `/login` commands. |
+| `OLLAMA_HOST` | `http://localhost:11434` | Ollama REST API base URL. |
 | `OLLAMA_MODEL` | `qwen3.5:9B` | Fallback Ollama model tag. |
 | `OLLAMA_MODEL_PLAYER` | `qwen3.5:9B` | Dedicated model for tactical ReAct decisions. |
 | `OLLAMA_MODEL_MANAGER` | `qwen3.5:9B` | Dedicated model for strategic supervision and loop recovery. |
 | `PORT` | `127.0.0.1:25565:25565` | Optional Docker port mapping. |
 
-### Bot Rules & Parameters (`src/config.js`)
+### Bot Rules & Parameters (`src/infrastructure/config.js`)
 
 - **Quest Chain:** Streamlined speedrun progression focusing on essential iron tools, shield, water bucket, and Nether/End navigation (`QUEST_CHAIN` & `QUEST_AMOUNT`).
 - **Action Whitelist:** Strict validation of allowed LLM actions (`VALID_ACTIONS`) and valid placement surfaces (`VALID_GROUND_BLOCKS`).
-- **Base Management:** Stored coordinates in `src/state.js` for the player base, placed crafting tables, furnaces, and storage chests.
+- **Base Management & Recovery:** Stored coordinates in `src/core/state.js` for the player base, placed crafting tables, furnaces, and storage chests, cleanly reset on `death` alongside temporary TTL blacklists.
 
 ---
 
@@ -218,7 +221,7 @@ The ReAct loop provides the LLM with structured actions formatted in JSON:
 
 ## 🧪 Automated Tests & Benchmark
 
-Run the full test suite (**171 unit & integration tests**):
+Run the full test suite (**180 unit & integration tests**):
 ```bash
 npm test
 ```
