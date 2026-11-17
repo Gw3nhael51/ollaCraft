@@ -9,8 +9,6 @@ const state = require('../src/core/state');
 const { ProcedureMemory } = require('../src/procedures/memory');
 const { createProcedureTemplate } = require('../src/procedures/schema');
 const { saveProcedure } = require('../src/procedures/store');
-const { runManagerCycle } = require('../src/agent/manager');
-const { handleSurvivalRequest, executeDecisionWithTimeout } = require('../src/agent/loop');
 const { dispatchSkill } = require('../src/actions/dispatcher');
 const { ActionRegistry } = require('../src/procedures/registry');
 const { createResult } = require('../src/actions/primitives/result');
@@ -19,12 +17,15 @@ const { markBadBlock, isBadBlock, clearBadBlocks, scanEnvironment } = require('.
 const { filterRadarEnvironment } = require('../src/agent/prompt');
 const { ObjectiveGenerationTracker } = require('../src/procedures/matcher');
 const { getMcData } = require('../src/minecraft/wikiData');
+const { recoverFromActionTimeout, handleSurvivalRequest, executeDecisionWithTimeout } = require('../src/agent/loop');
+const { runManagerCycle, sanitizeManagerOutput } = require('../src/agent/manager');
+const { findTargetFurnace, skillSmelt } = require('../src/actions/behaviors/items/smelt');
 
 const REAL_MC_DATA = getMcData(null);
 
 /**
- * Construire un bot simulé minimal pour les tests d'intégration runtime
- * @returns {object} Instance de bot simulée
+ * Build a minimal simulated bot for runtime integration tests
+ * @returns {object} Simulated bot instance
  */
 function createRuntimeMockBot() {
   return {
@@ -73,7 +74,7 @@ test('Bloc 1.1 & 1.2: Validated procedure persists on disk and is reloaded after
     });
     await saveProcedure(validatedProc, tempDir);
 
-    // Simuler : Redémarrer avec une nouvelle instance de ProcedureMemory
+    // Restart with a fresh ProcedureMemory instance
     const restartedMemory = new ProcedureMemory({ storageDir: tempDir });
     const loadedCount = await restartedMemory.loadAll();
     assert.equal(loadedCount, 1);
@@ -185,7 +186,7 @@ test('Bloc 1.5: Experimental procedure is never promoted via boolean recordExecu
   }
   assert.equal(memory.get('exp_no_bool_promo').status, 'experimental');
 
-  // Vérifier : Même via dispatcher avec échec de postcondition réelle, pas de promotion
+  // Verify that dispatcher evaluation does not promote on failed postcondition
   await dispatchSkill(bot, testState, 'procedure', 'exp_no_bool_promo', 1, {
     actionRegistry: registry
   });
@@ -284,7 +285,7 @@ test('Bloc 3: Active learning generates experimental procedure, executes, evalua
     const createdId = state.managerSubGoal?.target;
     assert.ok(createdId);
 
-    // Exécuter : 3 scénarios indépendants pour satisfaire la promotion Phase 4.6 via Evaluator
+    // Execute independent scenarios to satisfy Evaluator promotion criteria
     for (let i = 0; i < 3; i++) {
       inventoryItems = [];
       bot.entity.position = new Vec3(i * 15, 64, 0);
@@ -343,4 +344,68 @@ test('Bloc 4: Bad blocks expire via TTL, clear on death, synchronize with scanEn
   assert.equal(radar.acacia_leaves, undefined);
   assert.equal(radar.oak_log, 2);
   assert.equal(radar.stone, 10);
+});
+
+test('P0 Stabilization: recoverFromActionTimeout skips unstuck on clear terrain and sanitizeManagerOutput blocks redundant unstuck', async () => {
+  const bot = createRuntimeMockBot();
+  const recovery = await recoverFromActionTimeout(bot);
+
+  assert.equal(recovery.success, false);
+  assert.match(recovery.message, /terrain is clear/i);
+
+  const sanitized = sanitizeManagerOutput(bot, {
+    directive: 'Débloque-toi immédiatement',
+    suggestedAction: 'unstuck',
+    suggestedTarget: 'none'
+  });
+
+  assert.equal(sanitized.suggestedAction, 'explore');
+});
+
+test('P0 Stabilization: Unreachable furnace is marked temporarily inaccessible and Manager redirects to crafting a local furnace', async () => {
+  clearBadBlocks();
+  const unreachablePos = new Vec3(-17, 76, -104);
+  const bot = {
+    ...createRuntimeMockBot(),
+    entity: { position: new Vec3(-78, 55, -102) },
+    inventory: {
+      items: () => [
+        { name: 'raw_iron', count: 7, type: 1 },
+        { name: 'oak_planks', count: 4, type: 2 },
+        { name: 'cobblestone', count: 12, type: 3 }
+      ]
+    },
+    findBlock: ({ matching }) => {
+      const candidate = { name: 'furnace', type: REAL_MC_DATA.blocksByName.furnace.id, position: unreachablePos };
+      if (typeof matching === 'function') {
+        return matching(candidate) ? candidate : null;
+      }
+      return candidate;
+    },
+    pathfinder: {
+      setGoal: () => {},
+      goto: async () => {
+        throw new Error('Navigation timeout towards furnace');
+      }
+    }
+  };
+  const testState = { base: { furnace: unreachablePos } };
+
+  const smeltRes = await skillSmelt(bot, testState, 'raw_iron', 3);
+  assert.equal(smeltRes.success, false);
+  assert.match(smeltRes.message, /temporarily inaccessible/i);
+  assert.equal(isBadBlock(unreachablePos), true);
+
+  assert.equal(findTargetFurnace(bot, testState), null);
+
+  const sanitized = sanitizeManagerOutput(bot, {
+    directive: 'Fonds le fer',
+    suggestedAction: 'smelt',
+    suggestedTarget: 'iron_ingot'
+  });
+  assert.equal(sanitized.suggestedAction, 'craft');
+  assert.equal(sanitized.suggestedTarget, 'furnace');
+
+  clearBadBlocks();
+  assert.notEqual(findTargetFurnace(bot, testState), null);
 });

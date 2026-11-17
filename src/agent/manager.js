@@ -1,7 +1,7 @@
 const config = require('../infrastructure/config');
 const state = require('../core/state');
 const invUtils = require('../perception/inventory');
-const { scanNearbyEntities } = require('../perception/environment');
+const { scanNearbyEntities, checkTerrainSituation } = require('../perception/environment');
 const { askOllama } = require('./ollama');
 const { defaultProcedureMemory, defaultActionRegistry } = require('../actions/dispatcher');
 const { getMcData } = require('../minecraft/wikiData');
@@ -11,9 +11,9 @@ const { generateProcedure } = require('../procedures/generator');
 const { registerExperimentalProcedure } = require('../procedures/memory');
 
 /**
- * Détecter si le bot est bloqué dans une boucle d'actions ou une série d'échecs consécutifs
- * @param {Array<object>} actionHistory Historique récent des actions exécutées par le joueur
- * @returns {boolean} Vrai si une boucle ou une répétition d'échecs est détectée
+ * Detect whether the bot is stuck in an action loop or consecutive failure streak
+ * @param {Array<object>} actionHistory Recent player action execution history
+ * @returns {boolean} True if a loop or repeated failure pattern is detected
  */
 function detectActionLoop(actionHistory) {
   if (actionHistory.length < 3) return false;
@@ -42,10 +42,10 @@ function detectActionLoop(actionHistory) {
 }
 
 /**
- * Résoudre le nom exact de l'item fabricable lorsque la cible ou une variante de planche est disponible
- * @param {string} target Cible de fabrication demandée
- * @param {string[]} available Liste des fabrications disponibles
- * @returns {string|null} Nom de la cible résolue ou null
+ * Resolve the exact craftable item name when the target or a plank variant is available
+ * @param {string} target Requested craft target
+ * @param {string[]} available List of available craftable items
+ * @returns {string|null} Resolved target name or null
  */
 function resolveAvailableCraftTarget(target, available) {
   if (available.includes(target)) return target;
@@ -56,9 +56,9 @@ function resolveAvailableCraftTarget(target, available) {
 }
 
 /**
- * Vérifier si un identifiant correspond à un élément connu du registre Minecraft
- * @param {string} name Identifiant candidat en minuscules
- * @returns {boolean} Vrai si l'identifiant est un bloc, un item, une entité ou un alias générique
+ * Check whether an identifier matches a known Minecraft registry entry
+ * @param {string} name Candidate identifier in lowercase
+ * @returns {boolean} True if the identifier is a block, item, entity, or generic alias
  */
 function isKnownMinecraftIdentifier(name) {
   if (name === 'planks' || name === 'log') return true;
@@ -71,9 +71,9 @@ function isKnownMinecraftIdentifier(name) {
 }
 
 /**
- * Nettoyer l'identifiant de cible brut pour garantir un identifiant Minecraft unique et valide
- * @param {string} rawTarget Chaîne de cible brute issue de la réponse LLM
- * @returns {string} Identifiant de cible nettoyé
+ * Sanitize raw target identifier from LLM output into a valid Minecraft identifier
+ * @param {string} rawTarget Raw target string from LLM response
+ * @returns {string} Sanitized target identifier
  */
 function cleanTargetIdentifier(rawTarget) {
   if (typeof rawTarget !== 'string') return 'none';
@@ -98,10 +98,10 @@ function cleanTargetIdentifier(rawTarget) {
 }
 
 /**
- * Vérifier si une procédure correspond à un objectif donné par son identifiant, son nom ou ses tags
- * @param {object} proc Objet procédure à tester
- * @param {string} cleanObjective Objectif normalisé en minuscules
- * @returns {boolean} Vrai si la procédure couvre l'objectif
+ * Check whether a procedure matches a given objective by id, name, or tags
+ * @param {object} proc Procedure object to evaluate
+ * @param {string} cleanObjective Normalized lowercase objective
+ * @returns {boolean} True if the procedure covers the objective
  */
 function doesProcedureMatchObjective(proc, cleanObjective) {
   if (!proc || proc.status === 'deprecated') return false;
@@ -122,9 +122,9 @@ function doesProcedureMatchObjective(proc, cleanObjective) {
 }
 
 /**
- * Trier une liste de procédures par score de confiance décroissant puis par nombre d'exécutions
- * @param {Array<object>} list Liste de procédures à trier
- * @returns {Array<object>} Liste triée
+ * Sort procedures by descending confidence score and execution count
+ * @param {Array<object>} list List of procedures to sort
+ * @returns {Array<object>} Sorted list
  */
 function sortProceduresByConfidence(list) {
   return [...list].sort((a, b) => {
@@ -136,12 +136,12 @@ function sortProceduresByConfidence(list) {
 }
 
 /**
- * Rechercher et sélectionner la meilleure procédure correspondant à un objectif de quête ou de fabrication
- * @param {object} memory Instance de ProcedureMemory
- * @param {string} objective Identifiant de l'objectif cible
- * @param {object} [options={}] Options de filtrage
- * @param {boolean} [options.onlyValidated=false] Exiger strictement le statut validé
- * @returns {{ procedure: object, isReliable: boolean, knowledge: object|null }|null} Procédure sélectionnée et fiabilité
+ * Search and select the best procedure matching a quest or crafting objective
+ * @param {object} memory ProcedureMemory instance
+ * @param {string} objective Target objective identifier
+ * @param {object} [options={}] Filtering options
+ * @param {boolean} [options.onlyValidated=false] Strictly require validated status
+ * @returns {{ procedure: object, isReliable: boolean, knowledge: object|null }|null} Selected procedure and reliability
  */
 function selectProcedureForObjective(memory, objective, options = {}) {
   if (!memory || typeof memory.getAll !== 'function' || !objective) {
@@ -186,12 +186,12 @@ function selectProcedureForObjective(memory, objective, options = {}) {
 }
 
 /**
- * Valider et assainir une suggestion de procédure issue de la sortie du superviseur
- * @param {object} bot Instance du bot Mineflayer
- * @param {string} target Identifiant de la procédure suggérée
- * @param {string} directive Message de directive actuel
- * @param {object} [memory=null] Instance optionnelle de mémoire procédurale
- * @returns {{ action: string, target: string, directive: string, isReliable: boolean }} Décision procédurale validée
+ * Validate and sanitize a procedure suggestion from supervisor output
+ * @param {object} bot Mineflayer bot instance
+ * @param {string} target Suggested procedure identifier
+ * @param {string} directive Current directive message
+ * @param {object} [memory=null] Optional procedure memory instance
+ * @returns {{ action: string, target: string, directive: string, isReliable: boolean }} Validated procedural decision
  */
 function sanitizeProcedureDecision(bot, target, directive, memory = null) {
   const activeMemory = memory || state.procedureMemory || defaultProcedureMemory;
@@ -224,11 +224,11 @@ function sanitizeProcedureDecision(bot, target, directive, memory = null) {
 }
 
 /**
- * Valider et ajuster une suggestion de fabrication selon l'inventaire et l'établi à proximité
- * @param {object} bot Instance du bot Mineflayer
- * @param {string} target Cible de fabrication suggérée
- * @param {string} directive Message de directive actuel
- * @returns {{ action: string, target: string, directive: string }} Décision de fabrication ajustée
+ * Validate and adjust a crafting suggestion based on inventory and nearby crafting table
+ * @param {object} bot Mineflayer bot instance
+ * @param {string} target Suggested crafting target
+ * @param {string} directive Current directive message
+ * @returns {{ action: string, target: string, directive: string }} Adjusted crafting decision
  */
 function sanitizeCraftDecision(bot, target, directive) {
   const table = invUtils.findNearbyCraftingTable(bot, state);
@@ -268,11 +268,11 @@ function sanitizeCraftDecision(bot, target, directive) {
 }
 
 /**
- * Valider et ajuster une suggestion de cuisson selon la présence d'un fourneau et des minerais
- * @param {object} bot Instance du bot Mineflayer
- * @param {string} target Cible de cuisson suggérée
- * @param {string} directive Message de directive actuel
- * @returns {{ action: string, target: string, directive: string }} Décision de cuisson ajustée
+ * Validate and adjust a smelting suggestion based on furnace availability and ores
+ * @param {object} bot Mineflayer bot instance
+ * @param {string} target Suggested smelting target
+ * @param {string} directive Current directive message
+ * @returns {{ action: string, target: string, directive: string }} Adjusted smelting decision
  */
 function sanitizeSmeltDecision(bot, target, directive) {
   if (target === 'furnace') {
@@ -289,22 +289,29 @@ function sanitizeSmeltDecision(bot, target, directive) {
     if (!hasOre) {
       return { action: 'mine', target: 'iron_ore', directive: "Miner du minerai de fer avant de pouvoir fabriquer des lingots." };
     }
-    return { action: 'smelt', target, directive };
+  } else if (invUtils.countItem(bot, target) === 0) {
+    return { action: 'mine', target, directive: `Miner la ressource requise avant de pouvoir faire fondre ${target}.` };
   }
 
-  if (invUtils.countItem(bot, target) === 0) {
-    return { action: 'mine', target, directive: `Miner la ressource requise avant de pouvoir faire fondre ${target}.` };
+  const { findTargetFurnace } = require('../actions/behaviors/items/smelt');
+  if (!findTargetFurnace(bot, state)) {
+    if (invUtils.countItem(bot, 'furnace') > 0) {
+      return { action: 'place', target: 'furnace', directive: "Aucun fourneau accessible : pose ton fourneau au sol." };
+    }
+    if (invUtils.countItem(bot, 'cobblestone') >= 8) {
+      return { action: 'craft', target: 'furnace', directive: "Aucun fourneau accessible : fabrique un nouveau fourneau à proximité." };
+    }
   }
 
   return { action: 'smelt', target, directive };
 }
 
 /**
- * Valider et ajuster une suggestion de rangement selon les coffres proches ou possédés
- * @param {object} bot Instance du bot Mineflayer
- * @param {string} target Cible suggérée
- * @param {string} directive Message de directive actuel
- * @returns {{ action: string, target: string, directive: string }} Décision de coffre ajustée
+ * Validate and adjust a storage suggestion based on nearby or carried chests
+ * @param {object} bot Mineflayer bot instance
+ * @param {string} target Suggested target
+ * @param {string} directive Current directive message
+ * @returns {{ action: string, target: string, directive: string }} Adjusted chest decision
  */
 function sanitizeChestDecision(bot, target, directive) {
   const chestId = bot.registry.blocksByName['chest']?.id;
@@ -321,10 +328,10 @@ function sanitizeChestDecision(bot, target, directive) {
 }
 
 /**
- * Assainir et valider les directives du Manager par rapport à l'état du jeu pour éviter les hallucinations
- * @param {object} bot Instance du bot Mineflayer
- * @param {object} rawDecision Sortie JSON brute issue du modèle superviseur
- * @returns {object} Directive validée et sous-objectif associé
+ * Sanitize and validate Manager directives against game state to prevent hallucinations
+ * @param {object} bot Mineflayer bot instance
+ * @param {object} rawDecision Raw JSON output from supervisor model
+ * @returns {object} Validated directive and associated sub-goal
  */
 function sanitizeManagerOutput(bot, rawDecision) {
   if (!rawDecision || typeof rawDecision !== 'object') {
@@ -355,6 +362,10 @@ function sanitizeManagerOutput(bot, rawDecision) {
     isReliable = procRes.isReliable;
   } else if (action === 'wiki' && target === 'none') {
     target = state.currentObjective;
+  } else if (action === 'unstuck' && checkTerrainSituation(bot) === 'Terrain libre.') {
+    action = 'explore';
+    target = 'none';
+    directive = "Terrain déjà libre : explore les environs pour trouver une ressource accessible.";
   }
 
   return { directive, suggestedAction: action, suggestedTarget: target, isReliable };
@@ -363,11 +374,11 @@ function sanitizeManagerOutput(bot, rawDecision) {
 const MANAGER_HEARTBEAT_INTERVAL = 3;
 
 /**
- * Déterminer si le modèle superviseur doit être consulté après un cycle du joueur
- * @param {object} bot Instance du bot Mineflayer
- * @param {object} [currentState=state] État global du bot
- * @param {boolean} [objectiveChanged=false] Vrai si l'objectif a changé durant le cycle
- * @returns {boolean} Vrai si le cycle Manager doit s'exécuter
+ * Determine whether the supervisor model should be consulted after a player cycle
+ * @param {object} bot Mineflayer bot instance
+ * @param {object} [currentState=state] Global bot state
+ * @param {boolean} [objectiveChanged=false] True if objective changed during the cycle
+ * @returns {boolean} True if the Manager cycle should run
  */
 function shouldRunManager(bot, currentState = state, objectiveChanged = false) {
   const { isInventoryCluttered } = require('../actions/behaviors/items/storage');
@@ -385,9 +396,9 @@ function shouldRunManager(bot, currentState = state, objectiveChanged = false) {
 }
 
 /**
- * Construire le prompt de supervision stratégique envoyé au modèle Manager
- * @param {object} bot Instance du bot Mineflayer
- * @returns {string} Prompt formaté pour Ollama
+ * Build the strategic supervision prompt sent to the Manager model
+ * @param {object} bot Mineflayer bot instance
+ * @returns {string} Formatted prompt for Ollama
  */
 function buildSupervisorPrompt(bot) {
   const tools = invUtils.getOwnedTools(bot).join(', ') || 'aucun';
@@ -402,6 +413,7 @@ function buildSupervisorPrompt(bot) {
   const cluttered = isInventoryCluttered(bot);
   const nearbyEntities = scanNearbyEntities(bot, 20);
   const entitiesText = Object.keys(nearbyEntities).length > 0 ? JSON.stringify(nearbyEntities) : 'aucune';
+  const terrainStatus = checkTerrainSituation(bot);
   const stageReachedSuffix = currentAmount >= requiredAmount ? ' - PALIER ATTEINT' : '';
   const clutteredNotice = cluttered
     ? 'OUI (ATTENTION : inventaire saturé de blocs en surplus, suggère de fabriquer/poser un coffre ou utiliser "chest")'
@@ -423,6 +435,7 @@ function buildSupervisorPrompt(bot) {
       - Entités/Créatures proches : ${entitiesText}
       - Encombrement de l'inventaire : ${clutteredNotice}
       - Santé : ${Math.round(bot.health)}/20 | Faim : ${Math.round(bot.food)}/20
+      - État du terrain : ${terrainStatus}
       - Historique des actions récentes : ${recentHistory}
       - Blocage ou boucle détectée : ${loopNotice}
       - Décomposition déterministe des prérequis : ${goalPlan.summary}
@@ -442,12 +455,12 @@ function buildSupervisorPrompt(bot) {
 }
 
 /**
- * Tenter de sélectionner une procédure expérimentale ou d'en générer une nouvelle pour un objectif non couvert
- * @param {object} bot Instance du bot Mineflayer
- * @param {object} memory Instance de ProcedureMemory
- * @param {string} objective Objectif courant
- * @param {object} [deps={}] Dépendances injectables pour la génération
- * @returns {Promise<boolean>} Vrai si un sous-objectif procédural a été défini
+ * Attempt to select an experimental procedure or generate a new one for an uncovered objective
+ * @param {object} bot Mineflayer bot instance
+ * @param {object} memory ProcedureMemory instance
+ * @param {string} objective Current objective
+ * @param {object} [deps={}] Injectable dependencies for generation
+ * @returns {Promise<boolean>} True if a procedural sub-goal was assigned
  */
 async function tryAssignProceduralGoal(bot, memory, objective, deps = {}) {
   const tracker = state.generationTracker || new ObjectiveGenerationTracker();
@@ -530,10 +543,10 @@ async function tryAssignProceduralGoal(bot, memory, objective, deps = {}) {
 }
 
 /**
- * Exécuter un cycle de raisonnement du superviseur pour orienter le joueur autonome
- * @param {object} bot Instance du bot Mineflayer
- * @param {object} [deps={}] Dépendances optionnelles (génération, Ollama)
- * @returns {Promise<void>} Promesse résolue à la fin du cycle de supervision
+ * Run a supervisor reasoning cycle to guide the autonomous player
+ * @param {object} bot Mineflayer bot instance
+ * @param {object} [deps={}] Optional dependencies (generation, Ollama)
+ * @returns {Promise<void>} Promise resolved at end of supervision cycle
  */
 async function runManagerCycle(bot, deps = {}) {
   if (!state.isSurviving || state.isManagerThinking) return;
@@ -571,9 +584,9 @@ async function runManagerCycle(bot, deps = {}) {
 }
 
 /**
- * Lancer le premier cycle de raisonnement du superviseur au démarrage
- * @param {object} bot Instance du bot Mineflayer
- * @returns {Promise<void>} Promesse résolue après l'initialisation
+ * Launch the first supervisor reasoning cycle at startup
+ * @param {object} bot Mineflayer bot instance
+ * @returns {Promise<void>} Promise resolved after initialization
  */
 async function startManagerLoop(bot) {
   return runManagerCycle(bot);

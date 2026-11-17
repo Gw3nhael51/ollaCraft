@@ -1,7 +1,7 @@
 const state = require('../core/state');
 const config = require('../infrastructure/config');
 const { syncObjective, findNearbyCraftingTable } = require('../perception/inventory');
-const { scanEnvironment } = require('../perception/environment');
+const { scanEnvironment, checkTerrainSituation } = require('../perception/environment');
 const { buildReactPrompt } = require('./prompt');
 const { askOllama } = require('./ollama');
 const { dispatchSkill } = require('../actions/dispatcher');
@@ -13,17 +13,17 @@ const PROCEDURE_TIMEOUT_MS = 60000;
 const PROCEDURE_ENVELOPE_TIMEOUT_MS = 75000;
 
 /**
- * Localiser un établi placé à proximité ou aux coordonnées mémorisées de la base
- * @param {object} bot Instance du bot Mineflayer
- * @returns {object|null} Bloc établi ou null
+ * Locate a placed crafting table nearby or at remembered base coordinates
+ * @param {object} bot Mineflayer bot instance
+ * @returns {object|null} Crafting table block or null
  */
 function findAvailableCraftingTable(bot) {
   return findNearbyCraftingTable(bot, state);
 }
 
 /**
- * Réinitialiser les interactions physiques et fermer la fenêtre active du bot
- * @param {object} bot Instance du bot Mineflayer
+ * Reset physical interactions and close any active window on the bot
+ * @param {object} bot Mineflayer bot instance
  */
 function resetBotInteractions(bot) {
   bot.pathfinder.setGoal(null);
@@ -44,33 +44,41 @@ function resetBotInteractions(bot) {
 }
 
 /**
- * Interrompre en sécurité le minage, le déplacement et les fenêtres ouvertes après expiration du délai
- * @param {object} bot Instance du bot Mineflayer
- * @returns {Promise<{ success: boolean, message: string }>} Résultat de la récupération
+ * Safely abort digging, movement, and open windows after an action timeout
+ * @param {object} bot Mineflayer bot instance
+ * @returns {Promise<{ success: boolean, message: string }>} Recovery result
  */
 async function recoverFromActionTimeout(bot) {
   state.activeActionId = (state.activeActionId || 0) + 1;
   resetBotInteractions(bot);
 
-  try {
-    console.log("[SAFETY] Executing emergency unstuck procedure...");
-    await skillUnstuck(bot);
-  } catch (unstuckError) {
-    console.warn("[SAFETY] Emergency unstuck failure:", unstuckError.message);
+  const terrainBefore = checkTerrainSituation(bot);
+  if (terrainBefore !== 'Terrain libre.') {
+    try {
+      console.log("[SAFETY] Executing emergency unstuck procedure...");
+      await skillUnstuck(bot);
+    } catch (unstuckError) {
+      console.warn("[SAFETY] Emergency unstuck failure:", unstuckError.message);
+    }
   }
+
+  const terrainAfter = checkTerrainSituation(bot);
+  const message = terrainAfter === 'Terrain libre.'
+    ? "Action timed out; interactions reset and terrain is clear (do not call unstuck)."
+    : "Action timed out after maximum safety limit. Emergency unstuck executed.";
 
   return {
     success: false,
-    message: "Action timed out after maximum safety limit. Emergency unstuck executed."
+    message
   };
 }
 
 /**
- * Exécuter la compétence sélectionnée avec un délai de sécurité maximal
- * @param {object} bot Instance du bot Mineflayer
- * @param {object} decision Décision validée de l'IA
- * @param {object} [options={}] Options d'exécution et dépendances injectables
- * @returns {Promise<{ success: boolean, message: string }>} Résultat d'exécution
+ * Execute the selected skill under a maximum safety timeout
+ * @param {object} bot Mineflayer bot instance
+ * @param {object} decision Validated AI decision
+ * @param {object} [options={}] Execution options and injectable dependencies
+ * @returns {Promise<{ success: boolean, message: string }>} Execution result
  */
 async function executeDecisionWithTimeout(bot, decision, options = {}) {
   let actionTimer = null;
@@ -114,9 +122,9 @@ async function executeDecisionWithTimeout(bot, decision, options = {}) {
 }
 
 /**
- * Enregistrer le résultat d'exécution d'une action dans l'état et l'historique borné
- * @param {object} decision Décision exécutée
- * @param {{ success: boolean, message: string }} executionResult Résultat de la compétence
+ * Record an action execution result in state and bounded history
+ * @param {object} decision Executed decision
+ * @param {{ success: boolean, message: string }} executionResult Skill execution result
  */
 function recordActionResult(decision, executionResult) {
   const entry = {
@@ -133,9 +141,9 @@ function recordActionResult(decision, executionResult) {
 }
 
 /**
- * Retourner une décision directe lorsqu'une procédure validée fiable est assignée par le Manager
- * @param {object} [currentState=state] État global du bot
- * @returns {object|null} Décision procédurale prioritaire ou null
+ * Return a direct decision when a reliable validated procedure is assigned by the Manager
+ * @param {object} [currentState=state] Global bot state
+ * @returns {object|null} Priority procedural decision or null
  */
 function getReliableProcedureDecision(currentState = state) {
   const subGoal = currentState?.managerSubGoal;
@@ -154,9 +162,9 @@ function getReliableProcedureDecision(currentState = state) {
 }
 
 /**
- * Résoudre une décision valide du joueur ou utiliser le sous-objectif du superviseur en repli
- * @param {object|null} rawDecision Décision brute retournée par le modèle joueur
- * @returns {object|null} Objet décision validé ou null
+ * Resolve a valid player decision or fall back to the supervisor sub-goal
+ * @param {object|null} rawDecision Raw decision returned by the player model
+ * @returns {object|null} Validated decision object or null
  */
 function resolvePlayerDecision(rawDecision) {
   const reliableProcedure = getReliableProcedureDecision(state);
@@ -175,9 +183,9 @@ function resolvePlayerDecision(rawDecision) {
 }
 
 /**
- * Synchroniser l'objectif de quête et déclencher le cycle du superviseur si nécessaire
- * @param {object} bot Instance du bot Mineflayer
- * @returns {Promise<void>} Promesse résolue après l'évaluation
+ * Synchronize quest objective and trigger the supervisor cycle when needed
+ * @param {object} bot Mineflayer bot instance
+ * @returns {Promise<void>} Promise resolved after evaluation
  */
 async function evaluateManagerTrigger(bot) {
   const objectiveBeforeSync = state.currentObjective;
@@ -192,20 +200,20 @@ async function evaluateManagerTrigger(bot) {
 }
 
 /**
- * Vérifier si le mode autonome est actif et correspond à l'identifiant de session donné
- * @param {number} sessionId Identifiant de session à contrôler
- * @returns {boolean} Vrai si la session est toujours active
+ * Check whether autonomous mode is active and matches the given session identifier
+ * @param {number} sessionId Session identifier to verify
+ * @returns {boolean} True if session is still active
  */
 function isSessionActive(sessionId) {
   return Boolean(state.isSurviving && sessionId === state.survivalSessionId);
 }
 
 /**
- * Exécuter un cycle complet de réflexion et d'action ReAct pour la survie autonome
- * @param {object} bot Instance du bot Mineflayer
- * @param {number} [sessionId=state.survivalSessionId] Identifiant de la session de survie active
- * @param {object} [deps={}] Dépendances optionnelles pour les tests
- * @returns {Promise<void>} Promesse résolue à la fin du cycle
+ * Run a complete ReAct thinking and action cycle for autonomous survival
+ * @param {object} bot Mineflayer bot instance
+ * @param {number} [sessionId=state.survivalSessionId] Active survival session identifier
+ * @param {object} [deps={}] Optional dependencies for testing
+ * @returns {Promise<void>} Promise resolved at end of cycle
  */
 async function handleSurvivalRequest(bot, sessionId = state.survivalSessionId, deps = {}) {
   if (!isSessionActive(sessionId)) return;
@@ -278,5 +286,6 @@ module.exports = {
   handleSurvivalRequest,
   resolvePlayerDecision,
   getReliableProcedureDecision,
-  executeDecisionWithTimeout
+  executeDecisionWithTimeout,
+  recoverFromActionTimeout
 };

@@ -38,8 +38,8 @@ async function waitForInventoryRestore(retriesLeft = 8) {
 }
 
 /**
- * Charger les procédures persistées depuis le stockage sur disque
- * @returns {Promise<number>} Nombre de procédures chargées
+ * Load persisted procedures from disk storage
+ * @returns {Promise<number>} Number of loaded procedures
  */
 async function initializeProcedureMemory() {
   if (!state.procedureMemory || typeof state.procedureMemory.loadAll !== 'function') {
@@ -227,6 +227,17 @@ bot.on('death', () => {
   state.isSurviving = false;
   state.activeActionId = (state.activeActionId || 0) + 1;
   state.lastDeathPosition = bot.entity?.position ? bot.entity.position.clone() : null;
+  state.actionHistory = [];
+  state.lastActionResult = {
+    action: 'none',
+    target: 'none',
+    success: true,
+    message: 'Bot respawned and ready.'
+  };
+  state.managerSubGoal = null;
+  state.managerDirective = "Récolter du bois pour fabriquer les premiers outils.";
+  state.cyclesSinceLastManager = 0;
+  state.base = { crafting_table: null, furnace: null, chest: null };
   clearBadBlocks();
   bot.pathfinder.setGoal(null);
   bot.clearControlStates();
