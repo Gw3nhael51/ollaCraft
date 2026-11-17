@@ -1,6 +1,45 @@
 const { Vec3 } = require('vec3');
 const { isOreBlock } = require('../minecraft/wikiData');
 
+const BAD_BLOCK_TTL_MS = 120000;
+const badBlocksRegistry = new Map();
+
+/**
+ * Marquer une position de bloc comme temporairement inaccessible
+ * @param {object} pos Coordonnées du bloc
+ * @param {number} [ttlMs=BAD_BLOCK_TTL_MS] Durée d'expiration en millisecondes
+ */
+function markBadBlock(pos, ttlMs = BAD_BLOCK_TTL_MS) {
+  if (!pos) return;
+  const key = `${Math.floor(pos.x)},${Math.floor(pos.y)},${Math.floor(pos.z)}`;
+  badBlocksRegistry.set(key, Date.now() + ttlMs);
+}
+
+/**
+ * Vérifier si une position de bloc est actuellement dans la liste noire temporaire
+ * @param {object} pos Coordonnées du bloc
+ * @param {number} [now=Date.now()] Horodatage de référence
+ * @returns {boolean} Vrai si le bloc est encore bloqué
+ */
+function isBadBlock(pos, now = Date.now()) {
+  if (!pos) return false;
+  const key = `${Math.floor(pos.x)},${Math.floor(pos.y)},${Math.floor(pos.z)}`;
+  const expiresAt = badBlocksRegistry.get(key);
+  if (!expiresAt) return false;
+  if (now >= expiresAt) {
+    badBlocksRegistry.delete(key);
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Réinitialiser la liste noire temporaire des blocs (ex: après réapparition)
+ */
+function clearBadBlocks() {
+  badBlocksRegistry.clear();
+}
+
 /**
  * Record a single scanned block and check whether it is an exposed ore within oreRadius
  * @param {object} bot Mineflayer bot instance
@@ -12,6 +51,7 @@ const { isOreBlock } = require('../minecraft/wikiData');
 function recordScannedBlock(bot, blocks, exposedOres, targetPos, withinOreRadius) {
   const block = bot.blockAt(targetPos);
   if (!block || AIR_BLOCK_NAMES.has(block.name)) return;
+  if (isBadBlock(targetPos)) return;
 
   blocks[block.name] = (blocks[block.name] || 0) + 1;
   if (!withinOreRadius || !isOreBlock(block.name)) return;
@@ -186,5 +226,8 @@ module.exports = {
   getCurrentBiome,
   scanExposedOres,
   isBlockExposedToAir,
+  markBadBlock,
+  isBadBlock,
+  clearBadBlocks,
   VALUABLE_ORES
 };
