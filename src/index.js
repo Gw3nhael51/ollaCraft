@@ -7,6 +7,7 @@ const { autoEquipArmorAndShield } = require('./actions/behaviors/items/equip');
 const { handleSurvivalRequest } = require('./agent/loop');
 const { startManagerLoop } = require('./agent/manager');
 const { checkAdvancementMessage } = require('./perception/advancements');
+const { clearBadBlocks } = require('./perception/environment');
 
 const bot = mineflayer.createBot(config.BOT_CONFIG);
 bot.loadPlugin(pathfinder);
@@ -37,10 +38,29 @@ async function waitForInventoryRestore(retriesLeft = 8) {
 }
 
 /**
+ * Charger les procédures persistées depuis le stockage sur disque
+ * @returns {Promise<number>} Nombre de procédures chargées
+ */
+async function initializeProcedureMemory() {
+  if (!state.procedureMemory || typeof state.procedureMemory.loadAll !== 'function') {
+    return 0;
+  }
+  try {
+    const loadedCount = await state.procedureMemory.loadAll();
+    console.log(`📚 Loaded ${loadedCount} persisted procedure(s) from ${state.procedureMemory.storageDir}.`);
+    return loadedCount;
+  } catch (error) {
+    console.warn("⚠️ Failed to load persisted procedures:", error.message);
+    return 0;
+  }
+}
+
+/**
  * Synchronize inventory progression and start or resume autonomous survival loop
  */
 function launchAutonomousLoop() {
   setTimeout(async () => {
+    await initializeProcedureMemory();
     await waitForInventoryRestore();
     await autoEquipArmorAndShield(bot);
     syncObjective(bot, state);
@@ -207,6 +227,7 @@ bot.on('death', () => {
   state.isSurviving = false;
   state.activeActionId = (state.activeActionId || 0) + 1;
   state.lastDeathPosition = bot.entity?.position ? bot.entity.position.clone() : null;
+  clearBadBlocks();
   bot.pathfinder.setGoal(null);
   bot.clearControlStates();
   bot.chat("Bot died, waiting for respawn to resume progression.");

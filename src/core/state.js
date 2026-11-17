@@ -1,4 +1,6 @@
 const { ProcedureMemory } = require('../procedures/memory');
+const { DEFAULT_STORAGE_DIR } = require('../procedures/store');
+const { ObjectiveGenerationTracker } = require('../procedures/matcher');
 
 /**
  * Define shared global state for the autonomous agent
@@ -26,7 +28,8 @@ module.exports = {
   actionHistory: [],
   managerDirective: "Récolter du bois pour fabriquer les premiers outils.",
   managerSubGoal: null,
-  procedureMemory: new ProcedureMemory(),
+  procedureMemory: new ProcedureMemory({ storageDir: DEFAULT_STORAGE_DIR }),
+  generationTracker: new ObjectiveGenerationTracker(),
   isManagerThinking: false,
   cyclesSinceLastManager: 0,
   activeActionId: 0,

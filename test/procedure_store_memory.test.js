@@ -116,9 +116,10 @@ test('Procedure Memory: Lifecycle updates and status promotion/demotion', () => 
   proc = updateProcedureStats(proc, true);
   assert.equal(proc.metadata.executionCount, 3);
   assert.equal(proc.metadata.confidenceScore, 1.0);
-  assert.equal(proc.status, 'validated');
+  // Vérifier : Une mise à jour booléenne ne doit jamais promouvoir en validated
+  assert.equal(proc.status, 'experimental');
 
-  proc = updateProcedureStats(proc, false);
+  proc = updateProcedureStats({ ...proc, status: 'validated' }, false);
   proc = updateProcedureStats(proc, false);
   assert.equal(proc.metadata.executionCount, 5);
   assert.equal(proc.metadata.successCount, 3);
@@ -172,12 +173,12 @@ test('Procedure Memory: Cache management and persistent synchronization', async 
     await memory.recordExecution('cached_proc', true);
     await memory.recordExecution('cached_proc', true);
 
-    assert.equal(memory.get('cached_proc').status, 'validated');
+    assert.equal(memory.get('cached_proc').status, 'experimental');
 
     const freshMemory = new ProcedureMemory({ storageDir: tempDir });
     const loadedCount = await freshMemory.loadAll();
     assert.equal(loadedCount, 1);
-    assert.equal(freshMemory.get('cached_proc').status, 'validated');
+    assert.equal(freshMemory.get('cached_proc').status, 'experimental');
     assert.equal(freshMemory.get('cached_proc').metadata.executionCount, 3);
   } finally {
     await fs.rm(tempDir, { recursive: true, force: true });

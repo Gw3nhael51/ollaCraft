@@ -1,9 +1,8 @@
 const { goals } = require('mineflayer-pathfinder');
 const { Vec3 } = require('vec3');
-const GLOBAL_BAD_BLOCKS = new Set();
 const { getBestToolForBlock, countItem, getInventorySummary, isWoodLog, GENERIC_LOG_NAMES } = require('../../../perception/inventory');
 const { getBlockDrops, canHarvestBlock, getBlockNamesForTarget } = require('../../../minecraft/wikiData');
-const { isBlockExposedToAir, VALUABLE_ORES } = require('../../../perception/environment');
+const { isBlockExposedToAir, VALUABLE_ORES, markBadBlock, isBadBlock } = require('../../../perception/environment');
 const { fillBucketFromSource } = require('../world/portal');
 
 const LIQUID_TARGETS = new Map([
@@ -60,7 +59,7 @@ function findMineableTargetBlock(bot, targetName, isOpportunistic) {
   const searchWithCandidates = (candidateSet) => bot.findBlock({
     matching: (block) => {
       if (!block?.position) return candidateSet.has(block?.name);
-      if (!candidateSet.has(block.name) || GLOBAL_BAD_BLOCKS.has(getPosKey(block.position))) return false;
+      if (!candidateSet.has(block.name) || isBadBlock(block.position)) return false;
       return !isOpportunistic || (isBlockExposedToAir(bot, block) && canHarvestBlock(bot, block).canHarvest);
     },
     maxDistance: 30
@@ -195,7 +194,7 @@ async function mineSingleTarget(bot, targetName, state = null, actionId = 0) {
     console.warn("Mining failure :", error.message);
     bot.pathfinder.setGoal(null);
     bot.clearControlStates();
-    GLOBAL_BAD_BLOCKS.add(getPosKey(targetBlock.position));
+    markBadBlock(targetBlock.position);
     return { success: false, empty: false, message: `Block unreachable (${error.message}).` };
   }
 }
@@ -235,7 +234,7 @@ async function mineVeinBlock(bot, neighborPos, neighborBlock) {
     return true;
   } catch (err) {
     console.warn(`[VEIN] Unable to mine adjacent block : ${err.message}`);
-    GLOBAL_BAD_BLOCKS.add(getPosKey(neighborPos));
+    markBadBlock(neighborPos);
     return false;
   }
 }
@@ -249,7 +248,7 @@ async function mineVeinBlock(bot, neighborPos, neighborBlock) {
  * @returns {object|null} Valid neighbor block or null
  */
 function getSafeVeinNeighbor(bot, neighborPos, key, veinState) {
-  if (GLOBAL_BAD_BLOCKS.has(key)) return null;
+  if (isBadBlock(neighborPos)) return null;
   const neighborBlock = bot.blockAt(neighborPos);
   if (!neighborBlock || !veinState.targetTypes.has(neighborBlock.name)) return null;
   if (!canHarvestBlock(bot, neighborBlock).canHarvest) return null;
@@ -355,7 +354,7 @@ async function harvestNearbyExposedOresStep(bot, currentCount, maxCount, state =
   const oreBlock = bot.findBlock({
     matching: (block) => {
       if (!VALUABLE_ORES.has(block.name)) return false;
-      if (GLOBAL_BAD_BLOCKS.has(getPosKey(block.position))) return false;
+      if (isBadBlock(block.position)) return false;
       const harvestCheck = canHarvestBlock(bot, block);
       if (!harvestCheck.canHarvest) return false;
       return isBlockExposedToAir(bot, block);

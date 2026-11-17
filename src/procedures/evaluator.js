@@ -218,7 +218,7 @@ function observeEquippedItem(bot, destination = 'hand') {
     }
   }
 
-  if (bot.equipment && Object.prototype.hasOwnProperty.call(bot.equipment, destination)) {
+  if (bot.equipment && Object.hasOwn(bot.equipment, destination)) {
     const eqItem = bot.equipment[destination];
     return { observable: true, itemName: eqItem ? eqItem.name : null };
   }
@@ -891,17 +891,22 @@ async function evaluateAssertion(bot, assertion, context = {}) {
  * @param {object} [context={}] Contexte d'exécution
  * @returns {Promise<{ success: boolean, reason: string, data: object, error: string|null }>}
  */
-async function evaluatePreconditions(bot, preconditions, context = {}) {
-  if (!Array.isArray(preconditions) || preconditions.length === 0) {
-    return createResult(true, 'preconditions_met', { passed: [], failed: [], unknown: [], total: 0 }, null);
-  }
-
+/**
+ * Évaluer un lot d'assertions en parallèle et classer les résultats obtenus
+ * @param {object} bot Instance du bot Mineflayer
+ * @param {Array<object>} assertions Liste des assertions à vérifier
+ * @param {object} context Contexte d'exécution
+ * @returns {Promise<{ passed: Array<object>, failed: Array<object>, unknown: Array<object> }>} Résultats classés
+ */
+async function evaluateAssertionBatch(bot, assertions, context) {
+  const outcomes = await Promise.all(
+    assertions.map(assertion => evaluateAssertion(bot, assertion, context))
+  );
   const passed = [];
   const failed = [];
   const unknown = [];
 
-  for (const assertion of preconditions) {
-    const outcome = await evaluateAssertion(bot, assertion, context);
+  for (const outcome of outcomes) {
     if (outcome.status === 'verified' && outcome.passed) {
       passed.push(outcome);
     } else if (outcome.status === 'unknown') {
@@ -911,6 +916,23 @@ async function evaluatePreconditions(bot, preconditions, context = {}) {
       failed.push(outcome);
     }
   }
+
+  return { passed, failed, unknown };
+}
+
+/**
+ * Évaluer un tableau de préconditions déclarées avant l'exécution d'une procédure
+ * @param {object} bot Instance du bot Mineflayer
+ * @param {Array<object>} preconditions Définitions des préconditions
+ * @param {object} [context={}] Contexte d'exécution
+ * @returns {Promise<{ success: boolean, reason: string, data: object, error: string|null }>}
+ */
+async function evaluatePreconditions(bot, preconditions, context = {}) {
+  if (!Array.isArray(preconditions) || preconditions.length === 0) {
+    return createResult(true, 'preconditions_met', { passed: [], failed: [], unknown: [], total: 0 }, null);
+  }
+
+  const { passed, failed, unknown } = await evaluateAssertionBatch(bot, preconditions, context);
 
   if (failed.length > 0) {
     const errorDetails = failed.map(f => f.message).join('; ');
@@ -942,21 +964,7 @@ async function evaluatePostconditions(bot, postconditions, context = {}) {
     return createResult(true, 'postconditions_met', { passed: [], failed: [], unknown: [], total: 0 }, null);
   }
 
-  const passed = [];
-  const failed = [];
-  const unknown = [];
-
-  for (const assertion of postconditions) {
-    const outcome = await evaluateAssertion(bot, assertion, context);
-    if (outcome.status === 'verified' && outcome.passed) {
-      passed.push(outcome);
-    } else if (outcome.status === 'unknown') {
-      unknown.push(outcome);
-      failed.push(outcome);
-    } else {
-      failed.push(outcome);
-    }
-  }
+  const { passed, failed, unknown } = await evaluateAssertionBatch(bot, postconditions, context);
 
   if (failed.length > 0) {
     const reason = unknown.length > 0 && unknown.length === failed.length
@@ -1584,7 +1592,7 @@ async function evaluateProcedureExecution(bot, procedure, executionTrace, option
     contradictionsCount: contradictions.length
   });
 
-  let status = 'not_achieved';
+  let status;
   if (unknownConditions.length > 0 && verifiedFacts.length === 0 && realFailedCount === 0) {
     status = 'inconclusive';
   } else if (unknownConditions.length > 0 && !objectiveAchieved) {

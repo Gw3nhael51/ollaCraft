@@ -135,16 +135,23 @@ async function skillUnstuck(bot) {
   return { success: false, message: "Unable to dig an exit through immediate surrounding walls." };
 }
 
+let currentExploreHeadingRad = null;
+
 /**
  * Explore surroundings by walking towards safe randomized coordinates
  * @param {object} bot Mineflayer bot instance
  * @returns {Promise<{ success: boolean, message: string }>} Result of exploration movement
  */
 async function skillExplore(bot) {
-  const distance = crypto.randomInt(15, 25);
-  const angle = (crypto.randomInt(0, 360) * Math.PI) / 180;
-  const targetX = Math.round(bot.entity.position.x + Math.cos(angle) * distance);
-  const targetZ = Math.round(bot.entity.position.z + Math.sin(angle) * distance);
+  const distance = crypto.randomInt(20, 35);
+  if (currentExploreHeadingRad === null) {
+    currentExploreHeadingRad = (crypto.randomInt(0, 360) * Math.PI) / 180;
+  } else {
+    const deltaRad = ((crypto.randomInt(-45, 46)) * Math.PI) / 180;
+    currentExploreHeadingRad = (currentExploreHeadingRad + deltaRad) % (Math.PI * 2);
+  }
+  const targetX = Math.round(bot.entity.position.x + Math.cos(currentExploreHeadingRad) * distance);
+  const targetZ = Math.round(bot.entity.position.z + Math.sin(currentExploreHeadingRad) * distance);
 
   console.log(`[EXPLORE] Moving towards X:${targetX}, Z:${targetZ}...`);
 
@@ -160,6 +167,8 @@ async function skillExplore(bot) {
     return { success: true, message: "Exploratory movement completed to new zone." };
   } catch (error) {
     console.warn("Exploration impeded :", error.message);
+    // Changer : Pivoter la direction en cas d'obstacle
+    currentExploreHeadingRad = (currentExploreHeadingRad + Math.PI * 0.75) % (Math.PI * 2);
     bot.pathfinder.setGoal(null);
     bot.clearControlStates();
     return { success: false, message: `Movement blocked (${error.message}).` };

@@ -23,11 +23,13 @@ const STATUS_WEIGHTS = Object.freeze({
  * @returns {string} Identifiant normalisé valide
  */
 function sanitizeProcedureId(rawId) {
-  const cleaned = String(rawId || 'experimental_proc')
+  let cleaned = String(rawId || 'experimental_proc')
     .toLowerCase()
-    .replaceAll(/[^a-z0-9_-]+/g, '_')
-    .replaceAll(/^_+|_+$/g, '')
-    .slice(0, 48);
+    .replaceAll(/[^a-z0-9_-]+/g, '_');
+
+  while (cleaned.startsWith('_')) cleaned = cleaned.slice(1);
+  while (cleaned.endsWith('_')) cleaned = cleaned.slice(0, -1);
+  cleaned = cleaned.slice(0, 48);
 
   return cleaned.length > 0 ? cleaned : 'experimental_proc';
 }
@@ -88,9 +90,8 @@ function updateProcedureStats(procedure, successOrEvaluation, options = {}) {
 
   let nextStatus = procedure.status || 'experimental';
 
-  if (nextStatus === 'experimental' && executionCount >= 3 && confidenceScore >= 0.75) {
-    nextStatus = 'validated';
-  } else if (nextStatus === 'validated' && executionCount >= 5 && confidenceScore < 0.5) {
+  // Interdire : Empêcher toute promotion vers validated via un simple booléen
+  if (nextStatus === 'validated' && executionCount >= 5 && confidenceScore < 0.5) {
     nextStatus = 'deprecated';
   }
 
@@ -406,8 +407,7 @@ class ProcedureMemory {
 
     const existing = this.procedures.get(procedure.id);
     if (
-      existing &&
-      existing.status === 'validated' &&
+      existing?.status === 'validated' &&
       procedure.status === 'experimental' &&
       options.allowOverwriteValidated !== true
     ) {

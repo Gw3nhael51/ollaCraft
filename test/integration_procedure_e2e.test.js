@@ -195,14 +195,14 @@ test('Integration E2E: Harvest wood and craft planks full procedure pipeline', a
     await memory.recordExecution(procedure.id, true);
 
     const updated = memory.get(procedure.id);
-    assert.equal(updated.status, 'validated');
+    assert.equal(updated.status, 'experimental');
     assert.equal(updated.metadata.executionCount, 3);
     assert.equal(updated.metadata.confidenceScore, 1.0);
 
     const bestCandidate = memory.selectBest({ tags: ['crafting'] });
     assert.notEqual(bestCandidate, null);
     assert.equal(bestCandidate.id, 'harvest_wood_and_craft_planks');
-    assert.equal(bestCandidate.status, 'validated');
+    assert.equal(bestCandidate.status, 'experimental');
   } finally {
     await fs.rm(tempDir, { recursive: true, force: true });
   }

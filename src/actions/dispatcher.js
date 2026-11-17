@@ -12,6 +12,7 @@ const { skillPortal } = require('./behaviors/world/portal');
 const { createDefaultRegistry } = require('../procedures/registry');
 const { validateProcedure } = require('../procedures/validator');
 const { executeProcedure } = require('../procedures/runner');
+const { evaluateProcedureExecution } = require('../procedures/evaluator');
 const { ProcedureMemory } = require('../procedures/memory');
 const { IDENTIFIER_REGEX, ALLOWED_STATUSES } = require('../procedures/schema');
 
@@ -155,7 +156,31 @@ async function skillProcedure(bot, state, target, qty, options = {}) {
     };
   }
 
-  if (typeof memory.recordExecution === 'function') {
+  const hasVerifiableOutcome = Boolean(
+    (Array.isArray(procedure.postconditions) && procedure.postconditions.length > 0) ||
+    options.objective ||
+    state?.currentObjective
+  );
+
+  if (options.evaluateExecution !== false && hasVerifiableOutcome && typeof memory.recordEvaluation === 'function') {
+    try {
+      const evalRes = await evaluateProcedureExecution(bot, procedure, runnerResult, {
+        objective: options.objective || state?.currentObjective,
+        context: {
+          parameters: inputs,
+          ...options.context
+        }
+      });
+      if (evalRes?.success && evalRes.data) {
+        await memory.recordEvaluation(procedureId, evalRes.data, {
+          executionTrace: runnerResult.data?.trace || runnerResult.data,
+          context: options.context
+        });
+      }
+    } catch {
+      // Ignorer : Ne pas bloquer le retour si la persistance échoue
+    }
+  } else if (typeof memory.recordExecution === 'function') {
     try {
       await memory.recordExecution(procedureId, runnerResult.success);
     } catch {
