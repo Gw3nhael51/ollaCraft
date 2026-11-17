@@ -9,6 +9,8 @@ const { skillUnstuck } = require('../actions/behaviors/movement/navigate');
 const { runManagerCycle, shouldRunManager, cleanTargetIdentifier } = require('./manager');
 
 const ACTION_TIMEOUT_MS = 45000;
+const PROCEDURE_TIMEOUT_MS = 60000;
+const PROCEDURE_ENVELOPE_TIMEOUT_MS = 75000;
 
 /**
  * Localiser un établi placé à proximité ou aux coordonnées mémorisées de la base
@@ -67,24 +69,40 @@ async function recoverFromActionTimeout(bot) {
  * Exécuter la compétence sélectionnée avec un délai de sécurité maximal
  * @param {object} bot Instance du bot Mineflayer
  * @param {object} decision Décision validée de l'IA
+ * @param {object} [options={}] Options d'exécution et dépendances injectables
  * @returns {Promise<{ success: boolean, message: string }>} Résultat d'exécution
  */
-async function executeDecisionWithTimeout(bot, decision) {
+async function executeDecisionWithTimeout(bot, decision, options = {}) {
   let actionTimer = null;
   state.activeActionId = (state.activeActionId || 0) + 1;
-  const timeoutLimitMs = decision.action === 'smelt'
-    ? Math.max(ACTION_TIMEOUT_MS, (decision.qty || 1) * 12000 + 20000)
-    : ACTION_TIMEOUT_MS;
+  const isProcedure = decision.action === 'procedure';
+  let timeoutLimitMs = ACTION_TIMEOUT_MS;
+  if (decision.action === 'smelt') {
+    timeoutLimitMs = Math.max(ACTION_TIMEOUT_MS, (decision.qty || 1) * 12000 + 20000);
+  } else if (isProcedure) {
+    timeoutLimitMs = options.procedureEnvelopeTimeoutMs || PROCEDURE_ENVELOPE_TIMEOUT_MS;
+  }
+
+  const controller = new AbortController();
+  const dispatchFn = options.dispatchSkillFn || dispatchSkill;
+  const skillOptions = isProcedure
+    ? {
+        timeoutMs: options.procedureTimeoutMs || PROCEDURE_TIMEOUT_MS,
+        abortSignal: controller.signal,
+        ...options.skillOptions
+      }
+    : options.skillOptions;
 
   const timeoutPromise = new Promise((_, reject) => {
     actionTimer = setTimeout(() => {
+      controller.abort(new Error("Action execution timeout exceeded"));
       reject(new Error("Action execution timeout exceeded"));
     }, timeoutLimitMs);
   });
 
   try {
     return await Promise.race([
-      dispatchSkill(bot, state, decision.action, decision.target, decision.qty || 1),
+      dispatchFn(bot, state, decision.action, decision.target, decision.qty || 1, skillOptions),
       timeoutPromise
     ]);
   } catch (error) {
@@ -115,11 +133,35 @@ function recordActionResult(decision, executionResult) {
 }
 
 /**
+ * Retourner une décision directe lorsqu'une procédure validée fiable est assignée par le Manager
+ * @param {object} [currentState=state] État global du bot
+ * @returns {object|null} Décision procédurale prioritaire ou null
+ */
+function getReliableProcedureDecision(currentState = state) {
+  const subGoal = currentState?.managerSubGoal;
+  if (subGoal?.action !== 'procedure' || subGoal.isReliable !== true || !subGoal.target) {
+    return null;
+  }
+  const target = cleanTargetIdentifier(subGoal.target);
+  if (!target || target === 'none') return null;
+
+  return {
+    thought: currentState.managerDirective || `Exécution directe de la procédure validée '${target}'.`,
+    action: 'procedure',
+    target,
+    qty: 1
+  };
+}
+
+/**
  * Résoudre une décision valide du joueur ou utiliser le sous-objectif du superviseur en repli
  * @param {object|null} rawDecision Décision brute retournée par le modèle joueur
  * @returns {object|null} Objet décision validé ou null
  */
 function resolvePlayerDecision(rawDecision) {
+  const reliableProcedure = getReliableProcedureDecision(state);
+  if (reliableProcedure) return reliableProcedure;
+
   const candidate = [rawDecision, state.managerSubGoal].find(d => config.VALID_ACTIONS.has(d?.action));
   if (!candidate) return null;
   const target = cleanTargetIdentifier(candidate.target);
@@ -162,27 +204,45 @@ function isSessionActive(sessionId) {
  * Exécuter un cycle complet de réflexion et d'action ReAct pour la survie autonome
  * @param {object} bot Instance du bot Mineflayer
  * @param {number} [sessionId=state.survivalSessionId] Identifiant de la session de survie active
+ * @param {object} [deps={}] Dépendances optionnelles pour les tests
  * @returns {Promise<void>} Promesse résolue à la fin du cycle
  */
-async function handleSurvivalRequest(bot, sessionId = state.survivalSessionId) {
+async function handleSurvivalRequest(bot, sessionId = state.survivalSessionId, deps = {}) {
   if (!isSessionActive(sessionId)) return;
 
+  const askOllamaFn = deps.askOllamaFn || askOllama;
+  const runManagerFn = deps.runManagerFn || runManagerCycle;
+  const scheduleNext = deps.scheduleNext !== false;
+
   try {
+    const objectiveBeforeSync = state.currentObjective;
     syncObjective(bot, state);
+    if (state.currentObjective !== objectiveBeforeSync) {
+      state.managerSubGoal = null;
+      await runManagerFn(bot);
+      if (!isSessionActive(sessionId)) return;
+    }
 
-    const environment = scanEnvironment(bot, 20);
-    const craftingTable = findAvailableCraftingTable(bot);
-    const prompt = buildReactPrompt(bot, state, environment, craftingTable);
+    let decision = getReliableProcedureDecision(state);
+    if (decision) {
+      console.log(`\n=== PROCEDURAL EXECUTION CYCLE (objective : ${state.currentObjective}, procedure : ${decision.target}) ===`);
+    } else {
+      const environment = scanEnvironment(bot, 20);
+      const craftingTable = findAvailableCraftingTable(bot);
+      const prompt = buildReactPrompt(bot, state, environment, craftingTable);
 
-    console.log(`\n=== REACT THINKING CYCLE (objective : ${state.currentObjective}) ===`);
-    const rawDecision = await askOllama(prompt);
-    if (!isSessionActive(sessionId)) return;
-    const decision = resolvePlayerDecision(rawDecision);
+      console.log(`\n=== REACT THINKING CYCLE (objective : ${state.currentObjective}) ===`);
+      const rawDecision = await askOllamaFn(prompt);
+      if (!isSessionActive(sessionId)) return;
+      decision = resolvePlayerDecision(rawDecision);
+    }
 
     if (!decision) {
       console.log("Invalid decision received from Ollama and no valid fallback, pausing for 2s...");
       state.lastActionResult = { action: 'error', target: 'none', success: false, message: "Invalid JSON decision format." };
-      setTimeout(() => handleSurvivalRequest(bot, sessionId), 2000);
+      if (scheduleNext) {
+        setTimeout(() => handleSurvivalRequest(bot, sessionId, deps), 2000);
+      }
       return;
     }
 
@@ -193,7 +253,7 @@ async function handleSurvivalRequest(bot, sessionId = state.survivalSessionId) {
     const safeActionAnnouncement = `Action : ${decision.action}${safeTarget}`.slice(0, 60);
     bot.chat(safeActionAnnouncement);
 
-    const executionResult = await executeDecisionWithTimeout(bot, decision);
+    const executionResult = await executeDecisionWithTimeout(bot, decision, deps);
     if (!isSessionActive(sessionId)) return;
     console.log(`[RESULT] ${executionResult.success ? '✅' : '❌'} ${executionResult.message}`);
 
@@ -203,15 +263,20 @@ async function handleSurvivalRequest(bot, sessionId = state.survivalSessionId) {
       await evaluateManagerTrigger(bot);
     }
 
-    if (isSessionActive(sessionId)) {
-      setTimeout(() => handleSurvivalRequest(bot, sessionId), 1500);
+    if (isSessionActive(sessionId) && scheduleNext) {
+      setTimeout(() => handleSurvivalRequest(bot, sessionId, deps), 1500);
     }
   } catch (error) {
     console.error("Unexpected error in survival cycle :", error);
-    if (isSessionActive(sessionId)) {
-      setTimeout(() => handleSurvivalRequest(bot, sessionId), 2500);
+    if (isSessionActive(sessionId) && scheduleNext) {
+      setTimeout(() => handleSurvivalRequest(bot, sessionId, deps), 2500);
     }
   }
 }
 
-module.exports = { handleSurvivalRequest, resolvePlayerDecision };
+module.exports = {
+  handleSurvivalRequest,
+  resolvePlayerDecision,
+  getReliableProcedureDecision,
+  executeDecisionWithTimeout
+};
