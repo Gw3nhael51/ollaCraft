@@ -18,9 +18,16 @@ function extractProcedureJson(rawText) {
 
   let cleaned = rawText.trim();
 
-  const markdownMatch = /```(?:json)?\s*([\s\S]*?)\s*```/i.exec(cleaned);
-  if (markdownMatch?.[1]) {
-    cleaned = markdownMatch[1].trim();
+  const fenceStart = cleaned.indexOf('```');
+  const fenceEnd = fenceStart === -1 ? -1 : cleaned.indexOf('```', fenceStart + 3);
+  if (fenceStart !== -1 && fenceEnd > fenceStart) {
+    let inner = cleaned.slice(fenceStart + 3, fenceEnd).trim();
+    if (inner.toLowerCase().startsWith('json')) {
+      inner = inner.slice(4).trim();
+    }
+    if (inner) {
+      cleaned = inner;
+    }
   }
 
   const start = cleaned.indexOf('{');
@@ -60,6 +67,9 @@ function buildGeneratorPrompt({ objective, context = {}, registry, existingProce
     : 'standard overworld';
 
   const knownList = existingProcedures.slice(0, 5).map(p => `- ${p.id} (${p.status})`).join('\n') || 'none';
+  const knowledgeSection = context.knowledgePlan?.summary
+    ? `\n- Dependency Plan (Minecraft Knowledge): ${context.knowledgePlan.summary}`
+    : '';
 
   return `You are the Autonomous Procedure Generator for a Minecraft AI agent.
 Your mission is to construct a declarative JSON Procedure conforming strictly to the DSL schema.
@@ -69,7 +79,7 @@ TARGET OBJECTIVE:
 
 CURRENT CONTEXT:
 - Inventory: ${inventorySummary}
-- Surrounding Environment: ${environmentSummary}
+- Surrounding Environment: ${environmentSummary}${knowledgeSection}
 - Known procedures for reference:
 ${knownList}
 

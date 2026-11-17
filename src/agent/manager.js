@@ -3,8 +3,12 @@ const state = require('../core/state');
 const invUtils = require('../perception/inventory');
 const { scanNearbyEntities } = require('../perception/environment');
 const { askOllama } = require('./ollama');
-const { defaultProcedureMemory } = require('../actions/dispatcher');
+const { defaultProcedureMemory, defaultActionRegistry } = require('../actions/dispatcher');
 const { getMcData } = require('../minecraft/wikiData');
+const { resolveGoalPlan } = require('../minecraft/knowledge');
+const { evaluateObjectiveCoverage, ObjectiveGenerationTracker } = require('../procedures/matcher');
+const { generateProcedure } = require('../procedures/generator');
+const { registerExperimentalProcedure } = require('../procedures/memory');
 
 /**
  * Détecter si le bot est bloqué dans une boucle d'actions ou une série d'échecs consécutifs
@@ -251,6 +255,15 @@ function sanitizeCraftDecision(bot, target, directive) {
     return { action: 'craft', target: 'crafting_table', directive: `Fabriquer un établi ('crafting_table') pour assembler ${target}.` };
   }
 
+  const goalPlan = resolveGoalPlan(bot, target, 1, state);
+  if (goalPlan.nextAction && goalPlan.nextAction.action !== 'explore') {
+    return {
+      action: goalPlan.nextAction.action,
+      target: goalPlan.nextAction.target,
+      directive: goalPlan.nextAction.reason
+    };
+  }
+
   return { action: 'explore', target, directive: `Ressources manquantes pour fabriquer ${target}, explorer pour trouver des composants.` };
 }
 
@@ -384,6 +397,7 @@ function buildSupervisorPrompt(bot) {
   const requiredAmount = config.QUEST_AMOUNT[state.currentObjective] || 1;
   const currentAmount = invUtils.countItem(bot, state.currentObjective);
   const progressSummary = `${currentAmount}/${requiredAmount}`;
+  const goalPlan = resolveGoalPlan(bot, state.currentObjective, requiredAmount, state);
   const { isInventoryCluttered } = require('../actions/behaviors/items/storage');
   const cluttered = isInventoryCluttered(bot);
   const nearbyEntities = scanNearbyEntities(bot, 20);
@@ -411,6 +425,7 @@ function buildSupervisorPrompt(bot) {
       - Santé : ${Math.round(bot.health)}/20 | Faim : ${Math.round(bot.food)}/20
       - Historique des actions récentes : ${recentHistory}
       - Blocage ou boucle détectée : ${loopNotice}
+      - Décomposition déterministe des prérequis : ${goalPlan.summary}
 
       CONSIGNE :
       Définis la prochaine étape logique pour progresser ou te débloquer. Sois direct, clair et réaliste.
@@ -427,11 +442,100 @@ function buildSupervisorPrompt(bot) {
 }
 
 /**
+ * Tenter de sélectionner une procédure expérimentale ou d'en générer une nouvelle pour un objectif non couvert
+ * @param {object} bot Instance du bot Mineflayer
+ * @param {object} memory Instance de ProcedureMemory
+ * @param {string} objective Objectif courant
+ * @param {object} [deps={}] Dépendances injectables pour la génération
+ * @returns {Promise<boolean>} Vrai si un sous-objectif procédural a été défini
+ */
+async function tryAssignProceduralGoal(bot, memory, objective, deps = {}) {
+  const tracker = state.generationTracker || new ObjectiveGenerationTracker();
+  if (!state.generationTracker) state.generationTracker = tracker;
+
+  const coverage = evaluateObjectiveCoverage(memory, objective, tracker);
+  const lastActionFailedOnProc = Boolean(
+    state.lastActionResult?.success === false &&
+    state.lastActionResult.action === 'procedure' &&
+    state.lastActionResult.target === coverage.procedure?.id
+  );
+
+  if (coverage.status === 'validated_available' && coverage.procedure && !lastActionFailedOnProc) {
+    state.managerDirective = `Exécuter la procédure validée '${coverage.procedure.id}' pour l'objectif '${objective}'.`;
+    state.managerSubGoal = {
+      action: 'procedure',
+      target: coverage.procedure.id,
+      isReliable: true,
+      procedureId: coverage.procedure.id
+    };
+    console.log(`\n[MANAGER 🧠] Directive mise à jour : "${state.managerDirective}" (action suggérée: procedure)`);
+    return true;
+  }
+
+  if (coverage.status === 'experimental_available' && coverage.procedure && !lastActionFailedOnProc) {
+    state.managerDirective = `Tester la procédure expérimentale '${coverage.procedure.id}' pour l'objectif '${objective}' (évaluation requise).`;
+    state.managerSubGoal = {
+      action: 'procedure',
+      target: coverage.procedure.id,
+      isReliable: false,
+      procedureId: coverage.procedure.id
+    };
+    console.log(`\n[MANAGER 🧠] Directive mise à jour : "${state.managerDirective}" (action suggérée: procedure)`);
+    return true;
+  }
+
+  if (coverage.status === 'eligible_for_generation' && deps.enableProcedureGeneration === true) {
+    const generateFn = deps.generateProcedureFn || generateProcedure;
+    const registry = deps.actionRegistry || defaultActionRegistry;
+    const knowledgePlan = resolveGoalPlan(bot, objective, config.QUEST_AMOUNT[objective] || 1, state);
+    tracker.recordAttempt(objective);
+
+    const genRes = await generateFn({
+      objective,
+      context: {
+        inventory: bot.inventory?.items?.() || [],
+        knowledgePlan
+      },
+      registry,
+      existingProcedures: memory.getAll(),
+      askOllamaFn: deps.askOllamaFn
+    });
+
+    if (genRes?.success && genRes.data?.procedure) {
+      const regRes = await registerExperimentalProcedure(memory, genRes.data.procedure, {
+        registry,
+        storageDir: memory.storageDir,
+        generationMetadata: genRes.data.generationMetadata
+      });
+
+      if (regRes?.success && regRes.data?.procedure) {
+        const createdProc = regRes.data.procedure;
+        state.managerDirective = `Tester la nouvelle procédure expérimentale '${createdProc.id}' pour '${objective}'.`;
+        state.managerSubGoal = {
+          action: 'procedure',
+          target: createdProc.id,
+          isReliable: false,
+          procedureId: createdProc.id
+        };
+        console.log(`\n[MANAGER 🧠] Procédure expérimentale générée : "${createdProc.id}" (action suggérée: procedure)`);
+        return true;
+      }
+      tracker.recordFailure(objective, regRes?.error || 'Registration failed');
+    } else {
+      tracker.recordFailure(objective, genRes?.error || 'Generation failed');
+    }
+  }
+
+  return false;
+}
+
+/**
  * Exécuter un cycle de raisonnement du superviseur pour orienter le joueur autonome
  * @param {object} bot Instance du bot Mineflayer
+ * @param {object} [deps={}] Dépendances optionnelles (génération, Ollama)
  * @returns {Promise<void>} Promesse résolue à la fin du cycle de supervision
  */
-async function runManagerCycle(bot) {
+async function runManagerCycle(bot, deps = {}) {
   if (!state.isSurviving || state.isManagerThinking) return;
 
   state.isManagerThinking = true;
@@ -440,19 +544,11 @@ async function runManagerCycle(bot) {
     invUtils.syncObjective(bot, state);
 
     const memory = state.procedureMemory || defaultProcedureMemory;
-    const match = selectProcedureForObjective(memory, state.currentObjective, { onlyValidated: true });
-
-    if (match?.procedure && match.isReliable) {
-      state.managerDirective = `Exécuter la procédure validée '${match.procedure.id}' pour l'objectif '${state.currentObjective}'.`;
-      state.managerSubGoal = {
-        action: 'procedure',
-        target: match.procedure.id,
-        isReliable: true,
-        procedureId: match.procedure.id
-      };
-      console.log(`\n[MANAGER 🧠] Directive mise à jour : "${state.managerDirective}" (action suggérée: procedure)`);
-      return;
-    }
+    const assigned = await tryAssignProceduralGoal(bot, memory, state.currentObjective, {
+      enableProcedureGeneration: deps.enableProcedureGeneration ?? Boolean(deps.generateProcedureFn || deps.askOllamaFn),
+      ...deps
+    });
+    if (assigned) return;
 
     const prompt = buildSupervisorPrompt(bot);
     const result = await askOllama(prompt, config.OLLAMA_MODEL_MANAGER, 'manager');

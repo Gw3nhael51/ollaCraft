@@ -3,6 +3,7 @@ const invUtils = require('../perception/inventory');
 const envUtils = require('../perception/environment');
 const { getMcData, classifyOresByHarvestability } = require('../minecraft/wikiData');
 const { getCurrentAdvancementInfo } = require('../perception/advancements');
+const { resolveGoalPlan } = require('../minecraft/knowledge');
 
 /**
  * Generate stone mining advice based on currently owned tools
@@ -158,6 +159,7 @@ function filterRadarEnvironment(bot, environment) {
   const mcData = getMcData(bot);
   return Object.fromEntries(
     Object.entries(environment).filter(([name]) => {
+      if (name.endsWith('_leaves')) return false;
       const block = mcData.blocksByName[name];
       if (!block) return false;
       return block.diggable !== false && !block.material?.includes('plant');
@@ -182,6 +184,7 @@ function buildReactPrompt(bot, state, environment, craftingTable) {
   const unlockedText = state.unlockedAdvancements?.length > 0 ? state.unlockedAdvancements.map(a => `[${a}]`).join(', ') : 'aucun';
   const progressText = getObjectiveProgressText(bot, state.currentObjective);
   const wikiSummary = getWikiKnowledgeSummary(bot, state.currentObjective);
+  const goalPlan = resolveGoalPlan(bot, state.currentObjective, config.QUEST_AMOUNT[state.currentObjective] || 1, state);
   const currentBiome = envUtils.getCurrentBiome ? envUtils.getCurrentBiome(bot) : 'plains';
   const tableStatus = getTableStatusText(bot, craftingTable);
   const ownedTools = invUtils.getOwnedTools(bot);
@@ -210,6 +213,7 @@ function buildReactPrompt(bot, state, environment, craftingTable) {
 
     BASE DE CONNAISSANCES WIKICRAFT POUR L'OBJECTIF :
     - ${wikiSummary}
+    - PLAN DE DÉPENDANCES (INVENTAIRE ACTUEL) : ${goalPlan.summary}
     - RÈGLE FONDAMENTALE : Si tu as le moindre doute sur une recette, un outil ou la façon d'obtenir une ressource, N'INVENTE RIEN : utilise immédiatement l'action "wiki" (ex: {"action": "wiki", "target": "${state.currentObjective}"}). Le WikiCraft est ta source de vérité.
 
     ÉTAT PHYSIQUE :
