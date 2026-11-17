@@ -1,4 +1,5 @@
 const { goals } = require('mineflayer-pathfinder');
+const { markBadBlock, isBadBlock } = require('../../../perception/environment');
 
 /**
  * Locate an accessible furnace block nearby or from base memory
@@ -7,17 +8,24 @@ const { goals } = require('mineflayer-pathfinder');
  * @returns {object|null} Located furnace block or null
  */
 function findTargetFurnace(bot, state) {
-  const nearby = bot.findBlock({
-    matching: bot.registry.blocksByName.furnace.id,
-    maxDistance: 32
-  });
-  if (nearby || !state.base.furnace) return nearby;
+  const furnaceId = bot.registry?.blocksByName?.furnace?.id;
+  const nearby = furnaceId
+    ? bot.findBlock({
+        matching: (block) => block?.type === furnaceId && (!block.position || !isBadBlock(block.position)),
+        maxDistance: 32
+      })
+    : null;
+  if (nearby || !state?.base?.furnace) return nearby;
 
   const rememberedFurnace = bot.blockAt(state.base.furnace);
   if (!rememberedFurnace) return null;
 
   if (rememberedFurnace.name !== 'furnace') {
     state.base.furnace = null;
+    return null;
+  }
+
+  if (isBadBlock(rememberedFurnace.position || state.base.furnace)) {
     return null;
   }
 
@@ -107,11 +115,18 @@ async function skillSmelt(bot, state, targetName, qty) {
   const furnaceBlock = findTargetFurnace(bot, state);
   if (!furnaceBlock) {
     const hasInPocket = bot.inventory.items().some(i => i.name === 'furnace');
+    const cobbleCount = bot.inventory.items().filter(i => i.name === 'cobblestone').reduce((sum, i) => sum + i.count, 0);
+    if (hasInPocket) {
+      return {
+        success: false,
+        message: "No accessible furnace nearby. Use 'place' with target 'furnace' to set down the furnace from your inventory."
+      };
+    }
     return {
       success: false,
-      message: hasInPocket
-        ? "No furnace placed nearby. Use 'place' with target 'furnace' to set down the furnace from your inventory."
-        : "No furnace found nearby. Craft one ('craft furnace') and place it down ('place furnace') first."
+      message: cobbleCount >= 8
+        ? "No accessible furnace nearby. Craft a new one ('craft furnace') and place it ('place furnace') right here."
+        : "No accessible furnace found nearby. Mine 8 cobblestone, craft one ('craft furnace') and place it ('place furnace') first."
     };
   }
 
@@ -156,6 +171,22 @@ async function skillSmelt(bot, state, targetName, qty) {
     return { success: true, message: `Successfully smelted ${smeltedCount}x '${targetName}'.` };
   } catch (error) {
     console.warn("Smelting error :", error.message);
+    if (error.message?.includes('Navigation timeout')) {
+      markBadBlock(furnaceBlock.position);
+      if (bot.pathfinder?.setGoal) bot.pathfinder.setGoal(null);
+      const hasInPocket = bot.inventory.items().some(i => i.name === 'furnace');
+      const cobbleCount = bot.inventory.items().filter(i => i.name === 'cobblestone').reduce((sum, i) => sum + i.count, 0);
+      let recoveryHint = "Explore or dig towards a clear spot before retrying.";
+      if (hasInPocket) {
+        recoveryHint = "Use 'place' with target 'furnace' nearby instead.";
+      } else if (cobbleCount >= 8) {
+        recoveryHint = "Use 'craft' with target 'furnace' and place it nearby instead.";
+      }
+      return {
+        success: false,
+        message: `Smelting failed : Furnace unreachable (${error.message}). Marked temporarily inaccessible. ${recoveryHint}`
+      };
+    }
     return { success: false, message: `Smelting failed : ${error.message}` };
   } finally {
     if (navTimer) clearTimeout(navTimer);
@@ -163,4 +194,4 @@ async function skillSmelt(bot, state, targetName, qty) {
   }
 }
 
-module.exports = { skillSmelt, computeSmeltPlan, waitForFurnaceOutput };
+module.exports = { skillSmelt, computeSmeltPlan, waitForFurnaceOutput, findTargetFurnace };
