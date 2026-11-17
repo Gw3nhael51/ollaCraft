@@ -119,8 +119,9 @@ flowchart TD
 
 ## 3. Hierarchical Decision Loop: Strategy Manager vs Tactical ReAct Player
 
-1. **Strategy Manager** ([`src/agent/manager.js`](src/agent/manager.js)): Triggered on an **event-driven** basis (action failure, loop detected, objective milestone reached, inventory clutter, or heartbeat). It first checks `ProcedureMemory` for a **validated procedure** matching the current objective — if one exists, it bypasses step-by-step LLM inference and dispatches the validated procedure directly.
-2. **Tactical ReAct Player** ([`src/agent/loop.js`](src/agent/loop.js)): Runs the **Perception &rarr; Dynamic Radar Prompt &rarr; Structured LLM Output &rarr; Skill/Procedure Dispatch (45s Timeout Guard) &rarr; Feedback** cycle.
+1. **Strategy Manager** ([`src/agent/manager.js`](src/agent/manager.js)): Triggered on an **event-driven** basis (action failure, loop detected, objective milestone reached, inventory clutter, or heartbeat). It first checks `ProcedureMemory` for a **validated procedure** matching the current objective (with a consecutive-failure guard) — if one exists, `loop.js` bypasses Player LLM inference and executes it directly under a 75s envelope (`60s` Runner + `AbortSignal`). When no validated procedure applies, `resolveGoalPlan` ([`src/minecraft/knowledge.js`](src/minecraft/knowledge.js)) decomposes missing prerequisites for both Manager and Player prompts, and `sanitizeManagerOutput` prevents redundant `unstuck` on clear terrain or repeated navigation to unreachable furnaces.
+
+2. **Tactical ReAct Player** ([`src/agent/loop.js`](src/agent/loop.js)): Runs the **Perception &rarr; Dependency Plan &amp; Dynamic Radar Prompt &rarr; Validated Procedure Bypass or Structured LLM Output &rarr; Skill/Procedure Dispatch &rarr; Terrain-Aware Recovery &rarr; Feedback** cycle. On `death`, action history, base memory, and temporary bad-block blacklists are cleanly reset.
 
 ---
 
@@ -140,7 +141,7 @@ All autonomous procedures are composed exclusively of whitelisted, deterministic
 
 ## 5. Benchmark & Performance Metrics (`npm run benchmark`)
 
-Measured via [`scripts/benchmark.js`](scripts/benchmark.js) across **171 automated unit & integration tests**:
+Measured via [`scripts/benchmark.js`](scripts/benchmark.js) across **180 automated unit & integration tests**:
 
 | Subsystem | Metric | Result | Architectural Impact |
 | :--- | :--- | :--- | :--- |
@@ -196,7 +197,8 @@ ollaCraft/
 │   │   ├── inventory.js             # Item counting, tool selection, quest progression sync
 │   │   └── advancements.js          # Vanilla Minecraft advancements tracker
 │   └── minecraft/
+│       ├── knowledge.js             # Recursive dependency graph & prerequisite goal resolver
 │       ├── wiki.js                  # Offline recipe, drop, and tool lookup skill
 │       └── wikiData.js              # Cached minecraft-data registry access
-└── test/                            # 171 automated unit and end-to-end integration tests
+└── test/                            # 180 automated unit and end-to-end integration tests
 ```

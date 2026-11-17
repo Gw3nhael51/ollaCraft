@@ -15,7 +15,15 @@
   - Classification des échecs (`resource_shortage`, `execution_error`, `objective_not_achieved`, `contradiction`, `inconclusive`) et dépréciation prudente.
   - Versionnement non-destructif (`v1 validated` + `v2 experimental`) avec comparaison de performances et fallback.
   - Extraction de connaissances (`getKnowledge`) pour le Manager et le Generator.
-- [x] **Tests & Benchmark (`test/`, `scripts/benchmark.js`, `.github/workflows/ci.yml`)** : **171/171 tests unitaires et E2E** + benchmark automatisé (`npm run benchmark`) + CI/CD GitHub Actions.
+- [x] **Tests & Benchmark (`test/`, `scripts/benchmark.js`, `.github/workflows/ci.yml`)** : **180/180 tests unitaires et E2E** + benchmark automatisé (`npm run benchmark`) + CI/CD GitHub Actions.
+
+---
+
+## ✅ Stabilisation Runtime, Connaissances & Démo (P0/P1)
+- [x] **Raccordement `ProcedureMemory` & Docker (`src/index.js`, `src/core/state.js`, `docker-compose.yml`)** : Chargement `loadAll()` au démarrage, volume `./data:/app/data`, priorité absolue + bypass LLM Joueur sur procédures `validated`, enveloppe timeout 75s, suppression de l'auto-promotion booléenne.
+- [x] **Connaissances Minecraft & Graphe de Dépendances (`src/minecraft/knowledge.js`)** : Décomposition récursive des prérequis (`getItemKnowledge`, `resolveGoalPlan`) intégrée au Manager et au prompt Joueur.
+- [x] **Perception & Exploration (`src/perception/environment.js`, `src/actions/behaviors/blocks/mine.js`, `src/actions/behaviors/movement/navigate.js`)** : TTL (2 min) sur `badBlocksRegistry` synchronisé avec `scanEnvironment`, filtrage des `*_leaves` du Radar, exploration directionnelle.
+- [x] **Stabilisation P0 Pré-Démo (`src/index.js`, `src/agent/loop.js`, `src/agent/manager.js`, `src/actions/behaviors/items/smelt.js`)** : Réinitialisation propre après `death`, suppression des doubles `unstuck` sur terrain libre, marquage temporaire des fours inaccessibles avec bascule vers `craft`/`place` d'un four local.
 
 ---
 
