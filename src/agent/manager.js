@@ -558,7 +558,7 @@ async function runManagerCycle(bot, deps = {}) {
 
     const memory = state.procedureMemory || defaultProcedureMemory;
     const assigned = await tryAssignProceduralGoal(bot, memory, state.currentObjective, {
-      enableProcedureGeneration: deps.enableProcedureGeneration ?? Boolean(deps.generateProcedureFn || deps.askOllamaFn),
+      enableProcedureGeneration: deps.enableProcedureGeneration ?? (process.env.ENABLE_PROCEDURE_GENERATION !== 'false'),
       ...deps
     });
     if (assigned) return;
