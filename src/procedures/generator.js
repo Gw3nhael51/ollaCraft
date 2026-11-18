@@ -3,7 +3,7 @@ const { createResult } = require('../actions/primitives/result');
 const { validateProcedureSchema } = require('./schema');
 const { createDefaultRegistry } = require('./registry');
 
-const DEFAULT_GENERATION_TIMEOUT_MS = 30000;
+const DEFAULT_GENERATION_TIMEOUT_MS = 45000;
 const MAX_CORRECTION_ATTEMPTS = 2;
 
 /**
@@ -131,6 +131,7 @@ async function queryOllama(promptText, options = {}) {
       prompt: promptText,
       stream: false,
       format: 'json',
+      think: false,
       options: {
         temperature: 0.1
       }
@@ -158,7 +159,7 @@ async function queryOllama(promptText, options = {}) {
  * @param {Array<object>} [options.existingProcedures=[]] Already known procedures
  * @param {AbortSignal} [options.signal=null] External cancellation signal
  * @param {string} [options.model=null] Ollama model identifier override
- * @param {number} [options.timeoutMs=30000] Request timeout in milliseconds
+ * @param {number} [options.timeoutMs=45000] Request timeout in milliseconds
  * @param {Function} [options.askOllamaFn=null] Optional dependency injection for Ollama queries
  * @returns {Promise<{ success: boolean, reason: string, data: object|null, error: string|null }>} Universal result
  */

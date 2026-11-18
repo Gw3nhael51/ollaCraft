@@ -533,9 +533,13 @@ async function tryAssignProceduralGoal(bot, memory, objective, deps = {}) {
         console.log(`\n[MANAGER 🧠] Procédure expérimentale générée : "${createdProc.id}" (action suggérée: procedure)`);
         return true;
       }
-      tracker.recordFailure(objective, regRes?.error || 'Registration failed');
+      const regReason = regRes?.error || 'Registration failed';
+      console.warn(`[MANAGER 🧠] Échec d'enregistrement de procédure pour '${objective}' : ${regReason}`);
+      tracker.recordFailure(objective, regReason);
     } else {
-      tracker.recordFailure(objective, genRes?.error || 'Generation failed');
+      const genReason = genRes?.error || 'Generation failed';
+      console.warn(`[MANAGER 🧠] Échec de génération de procédure pour '${objective}' (${genRes?.reason || 'unknown'}) : ${genReason}`);
+      tracker.recordFailure(objective, genReason);
     }
   }
 
