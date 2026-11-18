@@ -257,6 +257,7 @@ function buildReactPrompt(bot, state, environment, craftingTable) {
     - Si ton objectif nécessite un établi, vérifie si tu en as un posé à proximité avant de crafter l'outil.
     - Ne mine pas sous tes pieds directement pour éviter la chute ou l'étouffement.
     - Si ta faim descend sous 15, mange ('eat') ou chasse des animaux ('hunt').
+    - Si le Manager suggère l'action "procedure", exécute-la avec le target exact indiqué (sauf urgence vitale "unstuck" ou "eat").
     - Reste concentré sur ton objectif global tant que la jauge (${progressText}) n'est pas remplie.
 
     RÉSULTAT DE TA DERNIÈRE ACTION (MÉMOIRE / FEEDBACK) :
@@ -272,6 +273,7 @@ function buildReactPrompt(bot, state, environment, craftingTable) {
     - "smelt" : Pour faire fondre un minerai dans un four (ex: {"target": "raw_iron", "qty": 1}).
     - "chest" : Pour ouvrir le coffre de ta base et y ranger automatiquement tes blocs encombrants (terre, surplus de pierre, etc.).
     - "portal" : Pour remplir ton seau d'eau, mouler/allumer le portail du Nether et entrer dedans.
+    - "procedure" : Pour exécuter ou tester une procédure autonome suggérée par le Manager (ex: {"target": "${state.managerSubGoal?.action === 'procedure' ? state.managerSubGoal.target : 'proc_id'}"}).
     - "eat" : Pour consommer de la nourriture de ton inventaire.
     - "hunt" : Pour chasser un animal proche (ex: {"target": "cow"} ou {"target": "pig"}).
     - "fight" : Pour combattre un monstre hostile proche pour te défendre ou récolter du butin (ex: {"target": "zombie"}).
@@ -285,7 +287,7 @@ function buildReactPrompt(bot, state, environment, craftingTable) {
     Réponds UNIQUEMENT en JSON :
     {
       "thought": "Explication courte de ton raisonnement",
-      "action": "mine" | "craft" | "place" | "explore" | "unstuck" | "wiki" | "smelt" | "eat" | "hunt" | "fight" | "chest" | "equip" | "portal",
+      "action": "mine" | "craft" | "place" | "explore" | "unstuck" | "wiki" | "smelt" | "eat" | "hunt" | "fight" | "chest" | "equip" | "portal" | "procedure",
       "target": "identifiant_strict_sans_espace",
       "qty": 1
     }
