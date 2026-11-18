@@ -3,7 +3,7 @@ const { createResult } = require('../actions/primitives/result');
 const { validateProcedureSchema } = require('./schema');
 const { createDefaultRegistry } = require('./registry');
 
-const DEFAULT_GENERATION_TIMEOUT_MS = 45000;
+const DEFAULT_GENERATION_TIMEOUT_MS = 90000;
 const MAX_CORRECTION_ATTEMPTS = 2;
 
 /**
@@ -97,17 +97,60 @@ STRICT SPECIFICATION RULES:
    - "description": concise explanation of strategy (max 512 chars)
    - "parameters": input arguments schema
    - "preconditions": required initial conditions
-   - "steps": array of 1 to 50 sequential steps
+   - "steps": array of 2 to 8 concise sequential steps (keep it minimal and focused)
    - "postconditions": expected verified outcomes
    - "metadata": { "tags": ["${objective}"] }
-4. In each step:
+4. Keep JSON compact (short strings, no unnecessary whitespace or long prose).
+5. In each step:
    - "id": step identifier (e.g. "step_1")
    - "action": MUST be one of the authorized action IDs above
    - "parameters": object matching the action's parameter specification
-   - Dynamic references: use "$parameters.<name>" or "$steps.<previousStepId>.output.<prop>"
+   - If the procedure takes no runtime inputs, set "parameters": {} at root and NEVER use "$parameters.<name>" in steps.
+   - Dynamic references MUST match ^\$(steps\.[a-zA-Z0-9_-]+(\.[a-zA-Z0-9_.-]+)*|parameters\.[a-zA-Z0-9_-]+)$ (NO arithmetic like "+ 1" or expressions).
+   - For "faceVector" or coordinates, always use an object { "x": 0, "y": 1, "z": 0 }, NEVER an array.
    - NEVER reference future steps or self.
-5. Postconditions must state verifiable facts (e.g. inventory_item count).
-6. Absolutely NO JavaScript code, NO eval, NO scripts, NO functions.`;
+6. Preconditions and postconditions MUST be [] or structured objects like { "type": "inventory_item", "item": "<name>", "count": 1 } (NEVER plain strings).
+7. Absolutely NO JavaScript code, NO eval, NO scripts, NO functions.`;
+}
+
+/**
+ * Build an Ollama JSON schema constraining procedure structure and authorized actions
+ * @param {object} registry Action registry instance
+ * @returns {object} Strict JSON Schema for Ollama structured output
+ */
+function buildProcedureJsonSchema(registry) {
+  const actionIds = registry?.list ? registry.list().map(a => a.id) : [];
+  const actionProp = actionIds.length > 0 ? { type: 'string', enum: actionIds } : { type: 'string' };
+
+  return {
+    type: 'object',
+    properties: {
+      id: { type: 'string' },
+      version: { type: 'integer' },
+      name: { type: 'string' },
+      status: { type: 'string', enum: ['experimental'] },
+      description: { type: 'string' },
+      parameters: { type: 'object' },
+      preconditions: { type: 'array', items: { type: 'object' }, maxItems: 5 },
+      steps: {
+        type: 'array',
+        minItems: 1,
+        maxItems: 8,
+        items: {
+          type: 'object',
+          properties: {
+            id: { type: 'string' },
+            action: actionProp,
+            parameters: { type: 'object' }
+          },
+          required: ['id', 'action', 'parameters']
+        }
+      },
+      postconditions: { type: 'array', items: { type: 'object' }, maxItems: 5 },
+      metadata: { type: 'object' }
+    },
+    required: ['id', 'version', 'name', 'status', 'description', 'steps', 'metadata']
+  };
 }
 
 /**
@@ -130,10 +173,11 @@ async function queryOllama(promptText, options = {}) {
       model,
       prompt: promptText,
       stream: false,
-      format: 'json',
+      format: options.formatSchema || 'json',
       think: false,
       options: {
-        temperature: 0.1
+        temperature: 0.1,
+        num_predict: 1800
       }
     })
   });
@@ -159,7 +203,7 @@ async function queryOllama(promptText, options = {}) {
  * @param {Array<object>} [options.existingProcedures=[]] Already known procedures
  * @param {AbortSignal} [options.signal=null] External cancellation signal
  * @param {string} [options.model=null] Ollama model identifier override
- * @param {number} [options.timeoutMs=45000] Request timeout in milliseconds
+ * @param {number} [options.timeoutMs=90000] Request timeout in milliseconds
  * @param {Function} [options.askOllamaFn=null] Optional dependency injection for Ollama queries
  * @returns {Promise<{ success: boolean, reason: string, data: object|null, error: string|null }>} Universal result
  */
@@ -197,6 +241,7 @@ async function generateProcedure(options = {}) {
   });
 
   const queryFn = askOllamaFn || queryOllama;
+  const formatSchema = buildProcedureJsonSchema(registry);
   let attempts = 0;
   let lastRawResponse = null;
   let lastError = null;
@@ -228,7 +273,7 @@ async function generateProcedure(options = {}) {
         localSignal = timeoutController.signal;
       }
 
-      const raw = await queryFn(promptText, { model, signal: localSignal });
+      const raw = await queryFn(promptText, { model, signal: localSignal, formatSchema });
       lastRawResponse = raw;
 
       if (localSignal?.aborted) {

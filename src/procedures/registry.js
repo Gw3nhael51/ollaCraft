@@ -4,6 +4,7 @@ const { breakBlockAt, placeBlockOnFace } = require('../actions/primitives/blocks
 const { equipItem, consumeItem, craftRecipe, dropItem } = require('../actions/primitives/items');
 const { openContainer, depositItem, withdrawItem, closeContainer } = require('../actions/primitives/container');
 const { attackEntity, followEntity } = require('../actions/primitives/combat');
+const { skillPortal } = require('../actions/behaviors/world/portal');
 
 /**
  * Registry holding all authorized procedure actions and mapping them to executable functions
@@ -503,6 +504,30 @@ function createDefaultRegistry() {
         block: found.name,
         position: { x: found.position.x, y: found.position.y, z: found.position.z }
       }, null);
+    }
+  });
+
+  registry.register({
+    id: 'build_portal',
+    description: 'Build and ignite a Nether portal using carried obsidian or nearby lava and water sources',
+    parametersSchema: {
+      required: [],
+      optional: [],
+      types: {},
+      allowAdditionalProperties: false
+    },
+    outputSchema: {
+      message: { type: 'string' }
+    },
+    defaultTimeoutMs: 45000,
+    handler: async (bot) => {
+      const res = await skillPortal(bot);
+      return createResult(
+        Boolean(res?.success),
+        res?.success ? 'portal_built' : 'portal_failed',
+        { message: res?.message || '' },
+        res?.success ? null : (res?.message || 'Portal construction failed')
+      );
     }
   });
 
