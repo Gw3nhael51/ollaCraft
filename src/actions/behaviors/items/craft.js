@@ -7,11 +7,11 @@ const AUTO_EQUIP_SUFFIXES = ['_helmet', '_chestplate', '_leggings', '_boots', 's
 const SINGLE_CRAFT_ITEMS = new Set(['crafting_table', 'furnace', 'chest']);
 
 /**
- * Valider les préconditions de fabrication avant de rechercher les recettes
- * @param {object} bot Instance du bot Mineflayer
- * @param {string} targetName Nom de l'item demandé
- * @param {object|null} item Entrée de l'item dans le registre
- * @returns {{ success: boolean, message: string }|null} Erreur préalable ou null si valide
+ * Validate crafting preconditions before searching for recipes
+ * @param {object} bot Mineflayer bot instance
+ * @param {string} targetName Requested item name
+ * @param {object|null} item Item registry entry
+ * @returns {{ success: boolean, message: string }|null} Precondition error or null if valid
  */
 function checkCraftPreconditions(bot, targetName, item) {
   if (!item) return { success: false, message: `Unknown Minecraft item '${targetName}'.` };
@@ -41,10 +41,10 @@ function checkCraftPreconditions(bot, targetName, item) {
 }
 
 /**
- * Approcher le bot de l'établi cible et orienter son regard vers celui-ci
- * @param {object} bot Instance du bot Mineflayer
- * @param {object} tableToUse Bloc d'établi cible
- * @returns {Promise<{ success: boolean, message?: string }>} Résultat du déplacement vers l'établi
+ * Move the bot near the target crafting table and look at it
+ * @param {object} bot Mineflayer bot instance
+ * @param {object} tableToUse Target crafting table block
+ * @returns {Promise<{ success: boolean, message?: string }>} Movement result towards the crafting table
  */
 async function approachCraftingTable(bot, tableToUse) {
   try {
@@ -66,13 +66,13 @@ async function approachCraftingTable(bot, tableToUse) {
 }
 
 /**
- * Rechercher les recettes disponibles pour l'item cible en substituant l'essence de bois si nécessaire
- * @param {object} bot Instance du bot Mineflayer
- * @param {object} item Item initial du registre
- * @param {string} normalizedTarget Nom normalisé de la cible
- * @param {object|null} tableToUse Bloc d'établi ou null
- * @param {number} [requestedQty=1] Quantité d'opérations souhaitée
- * @returns {{ recipes: Array<object>, normalizedTarget: string }} Recettes triées et cible retenue
+ * Find available recipes for the target item, substituting wood species if needed
+ * @param {object} bot Mineflayer bot instance
+ * @param {object} item Initial item registry entry
+ * @param {string} normalizedTarget Normalized target name
+ * @param {object|null} tableToUse Crafting table block or null
+ * @param {number} [requestedQty=1] Desired number of craft operations
+ * @returns {{ recipes: Array<object>, normalizedTarget: string }} Sorted recipes and resolved target name
  */
 function resolveCraftRecipes(bot, item, normalizedTarget, tableToUse, requestedQty = 1) {
   const sortBestRecipes = (list, target) => [...list].sort(
@@ -96,12 +96,12 @@ function resolveCraftRecipes(bot, item, normalizedTarget, tableToUse, requestedQ
 }
 
 /**
- * Calculer le nombre sûr d'exécutions d'une recette selon le type d'item et les ingrédients disponibles
- * @param {object} bot Instance du bot Mineflayer
- * @param {object} recipe Objet recette sélectionné
- * @param {string} targetName Nom de l'item cible
- * @param {number} requestedQty Quantité demandée
- * @returns {number} Nombre d'exécutions de la recette à réaliser
+ * Compute safe number of recipe executions based on item type and available ingredients
+ * @param {object} bot Mineflayer bot instance
+ * @param {object} recipe Selected recipe object
+ * @param {string} targetName Target item name
+ * @param {number} requestedQty Requested quantity
+ * @returns {number} Number of recipe executions to perform
  */
 function computeCraftOperations(bot, recipe, targetName, requestedQty) {
   const normalizedQty = Math.max(1, Number.parseInt(requestedQty, 10) || 1);
@@ -130,10 +130,10 @@ function computeCraftOperations(bot, recipe, targetName, requestedQty) {
 }
 
 /**
- * Récupérer récursivement les items restés dans la grille personnelle 2x2 (emplacements 1 à 4)
- * @param {object} bot Instance du bot Mineflayer
- * @param {number} [slotIndex=1] Index de l'emplacement de grille en cours
- * @returns {Promise<void>} Promesse résolue après nettoyage de la grille
+ * Recursively reclaim items left in the personal 2x2 crafting grid (slots 1 to 4)
+ * @param {object} bot Mineflayer bot instance
+ * @param {number} [slotIndex=1] Current grid slot index
+ * @returns {Promise<void>} Promise resolved after clearing the grid
  */
 async function reclaimPersonalCraftingGrid(bot, slotIndex = 1) {
   if (slotIndex > 4 || typeof bot.putAway !== 'function') return;
@@ -144,13 +144,13 @@ async function reclaimPersonalCraftingGrid(bot, slotIndex = 1) {
 }
 
 /**
- * Exécuter l'appel de fabrication Mineflayer avec un délai de sécurité de 10 secondes et fermeture de fenêtre
- * @param {object} bot Instance du bot Mineflayer
- * @param {object} recipe Recette à exécuter
- * @param {object|null} tableToUse Bloc d'établi ou null
- * @param {string} normalizedTarget Nom de l'item fabriqué
- * @param {number} [craftCount=1] Nombre d'exécutions de la recette
- * @returns {Promise<{ success: boolean, message?: string }>} Résultat de l'opération de craft
+ * Execute the Mineflayer craft call with a 10-second safety timeout and window cleanup
+ * @param {object} bot Mineflayer bot instance
+ * @param {object} recipe Recipe to execute
+ * @param {object|null} tableToUse Crafting table block or null
+ * @param {string} normalizedTarget Crafted item name
+ * @param {number} [craftCount=1] Number of recipe executions
+ * @returns {Promise<{ success: boolean, message?: string }>} Craft execution result
  */
 async function performCraftWithTimeout(bot, recipe, tableToUse, normalizedTarget, craftCount = 1) {
   let timeoutId;
@@ -194,10 +194,10 @@ async function performCraftWithTimeout(bot, recipe, tableToUse, normalizedTarget
 }
 
 /**
- * Ramasser un item fabriqué tombé au sol à proximité si l'inventaire ne l'a pas reçu directement
- * @param {object} bot Instance du bot Mineflayer
- * @param {string} normalizedTarget Nom de l'item fabriqué
- * @returns {Promise<number>} Quantité mise à jour dans l'inventaire
+ * Collect a crafted item dropped nearby if it did not land directly in the inventory
+ * @param {object} bot Mineflayer bot instance
+ * @param {string} normalizedTarget Crafted item name
+ * @returns {Promise<number>} Updated item count in inventory
  */
 async function collectDroppedCraftItem(bot, normalizedTarget) {
   const droppedItem = bot.nearestEntity(e =>
@@ -217,12 +217,12 @@ async function collectDroppedCraftItem(bot, normalizedTarget) {
 }
 
 /**
- * Vérifier le besoin d'un établi et déplacer le bot vers l'établi posé si nécessaire
- * @param {object} bot Instance du bot Mineflayer
- * @param {object} state État global du bot
- * @param {object} item Entrée de l'item dans le registre
- * @param {string} targetName Nom de l'item demandé
- * @returns {Promise<{ ok: boolean, tableToUse?: object|null, errorResult?: { success: boolean, message: string } }>} Résultat de préparation
+ * Check whether a crafting table is required and move the bot towards a placed one if needed
+ * @param {object} bot Mineflayer bot instance
+ * @param {object} state Global bot state
+ * @param {object} item Item registry entry
+ * @param {string} targetName Requested item name
+ * @returns {Promise<{ ok: boolean, tableToUse?: object|null, errorResult?: { success: boolean, message: string } }>} Station preparation result
  */
 async function prepareCraftingStation(bot, state, item, targetName) {
   const Recipe = require('prismarine-recipe')(bot.version || config.BOT_CONFIG.version || '1.20.4').Recipe;
@@ -250,12 +250,12 @@ async function prepareCraftingStation(bot, state, item, targetName) {
 }
 
 /**
- * Vérifier récursivement la réception de l'item fabriqué dans les emplacements d'inventaire
- * @param {object} bot Instance du bot Mineflayer
- * @param {string} normalizedTarget Nom de l'item fabriqué
- * @param {number} countBefore Quantité possédée avant la fabrication
- * @param {number} [retriesLeft=3] Nombre de tentatives restantes
- * @returns {Promise<number>} Quantité détectée dans l'inventaire
+ * Recursively poll inventory slots for receipt of the crafted item
+ * @param {object} bot Mineflayer bot instance
+ * @param {string} normalizedTarget Crafted item name
+ * @param {number} countBefore Item count before crafting
+ * @param {number} [retriesLeft=3] Remaining polling attempts
+ * @returns {Promise<number>} Detected item count in inventory
  */
 async function pollCraftedInventoryCount(bot, normalizedTarget, countBefore, retriesLeft = 3) {
   const current = countItem(bot, normalizedTarget);
@@ -267,11 +267,11 @@ async function pollCraftedInventoryCount(bot, normalizedTarget, countBefore, ret
 }
 
 /**
- * Attendre la synchronisation de l'inventaire après la fabrication et ramasser l'item au sol si besoin
- * @param {object} bot Instance du bot Mineflayer
- * @param {string} normalizedTarget Nom de l'item fabriqué
- * @param {number} countBefore Quantité possédée avant la fabrication
- * @returns {Promise<number>} Quantité possédée après synchronisation
+ * Wait for inventory synchronization after crafting and pick up any dropped item if needed
+ * @param {object} bot Mineflayer bot instance
+ * @param {string} normalizedTarget Crafted item name
+ * @param {number} countBefore Item count before crafting
+ * @returns {Promise<number>} Item count after synchronization
  */
 async function waitForCraftedInventorySync(bot, normalizedTarget, countBefore) {
   await bot.waitForTicks(8);
@@ -283,12 +283,12 @@ async function waitForCraftedInventorySync(bot, normalizedTarget, countBefore) {
 }
 
 /**
- * Fabriquer un item via la grille personnelle ou un établi à proximité
- * @param {object} bot Instance du bot Mineflayer
- * @param {object} state État global du bot
- * @param {string} targetName Nom de l'item à fabriquer
- * @param {number} [qty=1] Quantité d'opérations demandée
- * @returns {Promise<{ success: boolean, message: string }>} Résultat de l'opération de fabrication
+ * Craft an item using the personal grid or a nearby crafting table
+ * @param {object} bot Mineflayer bot instance
+ * @param {object} state Global bot state
+ * @param {string} targetName Target item name to craft
+ * @param {number} [qty=1] Requested craft operations count
+ * @returns {Promise<{ success: boolean, message: string }>} Crafting operation result
  */
 async function skillCraft(bot, state, targetName, qty = 1) {
   if (isWoodLog(targetName)) {
@@ -322,6 +322,14 @@ async function skillCraft(bot, state, targetName, qty = 1) {
     }
     const substitutionNote = normalizedTarget === targetName ? '' : ` (adapted substitute for '${targetName}')`;
     return { success: true, message: `Successfully crafted ${craftedAmount}x '${normalizedTarget}'${substitutionNote}.` };
+  }
+
+  const isInventoryFull = typeof bot.inventory?.emptySlotCount === 'function' && bot.inventory.emptySlotCount() === 0;
+  if (isInventoryFull) {
+    return {
+      success: false,
+      message: `Crafting '${normalizedTarget}' dropped on ground because inventory is full. Store or drop excess blocks first.`
+    };
   }
 
   return { success: false, message: `Crafting completed but '${normalizedTarget}' was not found in inventory.` };

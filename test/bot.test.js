@@ -279,6 +279,31 @@ test('Smelt skill calculates fuel requirements and waits for full batch output',
   assert.equal(inputAdded, 3);
   assert.equal(outputCount, 3);
   assert.ok(smeltRes.message.includes("3x 'raw_iron'"));
+
+  bot.inventory.emptySlotCount = () => 0;
+  bot.openFurnace = async () => ({
+    fuelItem: () => ({ count: 2 }),
+    inputItem: () => null,
+    outputItem: () => ({ name: 'iron_ingot', count: 1 }),
+    putFuel: async () => {},
+    putInput: async () => {},
+    on: () => {},
+    removeListener: () => {},
+    takeOutput: async () => null,
+    close: () => {}
+  });
+  const fullSmeltRes = await dispatchSkill(bot, state, 'smelt', 'raw_iron', 1);
+  assert.equal(fullSmeltRes.success, false);
+  assert.ok(fullSmeltRes.message.includes('inventory is full'));
+});
+
+test('Progression stays on nether_portal when portal prerequisites exist despite missing pickaxe', () => {
+  const botPortalReady = createMockBot([
+    { name: 'flint_and_steel', count: 1 },
+    { name: 'water_bucket', count: 1 }
+  ]);
+  invUtils.syncObjective(botPortalReady, state);
+  assert.equal(state.currentObjective, 'nether_portal');
 });
 
 test('Combat collects drops at actual death position instead of initial position and avoids lava', async () => {

@@ -166,9 +166,16 @@ async function skillSmelt(bot, state, targetName, qty) {
     await waitForFurnaceOutput(furnace, inputCount, timeoutMs);
     
     const smeltedOutput = await furnace.takeOutput();
-    const smeltedCount = smeltedOutput?.count || inputCount;
+    if (!smeltedOutput?.count) {
+      const isFull = typeof bot.inventory?.emptySlotCount === 'function' && bot.inventory.emptySlotCount() === 0;
+      const fullHint = isFull ? ' (inventory is full, store or drop excess items)' : '';
+      return {
+        success: false,
+        message: `Smelting finished in furnace, but failed to collect '${targetName}' output into inventory${fullHint}.`
+      };
+    }
 
-    return { success: true, message: `Successfully smelted ${smeltedCount}x '${targetName}'.` };
+    return { success: true, message: `Successfully smelted ${smeltedOutput.count}x '${targetName}'.` };
   } catch (error) {
     console.warn("Smelting error :", error.message);
     if (error.message?.includes('Navigation timeout')) {

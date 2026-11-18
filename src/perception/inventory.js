@@ -215,9 +215,17 @@ function isQuestDirectlyMet(bot, questName, state) {
  */
 function isQuestDone(bot, questName, state) {
   if (isQuestDirectlyMet(bot, questName, state)) return true;
-  if (PERSISTENT_GEAR_QUESTS.has(questName)) return false;
 
   const questIndex = config.QUEST_CHAIN.indexOf(questName);
+  const portalIndex = config.QUEST_CHAIN.indexOf('nether_portal');
+  const isPortalReady = isQuestDirectlyMet(bot, 'flint_and_steel', state)
+    && (isQuestDirectlyMet(bot, 'water_bucket', state) || countItem(bot, 'obsidian') >= 10);
+  if (isPortalReady && questIndex !== -1 && portalIndex !== -1 && questIndex < portalIndex) {
+    return true;
+  }
+
+  if (PERSISTENT_GEAR_QUESTS.has(questName)) return false;
+
   if (questIndex === -1) return false;
 
   return config.QUEST_CHAIN.slice(questIndex + 1).some(laterQuest => isQuestDirectlyMet(bot, laterQuest, state));
