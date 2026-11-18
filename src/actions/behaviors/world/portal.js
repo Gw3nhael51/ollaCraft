@@ -328,6 +328,19 @@ async function castPortalFrameStep(bot, basePos, index) {
 }
 
 /**
+ * Check whether a portal frame at basePos has all 10 core obsidian blocks in place
+ * @param {object} bot Mineflayer bot instance
+ * @param {object} basePos Origin coordinate of the portal frame
+ * @returns {boolean} True if all core obsidian blocks are present
+ */
+function hasCompletePortalFrame(bot, basePos) {
+  if (!basePos) return false;
+  return PORTAL_BUILD_STEPS
+    .filter(step => !step.isCorner)
+    .every(step => bot.blockAt(basePos.plus(step.offset))?.name === 'obsidian');
+}
+
+/**
  * Cast or mine obsidian at a nearby lava pool using water bucket and available tools
  * @param {object} bot Mineflayer bot instance
  * @returns {Promise<{ success: boolean, message: string }>}
@@ -362,27 +375,50 @@ async function castObsidianAtLavaPool(bot) {
       await Promise.race([gotoPromise, timeoutPromise]);
     }
 
-    const waterLookPos = lavaBlock.position.offset(0.5, 1, 0.5);
-    await bot.equip(waterBucket, 'hand');
-    await bot.lookAt(waterLookPos, true);
-    await bot.activateItem();
-    await bot.waitForTicks(12);
+    const canMineObsidian = countItem(bot, 'diamond_pickaxe') > 0 || countItem(bot, 'netherite_pickaxe') > 0;
+    if (canMineObsidian) {
+      const waterRef = findPlacementReference(bot, lavaBlock.position.offset(0, 1, 0));
+      const waterLookPos = waterRef
+        ? waterRef.referenceBlock.position.offset(0.5 + waterRef.faceVector.x * 0.5, 0.5 + waterRef.faceVector.y * 0.5, 0.5 + waterRef.faceVector.z * 0.5)
+        : lavaBlock.position.offset(0.5, 1, 0.5);
+      await bot.equip(waterBucket, 'hand');
+      await bot.lookAt(waterLookPos, true);
+      await bot.activateItem();
+      await bot.waitForTicks(12);
 
-    if (await tryMineFormedObsidian(bot)) {
+      if (await tryMineFormedObsidian(bot)) {
+        await retrieveWaterSource(bot, waterLookPos);
+        return {
+          success: true,
+          message: `Cast and harvested obsidian from lava pool (${countItem(bot, 'obsidian')}/11).`
+        };
+      }
       await retrieveWaterSource(bot, waterLookPos);
+    }
+
+    const frameOrigin = lavaBlock.position.offset(0, 1, 0);
+    const waterAnchor = frameOrigin.offset(0, 5, 0);
+    const waterRef = findPlacementReference(bot, waterAnchor);
+    if (waterRef) {
+      await bot.equip(waterBucket, 'hand');
+      await bot.lookAt(waterRef.referenceBlock.position.offset(0.5 + waterRef.faceVector.x * 0.5, 0.5 + waterRef.faceVector.y * 0.5, 0.5 + waterRef.faceVector.z * 0.5), true);
+      await bot.activateItem();
+      await bot.waitForTicks(10);
+    }
+
+    await castPortalFrameStep(bot, frameOrigin, 0);
+    if (waterRef) {
+      await retrieveWaterSource(bot, waterAnchor.offset(0.5, 0.5, 0.5));
+    }
+
+    if (!hasCompletePortalFrame(bot, frameOrigin)) {
       return {
-        success: true,
-        message: `Cast and harvested obsidian from lava pool (${countItem(bot, 'obsidian')}/11).`
+        success: false,
+        message: "Partial obsidian frame cast at lava pool, but portal frame is incomplete. Ensure flat ground and lava sources nearby."
       };
     }
 
-    await castPortalFrameStep(bot, lavaBlock.position, 0);
-    await retrieveWaterSource(bot, waterLookPos);
-
-    return {
-      success: true,
-      message: "Poured water onto lava pool and cast obsidian portal blocks."
-    };
+    return igniteAndEnterPortal(bot, frameOrigin.offset(0, 1, 0));
   } catch (err) {
     return { success: false, message: `Failed to cast obsidian at lava pool : ${err.message}` };
   } finally {
@@ -415,12 +451,26 @@ async function placeSingleObsidianAt(bot, targetPos, isCorner = false, remaining
   const placementRef = findPlacementReference(bot, targetPos);
   if (!placementRef) return false;
 
+  if (bot.entity?.position?.distanceTo && bot.entity.position.distanceTo(targetPos) > 4.2 && bot.pathfinder?.goto) {
+    const { GoalNear } = goals;
+    await bot.pathfinder.goto(new GoalNear(targetPos.x, targetPos.y, targetPos.z, 3)).catch(() => {});
+  }
+
   const { referenceBlock, faceVector } = placementRef;
   await bot.equip(itemToPlace, 'hand');
   await bot.lookAt(referenceBlock.position.offset(0.5 + faceVector.x * 0.5, 0.5 + faceVector.y * 0.5, 0.5 + faceVector.z * 0.5), true);
-  await bot.placeBlock(referenceBlock, faceVector).catch(() => {});
+  try {
+    await bot.placeBlock(referenceBlock, faceVector);
+  } catch {
+    return false;
+  }
   await bot.waitForTicks(4);
-  return true;
+
+  const placedBlock = bot.blockAt(targetPos);
+  if (isCorner) {
+    return Boolean(placedBlock && !NON_SOLID_BLOCKS.has(placedBlock.name));
+  }
+  return placedBlock?.name === 'obsidian';
 }
 
 /**
@@ -440,7 +490,7 @@ async function placePortalFrameStep(bot, base, frameSteps, index) {
   const remainingCore = frameSteps.slice(index + 1).filter(s => !s.isCorner).length;
 
   const canContinue = await placeSingleObsidianAt(bot, base.plus(offset), isCorner, remainingCore);
-  if (!canContinue) return;
+  if (!canContinue) return false;
 
   return placePortalFrameStep(bot, base, frameSteps, index + 1);
 }
@@ -477,7 +527,14 @@ async function buildObsidianFrame(bot) {
   const base = refBlock.position.clone ? refBlock.position.clone() : refBlock.position;
 
   try {
-    await placePortalFrameStep(bot, base, PORTAL_BUILD_STEPS, 0);
+    const placed = await placePortalFrameStep(bot, base, PORTAL_BUILD_STEPS, 0);
+    if (placed === false || !hasCompletePortalFrame(bot, base)) {
+      return {
+        success: false,
+        portalInnerPos: null,
+        message: "Portal frame placement incomplete (block obstructed or out of reach)."
+      };
+    }
 
     return {
       success: true,
@@ -518,10 +575,10 @@ async function skillPortal(bot) {
     return igniteAndEnterPortal(bot, buildResult.portalInnerPos);
   }
 
-  // Check if a ruined portal or natural obsidian is nearby and diamond pickaxe is owned
+  // Check if a complete obsidian portal frame is already built nearby
   const obsidianId = bot.registry.blocksByName.obsidian?.id;
   const nearbyObsidian = obsidianId ? bot.findBlock({ matching: obsidianId, maxDistance: 24 }) : null;
-  if (nearbyObsidian && countItem(bot, 'flint_and_steel') > 0) {
+  if (nearbyObsidian && countItem(bot, 'flint_and_steel') > 0 && hasCompletePortalFrame(bot, nearbyObsidian.position)) {
     const igniteAttempt = await igniteAndEnterPortal(bot, nearbyObsidian.position.offset(0, 1, 0));
     if (igniteAttempt.success) return igniteAttempt;
   }

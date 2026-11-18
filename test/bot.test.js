@@ -387,6 +387,16 @@ test('Portal builder assembles all 11 blocks (including top-left corner and hori
     const pos = base.plus(step.offset);
     assert.equal(bot.blockAt(pos).name, 'obsidian', `Expected obsidian at (${pos.x},${pos.y},${pos.z})`);
   }
+
+  bot.placeBlock = async () => {
+    throw new Error('Placement obstructed');
+  };
+  const incompletePos = new Vec3(10, 64, 0);
+  worldBlocks.set(key(incompletePos), { name: 'grass_block', position: incompletePos });
+  bot.findBlock = () => worldBlocks.get(key(incompletePos));
+  const failRes = await buildObsidianFrame(bot);
+  assert.equal(failRes.success, false);
+  assert.ok(failRes.message.includes('incomplete'));
 });
 
 test('Unified 3D scan collects blocks and exposed ores in one pass and wikiData caches results', () => {
