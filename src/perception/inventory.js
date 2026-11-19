@@ -400,37 +400,139 @@ function getAvailableCrafts(bot, craftingTable) {
   return availableCrafts;
 }
 
-const PICKAXE_ORDER = ['netherite_pickaxe', 'diamond_pickaxe', 'iron_pickaxe', 'golden_pickaxe', 'stone_pickaxe', 'wooden_pickaxe'];
-const AXE_ORDER = ['netherite_axe', 'diamond_axe', 'iron_axe', 'golden_axe', 'stone_axe', 'wooden_axe'];
-const SHOVEL_ORDER = ['netherite_shovel', 'diamond_shovel', 'iron_shovel', 'golden_shovel', 'stone_shovel', 'wooden_shovel'];
-
-const BLOCK_TOOL_GROUPS = [
-  { keywords: ['stone', 'cobble', 'ore', 'deepslate', 'debris', 'obsidian', 'brick', 'furnace'], tools: PICKAXE_ORDER },
-  { keywords: ['log', 'wood', 'planks', 'crafting_table', 'fence', 'chest'], tools: AXE_ORDER },
-  { keywords: ['dirt', 'grass', 'sand', 'gravel', 'clay', 'mud'], tools: SHOVEL_ORDER }
-];
+const MATERIAL_SUFFIX_MAP = new Map([
+  ['mineable/pickaxe', '_pickaxe'],
+  ['mineable/axe', '_axe'],
+  ['mineable/shovel', '_shovel'],
+  ['mineable/hoe', '_hoe']
+]);
+const TIER_PRIORITY = ['netherite_', 'diamond_', 'iron_', 'stone_', 'golden_', 'wooden_'];
+const TOOL_OR_WEAPON_SUFFIXES = ['_pickaxe', '_axe', '_shovel', '_sword', '_hoe'];
 
 /**
- * Select the best tool in inventory to mine a specific block
+ * Check whether an item name represents a mining tool, weapon, or utility implement
+ * @param {string} itemName Item identifier name
+ * @returns {boolean} True if item is a pickaxe, axe, shovel, sword, hoe, shears, or flint_and_steel
+ */
+function isToolOrWeapon(itemName) {
+  if (typeof itemName !== 'string' || !itemName) return false;
+  if (itemName === 'shears' || itemName === 'flint_and_steel') return true;
+  return TOOL_OR_WEAPON_SUFFIXES.some(suffix => itemName.endsWith(suffix));
+}
+
+/**
+ * Compute priority rank for a tool tier (lower value means higher priority)
+ * @param {string} itemName Tool item name
+ * @returns {number} Tier rank index
+ */
+function getToolTierRank(itemName) {
+  if (itemName === 'shears') return -1;
+  const rank = TIER_PRIORITY.findIndex(prefix => typeof itemName === 'string' && itemName.startsWith(prefix));
+  return rank >= 0 ? rank : TIER_PRIORITY.length;
+}
+
+/**
+ * Restrict inventory items to tools allowed by blockDef.harvestTools when defined
+ * @param {object} mcData Minecraft data registry
+ * @param {object} blockDef Block definition object
+ * @param {Array<object>} inventoryItems Carried inventory items
+ * @returns {{ restricted: boolean, candidates: Array<object> }} Filtered candidates
+ */
+function filterAllowedHarvestTools(mcData, blockDef, inventoryItems) {
+  const harvestMap = blockDef?.harvestTools;
+  if (!harvestMap || Object.keys(harvestMap).length === 0) {
+    return { restricted: false, candidates: inventoryItems };
+  }
+  const allowedNames = new Set(
+    Object.keys(harvestMap)
+      .map(id => mcData?.items?.[Number(id)]?.name)
+      .filter(Boolean)
+  );
+  const candidates = inventoryItems.filter(
+    item => Boolean(harvestMap[item.type]) || allowedNames.has(item.name)
+  );
+  return { restricted: true, candidates };
+}
+
+/**
+ * Pick the candidate tool that minimizes live block dig time strictly below bare hands
+ * @param {object} bot Mineflayer bot instance
+ * @param {object} block Target block supporting digTime
+ * @param {Array<object>} candidates Harvest-eligible inventory items
+ * @returns {object|null} Fastest tool item or null when bare hands tie
+ */
+function selectFastestByDigTime(bot, block, candidates) {
+  const effects = bot.entity?.effects || {};
+  const bareHandTime = block.digTime(null, false, false, false, [], effects);
+  let fastestTime = bareHandTime;
+  let bestTool = null;
+
+  for (const item of candidates) {
+    const itemTime = block.digTime(item.type, false, false, false, [], effects);
+    if (typeof itemTime !== 'number' || itemTime >= bareHandTime) continue;
+    const isFaster = itemTime < fastestTime;
+    const isHigherTierTie = itemTime === fastestTime && bestTool && getToolTierRank(item.name) < getToolTierRank(bestTool.name);
+    if (isFaster || isHigherTierTie) {
+      fastestTime = itemTime;
+      bestTool = item;
+    }
+  }
+
+  return bestTool;
+}
+
+/**
+ * Check whether an item satisfies one of the block's semicolon-delimited material tags
+ * @param {string} itemName Inventory item name
+ * @param {string[]} materialTags Parsed material tags from minecraft-data
+ * @returns {boolean} True when item belongs to the appropriate tool family
+ */
+function matchesMaterialToolFamily(itemName, materialTags) {
+  if (typeof itemName !== 'string') return false;
+  for (const tag of materialTags) {
+    const mappedSuffix = MATERIAL_SUFFIX_MAP.get(tag);
+    if (mappedSuffix && itemName.endsWith(mappedSuffix)) return true;
+    if ((tag === 'coweb' || tag === 'cobweb') && (itemName === 'shears' || itemName.endsWith('_sword'))) return true;
+    if ((tag === 'wool' || tag === 'leaves') && itemName === 'shears') return true;
+  }
+  return false;
+}
+
+/**
+ * Select the best valid tool in inventory to mine a specific block using minecraft-data rules
  * @param {object} bot Mineflayer bot instance
  * @param {object} block Target block
  * @returns {object|null} Best matching tool item or null
  */
 function getBestToolForBlock(bot, block) {
-  const inventoryItems = bot.inventory.items();
-  const blockName = block?.name || '';
-
-  const matchingGroup = BLOCK_TOOL_GROUPS.find(group =>
-    group.keywords.some(keyword => blockName.includes(keyword))
-  );
-  if (!matchingGroup) return null;
-
-  for (const toolName of matchingGroup.tools) {
-    const toolItem = inventoryItems.find(item => item.name === toolName);
-    if (toolItem) return toolItem;
+  if (!bot?.inventory || typeof bot.inventory.items !== 'function' || !block) {
+    return null;
   }
 
-  return null;
+  const mcData = bot.registry?.blocksByName
+    ? bot.registry
+    : require('minecraft-data')(bot.version || config.BOT_CONFIG.version);
+  const blockName = block.name || '';
+  const blockDef = mcData?.blocksByName?.[blockName] || block;
+  const inventoryItems = bot.inventory.items();
+
+  const { restricted, candidates } = filterAllowedHarvestTools(mcData, blockDef, inventoryItems);
+  if (restricted && candidates.length === 0) {
+    return null;
+  }
+
+  if (typeof block.digTime === 'function') {
+    return selectFastestByDigTime(bot, block, candidates);
+  }
+
+  const materialTags = String(blockDef?.material || '').split(';').map(tag => tag.trim()).filter(Boolean);
+  if (materialTags.length === 0) return null;
+
+  const matching = candidates.filter(item => matchesMaterialToolFamily(item.name, materialTags));
+  if (matching.length === 0) return null;
+
+  matching.sort((a, b) => getToolTierRank(a.name) - getToolTierRank(b.name));
+  return matching[0];
 }
 
 module.exports = {
@@ -445,6 +547,7 @@ module.exports = {
   findNearbyCraftingTable,
   getAvailableCrafts,
   getBestToolForBlock,
+  isToolOrWeapon,
   isWoodLog,
   isPlanks,
   getWoodType,

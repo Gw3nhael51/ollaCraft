@@ -1,5 +1,6 @@
 const { Vec3 } = require('vec3');
 const { createResult } = require('./result');
+const { getBestToolForBlock, isToolOrWeapon } = require('../../perception/inventory');
 
 const VALID_FACES = [
   { x: 1, y: 0, z: 0 },
@@ -254,6 +255,13 @@ async function breakBlockAt(bot, position, options = {}) {
   const check = validateBreakPreconditions(bot, targetVec, maxDistance);
   if (!check.valid) {
     return check.errorResult;
+  }
+
+  const bestTool = getBestToolForBlock(bot, check.block);
+  if (bestTool && typeof bot.equip === 'function') {
+    await bot.equip(bestTool, 'hand').catch(() => {});
+  } else if (!bestTool && bot.heldItem && isToolOrWeapon(bot.heldItem.name) && typeof bot.unequip === 'function') {
+    await bot.unequip('hand').catch(() => {});
   }
 
   await lookAtPointSafely(bot, check.blockCenter);

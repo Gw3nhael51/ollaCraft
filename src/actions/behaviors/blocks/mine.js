@@ -1,6 +1,6 @@
 const { goals } = require('mineflayer-pathfinder');
 const { Vec3 } = require('vec3');
-const { getBestToolForBlock, countItem, getInventorySummary, isWoodLog, GENERIC_LOG_NAMES } = require('../../../perception/inventory');
+const { getBestToolForBlock, isToolOrWeapon, countItem, getInventorySummary, isWoodLog, GENERIC_LOG_NAMES } = require('../../../perception/inventory');
 const { getBlockDrops, canHarvestBlock, getBlockNamesForTarget } = require('../../../minecraft/wikiData');
 const { isBlockExposedToAir, VALUABLE_ORES, markBadBlock, isBadBlock } = require('../../../perception/environment');
 const { fillBucketFromSource } = require('../world/portal');
@@ -40,11 +40,19 @@ async function collectDrops(bot, position) {
 async function equipBestMiningTool(bot, block) {
   const bestTool = getBestToolForBlock(bot, block);
   if (bestTool) {
-    try {
-      await bot.equip(bestTool, 'hand');
-    } catch {
-      // Ignore equipping error if tool is already held
+    if (bot.heldItem?.name !== bestTool.name && typeof bot.equip === 'function') {
+      try {
+        await bot.equip(bestTool, 'hand');
+        console.log(`[MINE] Equipped ${bestTool.name} for ${block?.name || 'block'}.`);
+      } catch {
+        return;
+      }
     }
+    return;
+  }
+
+  if (bot.heldItem && isToolOrWeapon(bot.heldItem.name) && typeof bot.unequip === 'function') {
+    await bot.unequip('hand').catch(() => {});
   }
 }
 
@@ -224,8 +232,7 @@ function getPosKey(pos) {
  */
 async function mineVeinBlock(bot, neighborPos, neighborBlock) {
   try {
-    const tool = getBestToolForBlock(bot, neighborBlock);
-    if (tool) await bot.equip(tool, 'hand').catch(() => {});
+    await equipBestMiningTool(bot, neighborBlock);
 
     console.log(`[VEIN] Extracting additional vein block (${neighborBlock.name}) at (${getPosKey(neighborPos)})...`);
     await bot.lookAt(neighborPos.offset(0.5, 0.5, 0.5));

@@ -2,7 +2,7 @@ const mineflayer = require('mineflayer');
 const { pathfinder, Movements } = require('mineflayer-pathfinder');
 const config = require('./infrastructure/config');
 const state = require('./core/state');
-const { syncObjective } = require('./perception/inventory');
+const { syncObjective, getBestToolForBlock } = require('./perception/inventory');
 const { autoEquipArmorAndShield } = require('./actions/behaviors/items/equip');
 const { handleSurvivalRequest } = require('./agent/loop');
 const { startManagerLoop } = require('./agent/manager');
@@ -82,10 +82,14 @@ bot.once('spawn', () => {
   defaultMove.allowFreeClear = true; // Clear tall grass during movement
   defaultMove.canDig = true;
   defaultMove.allow1by1towers = true;
-  const scafolding = ['dirt', 'cobblestone', 'netherrack', 'stone'].map(name => bot.registry.blocksByName[name]?.id).filter(Boolean);
+  const scafolding = [
+    'dirt', 'cobblestone', 'netherrack', 'stone', 'diorite', 'andesite',
+    'granite', 'cobbled_deepslate', 'deepslate', 'tuff', 'oak_planks'
+  ].map(name => bot.registry.itemsByName[name]?.id).filter(Boolean);
   defaultMove.scafoldingBlocks = scafolding;
 
   bot.pathfinder.setMovements(defaultMove);
+  bot.pathfinder.bestHarvestTool = (block) => getBestToolForBlock(bot, block);
 
   // Keep bot at surface if falling into water
   let wasInWater = false;
@@ -103,6 +107,7 @@ bot.once('spawn', () => {
 // Handle bot spawn and respawn events on server
 bot.on('spawn', () => {
   console.log('✅ Bot spawned on server!');
+  console.log(`[DIMENSION] Spawned in dimension: ${bot.game?.dimension || 'unknown'}`);
 
   if (shouldResumeAfterDeath) {
     shouldResumeAfterDeath = false;
