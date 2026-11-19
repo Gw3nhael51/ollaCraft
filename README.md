@@ -19,14 +19,16 @@ flowchart LR
     C --> D["Stone Pickaxe"]
     D --> E["Furnace"]
     E --> F["Iron Gear & Shield"]
-    F --> G["Water Bucket"]
+    F --> G["Water Bucket & Flint & Steel"]
     G --> H["Nether Portal"]
     H --> I["Blaze Rods & Ender Eyes"]
 ```
 
-- **Smart Pathfinding & Unstuck Recovery:** Powered by `mineflayer-pathfinder` with 3D cave and terrain obstacle analysis and automatic unstuck routines for holes, walls, or water.
+- **Data-Driven Tool Selection:** 100% driven by `minecraft-data` (`harvestTools`, `digTime` vs bare hands, and `material`), overriding `mineflayer-pathfinder`'s `bestHarvestTool` and safely unequipping unrelated tools or weapons before digging.
+- **Nether Portal Automation:** Detects active `nether_portal` blocks, complete unlit frames, and partial/ruined obsidian frames on both X and Z axes (`findPortalFrameCandidate`); completes frames with carried obsidian or water-cascade lava mold casting (`castPortalWithMold`), automatically gathers 12 building blocks beside lava pools before casting, clears doorway obstructions, ignites with `flint_and_steel`, and transitions into `the_nether`.
+- **Smart Pathfinding & Unstuck Recovery:** Powered by `mineflayer-pathfinder` with persistent outward exploration, 32×32 box-trap breakout (+90° rotation with dig breakout), solid-ceiling cave detection (`hasSolidCeilingAbove`), bounded 34s explore budgets, and dry-land water escape (`findNearestDryLand` / `swimToDryLand`).
 - **Full Combat & Vitality Safeguards:** Weapon selection, automatic armor and off-hand shield equipping, passive animal hunting, hostile mob combat, and food consumption.
-- **Crafting, Smelting & Storage Automation:** Finds or places crafting tables, operates furnaces with fuel matching, and organizes chest storage to deposit bulky materials.
+- **Crafting, Smelting & Automatic Inventory Pressure Relief:** Finds or places crafting tables, operates furnaces with fuel matching, organizes chest storage, and drops disposable clutter (`freeInventorySlotIfFull`: flowers, saplings, surplus bulk blocks) before crafting, smelting, or scooping liquids when inventory is full.
 - **Built-in Minecraft Wiki Database:** Queries local game metadata (`minecraft-data`) for recipes, drop tables, and harvest tool requirements.
 
 ---
@@ -45,7 +47,7 @@ flowchart TD
         PROMPT["Dynamic Prompt Generator (3D Radar, Wiki Knowledge & Available Crafts)"]
         LLM{"Player Ollama Model (Tactical ReAct)"}
         MANAGER{"Manager Ollama Model (Anti-Loop Supervisor)"}
-        DISPATCH["Skill Dispatcher (mine, craft, place, smelt, chest, hunt, fight, equip, portal, wiki, explore, unstuck, eat)"]
+        DISPATCH["Skill Dispatcher (mine, craft, place, smelt, chest, hunt, fight, equip, portal, wiki, explore, unstuck, eat, procedure)"]
     end
 
     SENSORS --> CTX
@@ -67,7 +69,7 @@ flowchart TD
 │   └── benchmark.js           # Performance & cognitive token-savings benchmark suite
 ├── src/
 │   ├── index.js               # Entry point, bot connection, server chat & event listeners
-│   ├── core/                  # Central runtime state (state.js) and structured logger
+│   ├── core/                  # Central runtime state (state.js)
 │   ├── infrastructure/        # Configuration (config.js) and environment loader
 │   ├── agent/                 # ReAct loop (loop.js), Supervisor (manager.js), Ollama client & Prompt builder
 │   ├── actions/
@@ -78,8 +80,10 @@ flowchart TD
 │   ├── perception/            # Unified 3D scanner with TTL bad-block sync (environment.js), inventory & advancements
 │   └── minecraft/             # Offline WikiCraft lookups (wiki.js, wikiData.js) & dependency resolver (knowledge.js)
 ├── data/procedures/           # Persisted JSON procedures (mounted via Docker volume ./data:/app/data)
-├── test/                      # 180 automated unit and E2E integration tests
-├── docker-compose.yml         # Minecraft Paper server + ollacraft-bot service with /app/data persistence
+├── test/                      # 188 automated unit and E2E integration tests across 18 test files
+├── Dockerfile                 # Node 20 Alpine image build for ollacraft-bot
+├── Makefile                   # Shortcuts (run, bot, bot-logs, bot-stop, test)
+├── docker-compose.yml         # Paper server + ollacraft-bot service (--profile bot) with /app/data persistence
 ├── .env.example               # Template for environment variables
 ├── ARCHITECTURE.md            # Detailed schematics, sequence diagrams & benchmark metrics
 ├── package.json               # Dependencies and scripts (test, benchmark)
@@ -92,7 +96,7 @@ flowchart TD
 
 Before starting, ensure you have:
 
-1. **Node.js** (v18.0.0 or higher):
+1. **Node.js** (v20+ recommended to match `Dockerfile` `node:20-alpine`; v18.0.0 minimum):
    ```bash
    node --version
    ```
@@ -119,8 +123,8 @@ Before starting, ensure you have:
 
 1. **Clone the repository:**
    ```bash
-   git clone https://github.com/Gw3nhael51/ollacraft.git
-   cd ollacraft
+   git clone https://github.com/Gw3nhael51/ollaCraft.git
+   cd ollaCraft
    ```
 
 2. **Install Node.js dependencies:**
@@ -138,7 +142,7 @@ Before starting, ensure you have:
    # Minecraft connection settings
    MC_HOST=127.0.0.1
    MC_PORT=25565
-   MC_USERNAME=Herobrine
+   MC_USERNAME=Ollama
    MC_PASSWORD=YourBotPasswordIfRequired
 
    # Ollama settings (Dual-Model Architecture)
@@ -147,10 +151,28 @@ Before starting, ensure you have:
    OLLAMA_MODEL_MANAGER=qwen3.5:9B
    ```
 
-4. **Launch the agent:**
+4. **Launch locally:**
    ```bash
    node src/index.js
    ```
+
+### Docker Deployment (Recommended)
+
+Start a local Paper 1.20.4 Minecraft server (`mc-server`):
+```bash
+docker compose up -d
+# Or via Makefile:
+make run
+```
+
+Build and launch `ollacraft-bot` (`--profile bot`, connects to local `MC_HOST` or a remote server):
+```bash
+docker compose --profile bot up -d --build --no-deps bot
+# Or via Makefile:
+make bot
+make bot-logs
+make bot-stop
+```
 
 The bot will connect to the target Minecraft server. If the server has an authentication plugin (`/register` or `/login`), the bot will handle it automatically based on `MC_PASSWORD`. Once connected, the autonomous ReAct cycle starts.
 
@@ -178,21 +200,22 @@ Players can interact with and command the bot directly using in-game chat:
 
 | Variable | Default | Description |
 |---|---|---|
-| `MC_HOST` | `127.0.0.1` | Minecraft server hostname or IP address. |
+| `MC_HOST` | `localhost` (`127.0.0.1` in `.env.example`) | Minecraft server hostname or IP address. |
 | `MC_PORT` | `25565` | Minecraft server port. |
-| `MC_USERNAME` | `Herobrine` | In-game player name for the bot. |
+| `MC_USERNAME` | `Ollama` | In-game player name for the bot. |
 | `MC_PASSWORD` | *(Empty)* | Password used for server `/register` or `/login` commands. |
 | `OLLAMA_HOST` | `http://localhost:11434` | Ollama REST API base URL. |
 | `OLLAMA_MODEL` | `qwen3.5:9B` | Fallback Ollama model tag. |
 | `OLLAMA_MODEL_PLAYER` | `qwen3.5:9B` | Dedicated model for tactical ReAct decisions. |
 | `OLLAMA_MODEL_MANAGER` | `qwen3.5:9B` | Dedicated model for strategic supervision and loop recovery. |
-| `PORT` | `127.0.0.1:25565:25565` | Optional Docker port mapping. |
+| `ENABLE_PROCEDURE_GENERATION` | `true` | Toggle runtime experimental procedure generation in `manager.js` (`false` to disable). |
+| `PORT` | `127.0.0.1:25565:25565` | Optional Docker port mapping for `mc-server`. |
 
 ### Bot Rules & Parameters (`src/infrastructure/config.js`)
 
-- **Quest Chain:** Streamlined speedrun progression focusing on essential iron tools, shield, water bucket, and Nether/End navigation (`QUEST_CHAIN` & `QUEST_AMOUNT`).
+- **Quest Chain:** Progresses from wooden, stone, and iron gear plus `shield` through `bucket`, `water_bucket`, `flint_and_steel`, `nether_portal`, `blaze_rod`, `blaze_powder`, `ender_pearl`, and `ender_eye` (`QUEST_CHAIN` & `QUEST_AMOUNT`).
 - **Action Whitelist:** Strict validation of allowed LLM actions (`VALID_ACTIONS`) and valid placement surfaces (`VALID_GROUND_BLOCKS`).
-- **Base Management & Recovery:** Stored coordinates in `src/core/state.js` for the player base, placed crafting tables, furnaces, and storage chests, cleanly reset on `death` alongside temporary TTL blacklists.
+- **Base Management & Recovery:** Stored coordinates in `src/core/state.js` for the player base (`crafting_table`, `furnace`, `chest`) and `portalCastOrigin`, cleanly reset on `death` alongside temporary TTL blacklists.
 
 ---
 
@@ -202,7 +225,7 @@ The ReAct loop provides the LLM with structured actions formatted in JSON:
 
 | Skill | Parameters | Description |
 |---|---|---|
-| `mine` | `target: string, qty?: number` | Finds the closest target block in the world, navigates to it, equips the optimal tool, and mines it (with BFS vein mining for ores). |
+| `mine` | `target: string, qty?: number` | Finds the closest target block, equips the optimal tool dynamically via `minecraft-data` (`harvestTools` and `digTime`), and mines it (with BFS vein mining for ores). |
 | `craft` | `target: string, qty?: number` | Crafts an item using 2x2 player inventory or navigates to a nearby crafting table for 3x3 recipes. |
 | `place` | `target: string` | Places a block from inventory on safe, valid adjacent ground (e.g., `crafting_table`, `furnace`, `chest`). |
 | `smelt` | `target: string, qty?: number` | Approaches a furnace, loads fuel (coal/charcoal/wood), and smelts raw ores or food. |
@@ -210,10 +233,10 @@ The ReAct loop provides the LLM with structured actions formatted in JSON:
 | `hunt` | `target?: string` | Hunts nearby passive animals (`cow`, `pig`, `sheep`, `chicken`) to gather food. |
 | `fight` | `target?: string` | Engages nearby hostile mobs (`zombie`, `skeleton`, `spider`, `blaze`) with best weapon and armor. |
 | `equip` | `target?: string` | Equips best available armor pieces and places the shield in the off-hand slot. |
-| `portal` | *None* | Fills water bucket, casts or builds the Nether portal frame, ignites it with `flint_and_steel`, and enters the Nether. |
+| `portal` | *None* | Detects active `nether_portal` blocks as well as complete unlit or partial obsidian frames on X/Z axes, fills `water_bucket`, casts or completes frames via water-cascade lava mold or carried obsidian, clears doorway obstructions, ignites with `flint_and_steel`, and enters `the_nether`. |
 | `eat` | `target?: string` | Scans inventory for an edible food item and consumes it. |
-| `explore` | *None* | Selects a randomized terrain coordinate and walks forward to discover new resources. |
-| `unstuck` | *None* | Performs emergency ceiling breaking, wall digging, or upward swimming to escape holes or water. |
+| `explore` | `target?: string` | Advances along a persistent outward heading (with optional target hint like `'lava'`), detects solid ceilings (`hasSolidCeilingAbove`), breaks out of 32×32 box traps (+90° with dig breakout), and runs within a bounded 34s budget. |
+| `unstuck` | *None* | Performs emergency ceiling breaking, wall digging with bounded dig timeouts, or nearest dry-land water escape (`findNearestDryLand`). |
 | `wiki` | `target: string` | Looks up recipes, tool requirements, and drops for any block or item in the local game database. |
 | `procedure` | `target: string \| object, qty?: number \| object` | Executes a validated or experimental multi-step DSL procedure from `ProcedureMemory` under supervision and records its lifecycle evaluation. |
 
@@ -221,7 +244,7 @@ The ReAct loop provides the LLM with structured actions formatted in JSON:
 
 ## 🧪 Automated Tests & Benchmark
 
-Run the full test suite (**180 unit & integration tests**):
+Run the full test suite (**188 unit & integration tests across 18 suites**):
 ```bash
 npm test
 ```
