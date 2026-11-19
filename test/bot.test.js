@@ -8,18 +8,19 @@ const advUtils = require('../src/utils/advancements');
 const storage = require('../src/skills/storage');
 const manager = require('../src/ai/manager');
 
-const { resolvePlayerDecision } = require('../src/ai/loop');
+const { resolvePlayerDecision, getReliableProcedureDecision } = require('../src/ai/loop');
 const { skillWiki } = require('../src/skills/wiki');
 const { dispatchSkill } = require('../src/skills/dispatcher');
 const { computeCraftOperations } = require('../src/skills/craft');
 const { computeSmeltPlan } = require('../src/skills/smelt');
 const { skillHunt, isPositionSafeForLoot } = require('../src/skills/combat');
-const { buildObsidianFrame, PORTAL_BUILD_STEPS } = require('../src/skills/portal');
+const { buildObsidianFrame, findCastOriginNearLava, castPortalWithMold, markLavaClusterBad, findBestLavaPool, findPortalFrameCandidate, orientOffset, countScaffoldBlocks, PORTAL_BUILD_STEPS } = require('../src/skills/portal');
 const { scanEnvironment } = require('../src/utils/environment');
 const { getBlockNamesForTarget, getOreBlockNames } = require('../src/utils/wikiData');
 const { buildReactPrompt, filterRadarEnvironment } = require('../src/ai/prompt');
-const { isDiggableObstacle } = require('../src/skills/navigate');
+const { isDiggableObstacle, skillUnstuck, moveExploreStep, hasSolidCeilingAbove, headingToMineflayerYaw, isBoxStuck } = require('../src/skills/navigate');
 const { getFormatSchema, PLAYER_JSON_SCHEMA, MANAGER_JSON_SCHEMA } = require('../src/ai/ollama');
+const { breakBlockAt } = require('../src/actions/primitives/blocks');
 
 /**
  * Create a lightweight offline mock of a Mineflayer bot instance
@@ -687,4 +688,375 @@ test('Structural refactoring step 1 exposes new modules and action primitives', 
   assert.equal(typeof primCombat.attackTarget, 'function');
   assert.equal(typeof primCombat.followEntity, 'function');
   assert.equal(typeof primCombat.faceTarget, 'function');
+});
+
+test('Radar keeps nether_portal, findCastOriginNearLava locates flat site, and water unstuck navigates to dry land', async () => {
+  const { Vec3 } = require('vec3');
+  const botRadar = createMockBot();
+  const filtered = filterRadarEnvironment(botRadar, {
+    stone: 10,
+    nether_portal: 6,
+    bedrock: 15,
+    dandelion: 4,
+    short_grass: 8
+  });
+  assert.deepEqual(filtered, { stone: 10, nether_portal: 6 });
+
+  const blocks = new Map();
+  const key = (p) => `${p.x},${p.y},${p.z}`;
+  for (let x = -12; x <= 12; x++) {
+    for (let z = -12; z <= 12; z++) {
+      blocks.set(key(new Vec3(x, 63, z)), { name: 'stone', position: new Vec3(x, 63, z) });
+      blocks.set(key(new Vec3(x, 64, z)), { name: 'stone', position: new Vec3(x, 64, z) });
+    }
+  }
+  blocks.set(key(new Vec3(0, 64, 0)), { name: 'lava', position: new Vec3(0, 64, 0), metadata: 0 });
+  const lavaBot = {
+    blockAt: (pos) => blocks.get(key(pos)) || { name: 'air', position: pos }
+  };
+  const castOrigin = findCastOriginNearLava(lavaBot, new Vec3(0, 64, 0));
+  assert.ok(castOrigin);
+  assert.equal(castOrigin.y, 64);
+
+  const waterBot = createMockBot();
+  let goalReached = null;
+  waterBot.entity.isInWater = true;
+  waterBot.clearControlStates = () => {};
+  waterBot.setControlState = () => {};
+  waterBot.waitForTicks = async () => {};
+  waterBot.blockAt = (pos) => {
+    if (pos.x === 6 && pos.y === 64 && pos.z === 0) return { name: 'grass_block', position: new Vec3(6, 64, 0) };
+    return { name: 'air', position: pos };
+  };
+  waterBot.findBlock = () => ({ name: 'grass_block', position: new Vec3(6, 64, 0) });
+  waterBot.pathfinder.goto = async (goal) => {
+    goalReached = { x: goal.x, y: goal.y, z: goal.z };
+  };
+
+  const unstuckRes = await skillUnstuck(waterBot);
+  assert.equal(unstuckRes.success, true);
+  assert.ok(unstuckRes.message.includes('dry land'));
+  assert.deepEqual(goalReached, { x: 6, y: 65, z: 0 });
+});
+
+test('Nether portal prompt skips pickaxe advice and unreachable mold marks lava pool bad', async () => {
+  const { Vec3 } = require('vec3');
+  const prevObjective = state.currentObjective;
+  state.currentObjective = 'nether_portal';
+  const noPickBot = createMockBot([{ name: 'flint_and_steel', count: 1 }, { name: 'water_bucket', count: 1 }]);
+  const prompt = buildReactPrompt(noPickBot, state, { stone: 20 }, null);
+  assert.ok(prompt.includes("ne perds pas de temps à fabriquer une pioche"));
+  assert.equal(prompt.includes("fabrique d'abord une 'wooden_pickaxe'"), false);
+  state.currentObjective = prevObjective;
+
+  const blocks = new Map();
+  const key = (p) => `${p.x},${p.y},${p.z}`;
+  for (let x = -12; x <= 12; x++) {
+    for (let z = -12; z <= 12; z++) {
+      blocks.set(key(new Vec3(x, 25, z)), { name: 'stone', position: new Vec3(x, 25, z) });
+      blocks.set(key(new Vec3(x, 26, z)), { name: 'stone', position: new Vec3(x, 26, z) });
+    }
+  }
+  const lavaPos = new Vec3(0, 26, 0);
+  const lavaBlock = { name: 'lava', position: lavaPos, metadata: 0 };
+  blocks.set(key(lavaPos), lavaBlock);
+
+  const farBot = createMockBot([{ name: 'cobblestone', count: 32 }, { name: 'water_bucket', count: 1 }]);
+  farBot.entity.position = {
+    x: 0,
+    y: 48,
+    z: 0,
+    floored() { return new Vec3(0, 48, 0); },
+    distanceTo(other) { return Math.hypot(other.x, other.y - 48, other.z); }
+  };
+  farBot.blockAt = (pos) => blocks.get(key(pos)) || { name: 'air', position: pos };
+  farBot.clearControlStates = () => {};
+  farBot.pathfinder.goto = async () => {
+    throw new Error('Took to long to decide path to goal!');
+  };
+
+  const castRes = await castPortalWithMold(farBot, { portalCastOrigin: null }, lavaBlock);
+  assert.equal(castRes.success, false);
+  assert.ok(castRes.message.includes('unreachable'));
+
+  const grassStandBot = {
+    blockAt: (pos) => {
+      if (pos.y <= 64 && Math.abs(pos.x) <= 6 && Math.abs(pos.z) <= 6) {
+        if (pos.x === 0 && pos.y === 64 && pos.z === 0) return { name: 'lava', position: pos };
+        return { name: 'grass_block', position: pos };
+      }
+      if (pos.y === 65) return { name: 'short_grass', boundingBox: 'empty', position: pos };
+      return { name: 'air', position: pos };
+    }
+  };
+  const grassOrigin = findCastOriginNearLava(grassStandBot, new Vec3(0, 64, 0));
+  assert.ok(grassOrigin);
+
+  const emptyWorldBot = createMockBot([{ name: 'cobblestone', count: 32 }, { name: 'water_bucket', count: 1 }]);
+  emptyWorldBot.blockAt = (pos) => ({ name: 'air', position: pos });
+  const badLavaRes = await castPortalWithMold(emptyWorldBot, { portalCastOrigin: null }, { name: 'lava', position: new Vec3(20, 64, 20) });
+  assert.equal(badLavaRes.success, false);
+  assert.ok(badLavaRes.message.includes('marked lava pool bad'));
+
+  const lavaId = mcData.blocksByName.lava.id;
+  const clusterBlocks = new Map([
+    ['40,20,40', { name: 'lava', type: lavaId, metadata: 0, position: new Vec3(40, 20, 40) }],
+    ['41,20,40', { name: 'lava', type: lavaId, metadata: 0, position: new Vec3(41, 20, 40) }]
+  ]);
+  const clusterBot = createMockBot();
+  clusterBot.blockAt = (pos) => clusterBlocks.get(`${pos.x},${pos.y},${pos.z}`) || { name: 'air', type: 0, position: pos };
+  clusterBot.findBlocks = ({ matching }) => Array.from(clusterBlocks.values()).filter(matching).map(b => b.position);
+  assert.ok(findBestLavaPool(clusterBot));
+  markLavaClusterBad(clusterBot, new Vec3(40, 20, 40), 4);
+  assert.equal(findBestLavaPool(clusterBot), null);
+
+  const prevObj = state.currentObjective;
+  state.currentObjective = 'nether_portal';
+  const portalPrompt = buildReactPrompt(createMockBot(), state, { stone: 10 }, null);
+  assert.ok(portalPrompt.includes("NE fabrique PAS de coffre"));
+  state.currentObjective = prevObj;
+
+  const moveBot = createMockBot();
+  moveBot.clearControlStates = () => {};
+  moveBot.pathfinder = {
+    movements: { canDig: true, allow1by1towers: true },
+    setGoal: () => {},
+    goto: async () => {
+      assert.equal(moveBot.pathfinder.movements.canDig, false);
+      assert.equal(moveBot.pathfinder.movements.allow1by1towers, false);
+    }
+  };
+  await moveExploreStep(moveBot, 10, 10, true);
+  assert.equal(moveBot.pathfinder.movements.canDig, true);
+  assert.equal(moveBot.pathfinder.movements.allow1by1towers, true);
+
+  const ceilingBot = createMockBot();
+  ceilingBot.entity.position = new Vec3(0, 64, 0);
+  ceilingBot.blockAt = (pos) => ({ name: pos.y === 69 ? 'stone' : 'air' });
+  assert.equal(hasSolidCeilingAbove(ceilingBot), true);
+
+  ceilingBot.blockAt = (pos) => ({ name: pos.y === 69 ? 'oak_leaves' : 'air' });
+  assert.equal(hasSolidCeilingAbove(ceilingBot), false);
+
+  const yawEast = headingToMineflayerYaw(0);
+  assert.ok(Math.abs(-Math.sin(yawEast) - 1) < 1e-6 && Math.abs(-Math.cos(yawEast)) < 1e-6);
+  const yawSouth = headingToMineflayerYaw(Math.PI / 2);
+  assert.ok(Math.abs(-Math.sin(yawSouth)) < 1e-6 && Math.abs(-Math.cos(yawSouth) - 1) < 1e-6);
+  const yawWest = headingToMineflayerYaw(Math.PI);
+  assert.ok(Math.abs(-Math.sin(yawWest) + 1) < 1e-6 && Math.abs(-Math.cos(yawWest)) < 1e-6);
+  const yawNorth = headingToMineflayerYaw(-Math.PI / 2);
+  assert.ok(Math.abs(-Math.sin(yawNorth)) < 1e-6 && Math.abs(-Math.cos(yawNorth) + 1) < 1e-6);
+
+  assert.equal(isBoxStuck([{ x: -471, z: 57 }, { x: -458, z: 49 }, { x: -480, z: 57 }, { x: -487, z: 69 }]), true);
+  assert.equal(isBoxStuck([{ x: -471, z: 57 }, { x: -430, z: 57 }, { x: -480, z: 57 }, { x: -487, z: 69 }]), false);
+  assert.equal(isBoxStuck([{ x: 0, z: 0 }, { x: 5, z: 5 }]), false);
+});
+
+test('Data-driven tool selection, safe unequip in breakBlockAt, and mold scaffold gathering work accurately', async () => {
+  const { Vec3 } = require('vec3');
+
+  const mixedBot = createMockBot([
+    { name: 'golden_pickaxe' },
+    { name: 'stone_pickaxe' },
+    { name: 'iron_axe' },
+    { name: 'iron_shovel' },
+    { name: 'iron_hoe' },
+    { name: 'iron_sword' },
+    { name: 'water_bucket' }
+  ]);
+  assert.equal(invUtils.getBestToolForBlock(mixedBot, { name: 'iron_ore' })?.name, 'stone_pickaxe');
+  assert.equal(invUtils.getBestToolForBlock(mixedBot, { name: 'crimson_stem' })?.name, 'iron_axe');
+  assert.equal(invUtils.getBestToolForBlock(mixedBot, { name: 'soul_soil' })?.name, 'iron_shovel');
+  assert.equal(invUtils.getBestToolForBlock(mixedBot, { name: 'snow' })?.name, 'iron_shovel');
+  assert.equal(invUtils.getBestToolForBlock(mixedBot, { name: 'nether_wart_block' })?.name, 'iron_hoe');
+
+  const goldOnlyBot = createMockBot([{ name: 'golden_pickaxe' }]);
+  assert.equal(invUtils.getBestToolForBlock(goldOnlyBot, { name: 'iron_ore' }), null);
+  assert.equal(invUtils.getBestToolForBlock(goldOnlyBot, { name: 'netherrack' })?.name, 'golden_pickaxe');
+
+  const ironBot = createMockBot([{ name: 'iron_pickaxe' }, { name: 'iron_sword' }]);
+  assert.equal(invUtils.getBestToolForBlock(ironBot, { name: 'obsidian' }), null);
+  assert.equal(invUtils.getBestToolForBlock(ironBot, { name: 'granite' })?.name, 'iron_pickaxe');
+  assert.equal(invUtils.getBestToolForBlock(ironBot, { name: 'basalt' })?.name, 'iron_pickaxe');
+  assert.equal(invUtils.getBestToolForBlock(ironBot, { name: 'netherrack' })?.name, 'iron_pickaxe');
+
+  const wrongToolsBot = createMockBot([{ name: 'iron_sword' }, { name: 'water_bucket' }]);
+  assert.equal(invUtils.getBestToolForBlock(wrongToolsBot, { name: 'stone' }), null);
+  assert.equal(invUtils.getBestToolForBlock(wrongToolsBot, { name: 'dirt' }), null);
+  assert.equal(invUtils.isToolOrWeapon('iron_sword'), true);
+  assert.equal(invUtils.isToolOrWeapon('dirt'), false);
+
+  const actions = [];
+  let brokenStone = false;
+  const stoneBreakBot = createMockBot([{ name: 'iron_pickaxe' }]);
+  stoneBreakBot.entity.position = new Vec3(0, 64, 0);
+  stoneBreakBot.lookAt = async () => {};
+  stoneBreakBot.canDigBlock = () => true;
+  stoneBreakBot.blockAt = (pos) => {
+    if (pos.x === 2 && pos.y === 64 && pos.z === 0) {
+      return brokenStone ? { name: 'air', diggable: false } : { name: 'stone', diggable: true };
+    }
+    return { name: 'air', diggable: false };
+  };
+  stoneBreakBot.equip = async (item) => { actions.push(`equip:${item.name}`); };
+  stoneBreakBot.dig = async () => { actions.push('dig:stone'); brokenStone = true; };
+  const stoneRes = await breakBlockAt(stoneBreakBot, new Vec3(2, 64, 0));
+  assert.equal(stoneRes.success, true);
+  assert.deepEqual(actions, ['equip:iron_pickaxe', 'dig:stone']);
+
+  const dirtActions = [];
+  let brokenDirt = false;
+  const dirtBreakBot = createMockBot([{ name: 'iron_sword' }]);
+  dirtBreakBot.heldItem = { name: 'iron_sword' };
+  dirtBreakBot.entity.position = new Vec3(0, 64, 0);
+  dirtBreakBot.lookAt = async () => {};
+  dirtBreakBot.canDigBlock = () => true;
+  dirtBreakBot.blockAt = (pos) => {
+    if (pos.x === 2 && pos.y === 64 && pos.z === 0) {
+      return brokenDirt ? { name: 'air', diggable: false } : { name: 'dirt', diggable: true };
+    }
+    return { name: 'air', diggable: false };
+  };
+  dirtBreakBot.unequip = async (slot) => { dirtActions.push(`unequip:${slot}`); };
+  dirtBreakBot.dig = async () => { dirtActions.push('dig:dirt'); brokenDirt = true; };
+  const dirtRes = await breakBlockAt(dirtBreakBot, new Vec3(2, 64, 0));
+  assert.equal(dirtRes.success, true);
+  assert.deepEqual(dirtActions, ['unequip:hand', 'dig:dirt']);
+
+  const prevState = {
+    currentObjective: state.currentObjective,
+    lastActionResult: state.lastActionResult,
+    managerDirective: state.managerDirective,
+    managerSubGoal: state.managerSubGoal
+  };
+  try {
+    state.currentObjective = 'nether_portal';
+    state.lastActionResult = null;
+    const lavaBot = createMockBot([{ name: 'flint_and_steel' }, { name: 'water_bucket' }]);
+    assert.equal(countScaffoldBlocks(lavaBot), 0);
+    const lavaId = mcData.blocksByName.lava.id;
+    lavaBot.findBlock = ({ matching }) => {
+      if (typeof matching !== 'function') return null;
+      const lavaCandidate = { name: 'lava', type: lavaId, metadata: 0, position: new Vec3(4, 64, 0) };
+      if (matching(lavaCandidate)) return lavaCandidate;
+      const grassCandidate = { name: 'grass_block', type: mcData.blocksByName.grass_block.id, position: new Vec3(2, 63, 0) };
+      if (matching(grassCandidate)) return grassCandidate;
+      return null;
+    };
+    const assigned = manager.tryAssignPortalOrNetherGoal(lavaBot);
+    assert.equal(assigned, true);
+    assert.deepEqual(state.managerSubGoal, { action: 'mine', target: 'dirt', qty: 6, isReliable: true });
+
+    const loopDecision = getReliableProcedureDecision(state);
+    assert.equal(loopDecision.action, 'mine');
+    assert.equal(loopDecision.target, 'dirt');
+    assert.equal(loopDecision.qty, 6);
+  } finally {
+    state.currentObjective = prevState.currentObjective;
+    state.lastActionResult = prevState.lastActionResult;
+    state.managerDirective = prevState.managerDirective;
+    state.managerSubGoal = prevState.managerSubGoal;
+  }
+});
+
+test('Portal frame detector handles X/Z complete and partial frames without ignoring unlit portals', () => {
+  const { Vec3 } = require('vec3');
+  const obsidianId = mcData.blocksByName.obsidian.id;
+  const lavaId = mcData.blocksByName.lava.id;
+  const grassId = mcData.blocksByName.grass_block.id;
+
+  const posKey = (p) => `${p.x},${p.y},${p.z}`;
+  const coreSteps = PORTAL_BUILD_STEPS.filter(s => !s.isCorner);
+
+  const zBase = new Vec3(5, 64, 10);
+  const zSet = new Set(coreSteps.map(s => posKey(zBase.plus(orientOffset(s.offset, 'z')))));
+  const zUpperBlock = zBase.plus(orientOffset(new Vec3(-1, 3, 0), 'z'));
+
+  const createFrameBot = (items, obsKeys, seedObsPositions, extraOpts = {}) => {
+    const b = createMockBot(items);
+    b.blockAt = (pos) => {
+      if (obsKeys.has(posKey(pos))) return { name: 'obsidian', type: obsidianId, position: pos };
+      if (extraOpts.grassPos && posKey(pos) === posKey(extraOpts.grassPos)) {
+        return { name: 'grass_block', type: grassId, position: pos };
+      }
+      return { name: 'air', boundingBox: 'empty' };
+    };
+    b.findBlocks = ({ matching }) => {
+      if (matching === obsidianId) return seedObsPositions;
+      if (typeof matching === 'function' && seedObsPositions.some(p => matching({ type: obsidianId, position: p }))) {
+        return seedObsPositions;
+      }
+      return [];
+    };
+    b.findBlock = ({ matching }) => {
+      if (typeof matching !== 'function') return null;
+      if (extraOpts.lavaPos) {
+        const lavaCandidate = { name: 'lava', type: lavaId, metadata: 0, position: extraOpts.lavaPos };
+        if (matching(lavaCandidate)) return lavaCandidate;
+      }
+      if (extraOpts.grassPos) {
+        const grassCandidate = { name: 'grass_block', type: grassId, position: extraOpts.grassPos };
+        if (matching(grassCandidate)) return grassCandidate;
+      }
+      return null;
+    };
+    return b;
+  };
+
+  const zCandidate = findPortalFrameCandidate(createFrameBot([], zSet, [zUpperBlock]), 48);
+  assert.ok(zCandidate);
+  assert.equal(zCandidate.axis, 'z');
+  assert.equal(zCandidate.isComplete, true);
+  assert.equal(zCandidate.presentCount, 10);
+  assert.equal(zCandidate.missingCount, 0);
+  assert.deepEqual([zCandidate.base.x, zCandidate.base.y, zCandidate.base.z], [5, 64, 10]);
+
+  const xBase = new Vec3(0, 64, 0);
+  const partialXSet = new Set(coreSteps.slice(0, 4).map(s => posKey(xBase.plus(s.offset))));
+  const partialXCandidate = findPortalFrameCandidate(createFrameBot([], partialXSet, [new Vec3(0, 64, 0)]), 48);
+  assert.ok(partialXCandidate);
+  assert.equal(partialXCandidate.axis, 'x');
+  assert.equal(partialXCandidate.isComplete, false);
+  assert.equal(partialXCandidate.presentCount, 4);
+  assert.equal(partialXCandidate.missingCount, 6);
+
+  const straySet = new Set([posKey(new Vec3(10, 64, 10))]);
+  assert.equal(findPortalFrameCandidate(createFrameBot([], straySet, [new Vec3(10, 64, 10)]), 48), null);
+
+  const prevState = {
+    currentObjective: state.currentObjective,
+    lastActionResult: state.lastActionResult,
+    managerDirective: state.managerDirective,
+    managerSubGoal: state.managerSubGoal
+  };
+  try {
+    state.currentObjective = 'nether_portal';
+    state.lastActionResult = null;
+
+    const completeBot = createFrameBot([{ name: 'flint_and_steel' }], zSet, [zUpperBlock]);
+    assert.equal(manager.findPortalOpportunity(completeBot), 'complete_frame');
+    assert.equal(manager.tryAssignPortalOrNetherGoal(completeBot), true);
+    assert.deepEqual(state.managerSubGoal, { action: 'portal', target: 'none', isReliable: true });
+
+    const partial6Set = new Set(coreSteps.slice(0, 6).map(s => posKey(xBase.plus(s.offset))));
+    const partialObsBot = createFrameBot([{ name: 'obsidian', count: 4 }], partial6Set, [new Vec3(0, 64, 0)]);
+    assert.equal(manager.findPortalOpportunity(partialObsBot), 'partial_frame_obsidian');
+    assert.equal(manager.tryAssignPortalOrNetherGoal(partialObsBot), true);
+    assert.deepEqual(state.managerSubGoal, { action: 'portal', target: 'none', isReliable: true });
+
+    const partialLavaBot = createFrameBot(
+      [{ name: 'flint_and_steel' }, { name: 'water_bucket' }],
+      partial6Set,
+      [new Vec3(0, 64, 0)],
+      { lavaPos: new Vec3(12, 64, 0), grassPos: new Vec3(2, 63, 0) }
+    );
+    assert.equal(manager.findPortalOpportunity(partialLavaBot), 'partial_frame_lava');
+    assert.equal(manager.tryAssignPortalOrNetherGoal(partialLavaBot), true);
+    assert.deepEqual(state.managerSubGoal, { action: 'mine', target: 'dirt', qty: 6, isReliable: true });
+  } finally {
+    state.currentObjective = prevState.currentObjective;
+    state.lastActionResult = prevState.lastActionResult;
+    state.managerDirective = prevState.managerDirective;
+    state.managerSubGoal = prevState.managerSubGoal;
+  }
 });

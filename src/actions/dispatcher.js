@@ -214,7 +214,7 @@ async function skillProcedure(bot, state, target, qty, options = {}) {
  */
 async function dispatchSkill(bot, state, action, target, qty, options = {}) {
   if (action === 'unstuck') return skillUnstuck(bot);
-  if (action === 'explore') return skillExplore(bot);
+  if (action === 'explore') return skillExplore(bot, state, target);
   if (action === 'wiki') return skillWiki(bot, target);
   if (action === 'mine') return skillMine(bot, state, target, qty);
   if (action === 'craft') return skillCraft(bot, state, target, qty);
@@ -225,7 +225,7 @@ async function dispatchSkill(bot, state, action, target, qty, options = {}) {
   if (action === 'fight') return skillFight(bot, target);
   if (action === 'chest') return skillChest(bot, state);
   if (action === 'equip') return skillEquip(bot, target);
-  if (action === 'portal') return skillPortal(bot);
+  if (action === 'portal') return skillPortal(bot, state);
   if (action === 'procedure') return skillProcedure(bot, state, target, qty, options);
   return { success: false, message: `Unknown action '${action}'.` };
 }
