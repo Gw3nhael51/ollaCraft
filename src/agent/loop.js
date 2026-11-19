@@ -87,6 +87,8 @@ async function executeDecisionWithTimeout(bot, decision, options = {}) {
   let timeoutLimitMs = ACTION_TIMEOUT_MS;
   if (decision.action === 'smelt') {
     timeoutLimitMs = Math.max(ACTION_TIMEOUT_MS, (decision.qty || 1) * 12000 + 20000);
+  } else if (decision.action === 'portal') {
+    timeoutLimitMs = 150000;
   } else if (isProcedure) {
     timeoutLimitMs = options.procedureEnvelopeTimeoutMs || PROCEDURE_ENVELOPE_TIMEOUT_MS;
   }
@@ -147,7 +149,61 @@ function recordActionResult(decision, executionResult) {
  */
 function getReliableProcedureDecision(currentState = state) {
   const subGoal = currentState?.managerSubGoal;
-  if (subGoal?.action !== 'procedure' || subGoal.isReliable !== true || !subGoal.target) {
+  if (!subGoal?.action || subGoal.isReliable !== true) {
+    return null;
+  }
+  if (subGoal.action === 'portal') {
+    const justFailedPortal = currentState.lastActionResult?.success === false && currentState.lastActionResult?.action === 'portal';
+    if (justFailedPortal) return null;
+    return {
+      thought: currentState.managerDirective || "Exécution directe de l'action prioritaire 'portal'.",
+      action: 'portal',
+      target: 'none',
+      qty: 1
+    };
+  }
+  if (subGoal.action === 'mine' && subGoal.target) {
+    const target = cleanTargetIdentifier(subGoal.target);
+    const justFailedMine = (
+      currentState.lastActionResult?.success === false &&
+      currentState.lastActionResult?.action === 'mine' &&
+      currentState.lastActionResult?.target === target
+    );
+    if (!target || target === 'none' || justFailedMine) return null;
+    return {
+      thought: currentState.managerDirective || `Exécution directe du minage prioritaire '${target}'.`,
+      action: 'mine',
+      target,
+      qty: subGoal.qty || 1
+    };
+  }
+  if (subGoal.action === 'craft' && subGoal.target) {
+    const target = cleanTargetIdentifier(subGoal.target);
+    const justFailedCraft = (
+      currentState.lastActionResult?.success === false &&
+      currentState.lastActionResult?.action === 'craft' &&
+      currentState.lastActionResult?.target === target
+    );
+    if (!target || target === 'none' || justFailedCraft) return null;
+    return {
+      thought: currentState.managerDirective || `Exécution directe de la fabrication prioritaire '${target}'.`,
+      action: 'craft',
+      target,
+      qty: 1
+    };
+  }
+  if (subGoal.action === 'explore') {
+    const justFailedExplore = currentState.lastActionResult?.success === false && currentState.lastActionResult?.action === 'explore';
+    if (justFailedExplore) return null;
+    const exploreTarget = cleanTargetIdentifier(subGoal.target || 'lava');
+    return {
+      thought: currentState.managerDirective || "Exploration prioritaire vers un lac de lave.",
+      action: 'explore',
+      target: exploreTarget === 'none' ? 'lava' : exploreTarget,
+      qty: 1
+    };
+  }
+  if (subGoal.action !== 'procedure' || !subGoal.target) {
     return null;
   }
   const target = cleanTargetIdentifier(subGoal.target);

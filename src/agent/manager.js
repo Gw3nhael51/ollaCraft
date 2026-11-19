@@ -1,10 +1,11 @@
 const config = require('../infrastructure/config');
 const state = require('../core/state');
 const invUtils = require('../perception/inventory');
-const { scanNearbyEntities, checkTerrainSituation } = require('../perception/environment');
+const { scanNearbyEntities, checkTerrainSituation, isBadBlock } = require('../perception/environment');
 const { askOllama } = require('./ollama');
 const { defaultProcedureMemory, defaultActionRegistry } = require('../actions/dispatcher');
-const { getMcData } = require('../minecraft/wikiData');
+const { getMcData, getBlockNamesForTarget } = require('../minecraft/wikiData');
+const { countScaffoldBlocks, findPortalFrameCandidate } = require('../actions/behaviors/world/portal');
 const { resolveGoalPlan } = require('../minecraft/knowledge');
 const { evaluateObjectiveCoverage, ObjectiveGenerationTracker } = require('../procedures/matcher');
 const { generateProcedure } = require('../procedures/generator');
@@ -414,6 +415,7 @@ function buildSupervisorPrompt(bot) {
   const nearbyEntities = scanNearbyEntities(bot, 20);
   const entitiesText = Object.keys(nearbyEntities).length > 0 ? JSON.stringify(nearbyEntities) : 'aucune';
   const terrainStatus = checkTerrainSituation(bot);
+  const portalOpp = findPortalOpportunity(bot);
   const stageReachedSuffix = currentAmount >= requiredAmount ? ' - PALIER ATTEINT' : '';
   const clutteredNotice = cluttered
     ? 'OUI (ATTENTION : inventaire saturé de blocs en surplus, suggère de fabriquer/poser un coffre ou utiliser "chest")'
@@ -428,6 +430,8 @@ function buildSupervisorPrompt(bot) {
 
       SITUATION ACTUELLE :
       - Objectif final : '${state.currentObjective}' (Progression actuelle : ${progressSummary}${stageReachedSuffix})
+      - Dimension actuelle : ${bot.game?.dimension || 'overworld'}
+      - Opportunité portail détectée : ${portalOpp || 'aucune'}
       - Quantité requise pour valider ce palier : ${requiredAmount} (possédé : ${currentAmount})
       - IMPORTANT : Ne demande PAS au joueur d'arrêter tant que le palier (${requiredAmount}) n'est pas atteint !
       - Outils possédés : ${tools}
@@ -547,6 +551,238 @@ async function tryAssignProceduralGoal(bot, memory, objective, deps = {}) {
 }
 
 /**
+ * Detect whether a Nether portal, sufficient obsidian, or nearby lava source is available
+ * @param {object} bot Mineflayer bot instance
+ * @returns {'active_portal'|'complete_frame'|'partial_frame_obsidian'|'partial_frame_lava'|'inventory_obsidian'|'lava_pool'|null} Detected portal opportunity or null
+ */
+function findPortalOpportunity(bot) {
+  if (typeof bot.findBlock !== 'function') {
+    return invUtils.countItem(bot, 'obsidian') >= 10 ? 'inventory_obsidian' : null;
+  }
+
+  const portalId = bot.registry?.blocksByName?.nether_portal?.id;
+  if (portalId && bot.findBlock({ matching: portalId, maxDistance: 48 })) {
+    return 'active_portal';
+  }
+
+  const lavaId = bot.registry?.blocksByName?.lava?.id;
+  const isAnyLavaSource = (block) => (
+    block.type === lavaId &&
+    (!block.metadata || block.metadata === 0) &&
+    (!block.position || !isBadBlock(block.position))
+  );
+
+  const frame = findPortalFrameCandidate(bot, 48);
+  if (frame?.isComplete) {
+    return 'complete_frame';
+  }
+  if (frame && invUtils.countItem(bot, 'obsidian') > 0) {
+    return 'partial_frame_obsidian';
+  }
+  if (frame && lavaId && bot.findBlock({ matching: isAnyLavaSource, maxDistance: 48 })) {
+    return 'partial_frame_lava';
+  }
+
+  if (invUtils.countItem(bot, 'obsidian') >= 10) {
+    return 'inventory_obsidian';
+  }
+
+  if (lavaId) {
+    const isReachableLavaSource = (block) => (
+      isAnyLavaSource(block) &&
+      (!bot.entity?.position || !block.position || Math.abs(block.position.y - bot.entity.position.y) <= 10)
+    );
+    if (typeof bot.findBlocks === 'function') {
+      const poolBlocks = bot.findBlocks({
+        matching: isReachableLavaSource,
+        maxDistance: 24,
+        count: 4
+      });
+      if (Array.isArray(poolBlocks) && poolBlocks.length >= 4) {
+        return 'lava_pool';
+      }
+    } else if (typeof bot.findBlock === 'function') {
+      const nearbyLava = bot.findBlock({ matching: isReachableLavaSource, maxDistance: 24 });
+      if (nearbyLava) return 'lava_pool';
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Assign deterministic pickaxe or prerequisite crafting steps when no pickaxe is carried during Nether progression
+ * @param {object} bot Mineflayer bot instance
+ * @returns {boolean} True if a pickaxe recovery sub-goal was assigned
+ */
+function tryAssignPickaxeRecovery(bot) {
+  if (invUtils.hasToolType(bot, '_pickaxe') || typeof bot.inventory?.items !== 'function') return false;
+
+  const ironCount = invUtils.countItem(bot, 'iron_ingot');
+  const cobbleCount = invUtils.countItem(bot, 'cobblestone');
+  if (ironCount < 3 && cobbleCount < 3) return false;
+
+  const items = bot.inventory.items();
+  const stickCount = invUtils.countItem(bot, 'stick');
+  if (stickCount < 2) {
+    const plankCount = items.filter(i => invUtils.isPlanks(i.name)).reduce((s, i) => s + i.count, 0);
+    if (plankCount >= 2) {
+      state.managerDirective = "Fabrique des bâtons ('stick') pour reconstituer une pioche.";
+      state.managerSubGoal = { action: 'craft', target: 'stick', isReliable: true };
+      console.log(`\n[MANAGER 🧠] Directive mise à jour : "${state.managerDirective}" (action suggérée: craft)`);
+      return true;
+    }
+    const logCount = items.filter(i => invUtils.isWoodLog(i.name)).reduce((s, i) => s + i.count, 0);
+    if (logCount >= 1) {
+      state.managerDirective = "Transforme tes bûches en planches ('planks') pour fabriquer une pioche.";
+      state.managerSubGoal = { action: 'craft', target: 'planks', isReliable: true };
+      console.log(`\n[MANAGER 🧠] Directive mise à jour : "${state.managerDirective}" (action suggérée: craft)`);
+      return true;
+    }
+    return false;
+  }
+
+  const pickaxeTarget = ironCount >= 3 ? 'iron_pickaxe' : 'stone_pickaxe';
+  if (invUtils.findNearbyCraftingTable(bot, state)) {
+    state.managerDirective = `Fabrique une '${pickaxeTarget}' pour creuser vers la lave et miner dans le Nether.`;
+    state.managerSubGoal = { action: 'craft', target: pickaxeTarget, isReliable: true };
+    console.log(`\n[MANAGER 🧠] Directive mise à jour : "${state.managerDirective}" (action suggérée: craft)`);
+    return true;
+  }
+  if (invUtils.countItem(bot, 'crafting_table') > 0) {
+    state.managerDirective = `Pose ta 'crafting_table' pour fabriquer une '${pickaxeTarget}'.`;
+    state.managerSubGoal = { action: 'place', target: 'crafting_table', isReliable: false };
+    console.log(`\n[MANAGER 🧠] Directive mise à jour : "${state.managerDirective}" (action suggérée: place)`);
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Gather solid building blocks beside a detected lava pool before attempting portal mold casting
+ * @param {object} bot Mineflayer bot instance
+ * @returns {boolean} True if a scaffold-gathering mine sub-goal was assigned
+ */
+function tryAssignMoldScaffoldGathering(bot) {
+  const scaffoldCount = countScaffoldBlocks(bot);
+  if (scaffoldCount >= 12 || typeof bot.findBlock !== 'function') return false;
+
+  const needed = Math.min(6, 12 - scaffoldCount);
+  const candidates = invUtils.hasToolType(bot, '_pickaxe') ? ['dirt', 'stone', 'cobblestone'] : ['dirt'];
+  const chosenTarget = candidates.find((candidate) => {
+    const blockSet = new Set(getBlockNamesForTarget(bot, candidate));
+    return Boolean(bot.findBlock({
+      matching: (b) => Boolean(b?.name && blockSet.has(b.name) && (!b.position || !isBadBlock(b.position))),
+      maxDistance: 24
+    }));
+  });
+  if (!chosenTarget) return false;
+
+  state.managerDirective = `Lac de lave détecté mais seulement ${scaffoldCount}/12 blocs solides : mine ${needed}x '${chosenTarget}' avant de construire le portail.`;
+  state.managerSubGoal = { action: 'mine', target: chosenTarget, qty: needed, isReliable: true };
+  console.log(`\n[MANAGER 🧠] Directive mise à jour : "${state.managerDirective}" (action suggérée: mine)`);
+  return true;
+}
+
+/**
+ * Assign deterministic high-priority sub-goals for Nether portal creation and initial Nether mining
+ * @param {object} bot Mineflayer bot instance
+ * @returns {boolean} True if a deterministic sub-goal was assigned
+ */
+function tryAssignPortalOrNetherGoal(bot) {
+  if (bot.game?.dimension === 'the_nether') {
+    const netherHarvestedItems = [
+      'netherrack', 'quartz', 'blackstone', 'basalt', 'soul_sand',
+      'soul_soil', 'crimson_stem', 'warped_stem', 'nether_wart_block', 'warped_wart_block'
+    ];
+    const hasNetherBlocks = netherHarvestedItems.some(item => invUtils.countItem(bot, item) > 0);
+    if (!hasNetherBlocks && typeof bot.findBlock === 'function') {
+      const candidateBlocks = invUtils.hasToolType(bot, '_pickaxe')
+        ? ['nether_quartz_ore', 'netherrack', 'blackstone', 'basalt']
+        : ['crimson_stem', 'warped_stem', 'soul_sand', 'soul_soil', 'nether_wart_block', 'warped_wart_block', 'gravel'];
+
+      const targetBlock = candidateBlocks.find((blockName) => {
+        const blockId = bot.registry?.blocksByName?.[blockName]?.id;
+        return Boolean(blockId && bot.findBlock({ matching: blockId, maxDistance: 24 }));
+      });
+
+      if (targetBlock) {
+        state.managerDirective = `Dans le Nether : mine '${targetBlock}' immédiatement pour récolter des ressources du Nether.`;
+        state.managerSubGoal = { action: 'mine', target: targetBlock, isReliable: true };
+        console.log(`\n[MANAGER 🧠] Directive mise à jour : "${state.managerDirective}" (action suggérée: mine)`);
+        return true;
+      }
+    }
+    return false;
+  }
+
+  if (state.currentObjective !== 'nether_portal') return false;
+
+  if (bot.entity?.isInWater) {
+    state.managerDirective = "Sors de l'eau et rejoins la terre ferme immédiatement.";
+    state.managerSubGoal = { action: 'unstuck', target: 'none', isReliable: false };
+    console.log(`\n[MANAGER 🧠] Directive mise à jour : "${state.managerDirective}" (action suggérée: unstuck)`);
+    return true;
+  }
+
+  if (tryAssignPickaxeRecovery(bot)) {
+    return true;
+  }
+
+  const hasFlintAndSteel = invUtils.countItem(bot, 'flint_and_steel') > 0;
+  const hasWaterBucket = invUtils.countItem(bot, 'water_bucket') > 0;
+  const hasWaterOrObsidian = hasWaterBucket || invUtils.countItem(bot, 'obsidian') >= 10;
+  const portalOpportunity = findPortalOpportunity(bot);
+  const lastFailedPortal = state.lastActionResult?.success === false && state.lastActionResult?.action === 'portal';
+
+  const assignImmediatePortalGoal = (directive) => {
+    state.managerDirective = directive;
+    state.managerSubGoal = { action: 'portal', target: 'none', isReliable: true };
+    console.log(`\n[MANAGER 🧠] Directive mise à jour : "${state.managerDirective}" (action suggérée: portal)`);
+    return true;
+  };
+
+  if ((portalOpportunity === 'partial_frame_lava' || portalOpportunity === 'lava_pool') && hasFlintAndSteel && hasWaterBucket && countScaffoldBlocks(bot) < 12) {
+    return tryAssignMoldScaffoldGathering(bot);
+  }
+
+  if (portalOpportunity && !lastFailedPortal) {
+    if (portalOpportunity === 'active_portal' || portalOpportunity === 'partial_frame_obsidian') {
+      return assignImmediatePortalGoal("Portail détecté à proximité : exécute immédiatement l'action 'portal' pour le compléter ou y entrer.");
+    }
+    if ((portalOpportunity === 'complete_frame' || portalOpportunity === 'inventory_obsidian') && hasFlintAndSteel) {
+      return assignImmediatePortalGoal("Cadre de portail prêt : exécute immédiatement l'action 'portal' pour assembler, allumer et entrer dans le Nether.");
+    }
+    if ((portalOpportunity === 'partial_frame_lava' || portalOpportunity === 'lava_pool') && hasFlintAndSteel && hasWaterBucket) {
+      return assignImmediatePortalGoal("Portail ou lac de lave détecté : exécute immédiatement l'action 'portal' pour construire, allumer et entrer dans le Nether.");
+    }
+  }
+
+  if (!portalOpportunity) {
+    const partialFrame = findPortalFrameCandidate(bot, 48);
+    if (partialFrame && !partialFrame.isComplete) {
+      console.log(
+        `[PORTAL] Début de portail détecté (${partialFrame.presentCount}/10 obsidienne) en (${partialFrame.base.x},${partialFrame.base.y},${partialFrame.base.z}), manque ${partialFrame.missingCount} obsidienne ou de la lave proche.`
+      );
+    }
+    if (hasFlintAndSteel && hasWaterOrObsidian) {
+      const isSafeToFastExplore = (
+        (bot.health ?? 20) >= 14 &&
+        (bot.food ?? 20) >= 12 &&
+        Object.keys(scanNearbyEntities(bot, 10)).length === 0 &&
+        !(state.lastActionResult?.success === false && state.lastActionResult?.action === 'explore')
+      );
+      state.managerDirective = "Aucune source de lave proche : explore activement pour trouver un lac de lave ou un portail en ruine.";
+      state.managerSubGoal = { action: 'explore', target: 'lava', isReliable: isSafeToFastExplore };
+      console.log(`\n[MANAGER 🧠] Directive mise à jour : "${state.managerDirective}" (action suggérée: explore)`);
+      return true;
+    }
+  }
+
+  return false;
+}
+
+/**
  * Run a supervisor reasoning cycle to guide the autonomous player
  * @param {object} bot Mineflayer bot instance
  * @param {object} [deps={}] Optional dependencies (generation, Ollama)
@@ -566,6 +802,8 @@ async function runManagerCycle(bot, deps = {}) {
       ...deps
     });
     if (assigned) return;
+
+    if (tryAssignPortalOrNetherGoal(bot)) return;
 
     const prompt = buildSupervisorPrompt(bot);
     const result = await askOllama(prompt, config.OLLAMA_MODEL_MANAGER, 'manager');
@@ -604,5 +842,7 @@ module.exports = {
   detectActionLoop,
   cleanTargetIdentifier,
   selectProcedureForObjective,
-  sanitizeProcedureDecision
+  sanitizeProcedureDecision,
+  findPortalOpportunity,
+  tryAssignPortalOrNetherGoal
 };

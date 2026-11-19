@@ -19,6 +19,7 @@ module.exports = {
     furnace: null,
     chest: null
   },
+  portalCastOrigin: null,
   lastActionResult: {
     action: 'none',
     target: 'none',

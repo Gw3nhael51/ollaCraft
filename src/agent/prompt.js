@@ -4,16 +4,21 @@ const envUtils = require('../perception/environment');
 const { getMcData, classifyOresByHarvestability } = require('../minecraft/wikiData');
 const { getCurrentAdvancementInfo } = require('../perception/advancements');
 const { resolveGoalPlan } = require('../minecraft/knowledge');
+const { findPortalFrameCandidate } = require('../actions/behaviors/world/portal');
 
 /**
- * Generate stone mining advice based on currently owned tools
+ * Generate stone mining advice based on currently owned tools and current objective
  * @param {object} bot Mineflayer bot instance
+ * @param {string} [objectiveName=''] Current progression objective
  * @returns {string} Textual guidance for stone mining
  */
-function getStoneHint(bot) {
+function getStoneHint(bot, objectiveName = '') {
   if (invUtils.hasToolType(bot, '_pickaxe')) {
     const pickaxeCount = invUtils.countItem(bot, 'wooden_pickaxe') + invUtils.countItem(bot, 'stone_pickaxe');
     return `TU POSSÈDES DÉJÀ UNE PIOCHE (${pickaxeCount}x). N'en fabrique PAS d'autre. Pour la cobblestone, utilise directement "mine" sur 'stone'.`;
+  }
+  if (objectiveName === 'nether_portal') {
+    return "Pour 'nether_portal', ne perds pas de temps à fabriquer une pioche : explore ('explore' cible 'lava') pour trouver un lac de lave puis utilise 'portal'.";
   }
   return "Tu n'as AUCUNE pioche. Casser de la pierre sans pioche ne donne rien : fabrique d'abord une 'wooden_pickaxe'.";
 }
@@ -73,6 +78,9 @@ function getWikiKnowledgeSummary(bot, targetName) {
   }
   if (targetName === 'lava_bucket') {
     return "Fiche Wiki : 'lava_bucket' s'obtient en remplissant un 'bucket' vide sur une source de lave ('lava') via l'action 'portal' ou 'mine' (cible 'lava').";
+  }
+  if (targetName === 'nether_portal') {
+    return "Fiche Wiki : 'nether_portal' se construit, s'allume et se traverse automatiquement via l'action 'portal' (target 'none') avec 'water_bucket' et 'flint_and_steel' près d'un lac de lave ('lava'), d'un portail actif ('nether_portal'), ou avec 10 'obsidian'. Ne mine PAS l'obsidienne sans pioche en diamant. Si aucune lave n'est visible, utilise 'explore'.";
   }
 
   const mcData = getMcData(bot);
@@ -159,6 +167,7 @@ function filterRadarEnvironment(bot, environment) {
   const mcData = getMcData(bot);
   return Object.fromEntries(
     Object.entries(environment).filter(([name]) => {
+      if (name === 'nether_portal') return true;
       if (name.endsWith('_leaves')) return false;
       const block = mcData.blocksByName[name];
       if (!block) return false;
@@ -200,6 +209,12 @@ function buildReactPrompt(bot, state, environment, craftingTable) {
   const { harvestable, unharvestable } = classifyOresByHarvestability(bot, exposedOres);
   const harvestableKeys = Object.keys(harvestable);
   const orePromptText = formatOrePromptText(harvestable, unharvestable);
+  const detectedFrame = state.currentObjective === 'nether_portal' ? findPortalFrameCandidate(bot, 32) : null;
+  const portalFrameHint = detectedFrame
+    ? (detectedFrame.isComplete
+      ? `\n    - PORTAIL COMPLET ÉTEINT DÉTECTÉ en (${detectedFrame.base.x}, ${detectedFrame.base.y}, ${detectedFrame.base.z}, axe ${detectedFrame.axis}) : utilise 'portal' avec un briquet pour l'allumer !`
+      : `\n    - DÉBUT DE PORTAIL DÉTECTÉ (${detectedFrame.presentCount}/10 obsidienne) en (${detectedFrame.base.x}, ${detectedFrame.base.y}, ${detectedFrame.base.z}, axe ${detectedFrame.axis}) : complète-le avec de l'obsidienne ou de la lave via 'portal'.`)
+    : '';
 
   return `
     Tu es ${bot.username || 'Herobrine'}, un agent IA autonome dans Minecraft. Tu dois raisonner et t'adapter par toi-même.
@@ -217,6 +232,7 @@ function buildReactPrompt(bot, state, environment, craftingTable) {
     - RÈGLE FONDAMENTALE : Si tu as le moindre doute sur une recette, un outil ou la façon d'obtenir une ressource, N'INVENTE RIEN : utilise immédiatement l'action "wiki" (ex: {"action": "wiki", "target": "${state.currentObjective}"}). Le WikiCraft est ta source de vérité.
 
     ÉTAT PHYSIQUE :
+    - Dimension actuelle : ${bot.game?.dimension || 'overworld'}
     - Coordonnées actuelles : X:${Math.round(bot.entity.position.x)}, Y:${Math.round(bot.entity.position.y)}, Z:${Math.round(bot.entity.position.z)}
     - Santé : ${Math.round(bot.health)}/20 | Faim : ${Math.round(bot.food)}/20
     - Situation terrain : ${terrainStatus}
@@ -226,7 +242,7 @@ function buildReactPrompt(bot, state, environment, craftingTable) {
     ${baseInfo}
 
     ENVIRONNEMENT VISIBLE (RADAR) :
-    - Biome actuel : ${currentBiome}
+    - Biome actuel : ${currentBiome}${portalFrameHint}
     - Minerais visibles dans la caverne/parois : ${orePromptText}
     - Blocs : ${envText}
     - Entités/Créatures proches : ${entitiesText}
@@ -244,13 +260,19 @@ function buildReactPrompt(bot, state, environment, craftingTable) {
       * Une fois la 'crafting_table' fabriquée, n'oublie pas de la poser au sol avec l'action "place" pour débloquer les crafts 3x3.
     - RÈGLE SUR LA PIERRE :
       * La 'cobblestone' NE SE CRAFTE JAMAIS. Elle s'obtient en minant 'stone' avec l'action "mine".
-      * ${getStoneHint(bot)}
+      * ${getStoneHint(bot, state.currentObjective)}
     - RÈGLE SUR LE FER :
       * Pour avoir 'raw_iron', mine 'iron_ore' avec au moins une 'stone_pickaxe'.
       * Pour avoir 'iron_ingot', utilise "smelt" sur 'raw_iron' dans un four ('furnace').
       * Si aucun four n'est posé, fabrique-le ("craft" avec 'furnace') à l'établi avec 8 cobblestone, pose-le au sol ("place" avec 'furnace'), puis utilise "smelt" sur 'raw_iron' (avec du bois ou du charbon comme combustible).
     - RÈGLE SUR LE STOCKAGE :
-      * Si ton inventaire est trop encombré (beaucoup de terre, diorite, granit, blocs en surplus), fabrique un coffre ('craft' cible 'chest'), pose-le ('place' cible 'chest') et utilise l'action "chest" pour déposer et trier tes surplus.
+      * ${state.currentObjective === 'nether_portal' ? "Pour 'nether_portal', NE fabrique PAS de coffre et n'utilise PAS 'chest' : les surplus encombrants sont gérés automatiquement. Concentre-toi sur 'explore' (cible 'lava') puis 'portal'." : "Si ton inventaire est trop encombré (beaucoup de terre, diorite, granit, blocs en surplus), fabrique un coffre ('craft' cible 'chest'), pose-le ('place' cible 'chest') et utilise l'action \"chest\" pour déposer et trier tes surplus."}
+    - RÈGLE SUR LE PORTAIL DU NETHER :
+      * Si 'nether_portal' ou 'lava' est visible dans le radar (ou si tu portes >= 10 'obsidian') et que tu as 'flint_and_steel' avec 'water_bucket' ou 'obsidian', appelle IMMEDIATEMENT {"action": "portal", "target": "none"}.
+      * N'essaie JAMAIS de crafter de l'obsidienne, ni de poser de la cobblestone pour faire un portail, ni de miner de l'obsidienne sans 'diamond_pickaxe'.
+      * Si aucune source de lave n'est visible dans le radar, utilise "explore" (cible "lava") pour trouver un lac de lave.
+    - RÈGLE DANS LE NETHER :
+      * Une fois dans la dimension 'the_nether', mine les blocs visibles comme 'nether_quartz_ore' ou 'netherrack' avec "mine" pour récupérer des blocs, puis explore pour trouver une forteresse du Nether et combattre des blazes.
 
     STRATÉGIE DE SURVIE ET DÉCISION :
     - Si tu es coincé ("bloqué dans un trou", "terrain impraticable"), utilise ABSOLUMENT l'action "unstuck".
