@@ -1,5 +1,6 @@
 const { goals } = require('mineflayer-pathfinder');
 const { markBadBlock, isBadBlock } = require('../../../perception/environment');
+const { freeInventorySlotIfFull } = require('./storage');
 
 /**
  * Locate an accessible furnace block nearby or from base memory
@@ -152,6 +153,7 @@ async function skillSmelt(bot, state, targetName, qty) {
       await Promise.race([gotoPromise, timeoutPromise]);
     }
 
+    await freeInventorySlotIfFull(bot, 1);
     furnace = await bot.openFurnace(furnaceBlock);
 
     const { inputCount, fuelCount, timeoutMs } = computeSmeltPlan(qty, targetItem.count, fuelItem);

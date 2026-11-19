@@ -16,6 +16,30 @@ const ESSENTIAL_ITEMS = new Set([
 // Retain limited terrain and utility blocks for bridging and flint harvesting
 const BULK_MATERIALS = new Set(['dirt', 'cobblestone', 'granite', 'diorite', 'andesite', 'cobbled_deepslate', 'gravel', 'sand']);
 
+const FLOWER_KEYWORDS = [
+  'tulip', 'dandelion', 'poppy', 'daisy', 'lily_of_the_valley',
+  'allium', 'orchid', 'bluet', 'cornflower', 'sunflower', 'lilac', 'peony', 'rose_bush'
+];
+
+const DISPOSABLE_EXACT = new Set([
+  'rotten_flesh', 'spider_eye', 'gunpowder', 'string', 'raw_copper',
+  'copper_ingot', 'bone', 'arrow', 'feather', 'egg', 'snowball'
+]);
+
+/**
+ * Determine whether an inventory item is non-essential clutter safe to store or discard
+ * @param {object} item Mineflayer inventory item
+ * @returns {boolean} True if the item is disposable clutter
+ */
+function isDisposableItem(item) {
+  if (!item?.name || ESSENTIAL_ITEMS.has(item.name)) return false;
+  if (DISPOSABLE_EXACT.has(item.name)) return true;
+  if (item.name.includes('sapling') || item.name.includes('seeds') || item.name.endsWith('_wool')) {
+    return true;
+  }
+  return FLOWER_KEYWORDS.some(keyword => item.name.includes(keyword));
+}
+
 /**
  * Determine whether an inventory item should be deposited into storage
  * @param {object} item Mineflayer inventory item
@@ -24,22 +48,11 @@ const BULK_MATERIALS = new Set(['dirt', 'cobblestone', 'granite', 'diorite', 'an
 function isItemToStore(item) {
   if (ESSENTIAL_ITEMS.has(item.name)) return false;
 
-  // Retain limited terrain blocks for bridging
   if (BULK_MATERIALS.has(item.name)) {
-    return item.count > 32; // Retain at most 32 blocks for bridging
+    return item.count > 32;
   }
 
-  // Store surplus saplings, seeds, bones, and arrows
-  if (item.name.includes('sapling') || item.name.includes('seeds') || item.name === 'bone' || item.name === 'arrow') {
-    return true;
-  }
-
-  // Store bulky mob drops and secondary ores
-  if (['rotten_flesh', 'spider_eye', 'gunpowder', 'string', 'raw_copper', 'copper_ingot'].includes(item.name)) {
-    return true;
-  }
-
-  return false;
+  return isDisposableItem(item);
 }
 
 /**
@@ -180,4 +193,78 @@ function isInventoryCluttered(bot) {
   return items.length >= 24 || bulkCount >= 256;
 }
 
-module.exports = { skillChest, isItemToStore, isInventoryCluttered };
+/**
+ * Select non-essential and surplus bulk stacks eligible to be tossed when freeing inventory space
+ * @param {Array<object>} items Current inventory item stacks
+ * @returns {Array<object>} Ordered list of item stacks safe to toss
+ */
+function selectStacksToToss(items) {
+  const disposable = items.filter(item => isDisposableItem(item));
+  const bulkStacksByName = new Map();
+
+  for (const item of items) {
+    if (!item?.name || !BULK_MATERIALS.has(item.name)) continue;
+    if (!bulkStacksByName.has(item.name)) {
+      bulkStacksByName.set(item.name, []);
+    }
+    bulkStacksByName.get(item.name).push(item);
+  }
+
+  const surplusBulk = [];
+  for (const stacks of bulkStacksByName.values()) {
+    let remainingTotal = stacks.reduce((sum, stack) => sum + (stack.count || 0), 0);
+    const sorted = [...stacks].sort((a, b) => (a.count || 0) - (b.count || 0));
+    for (const stack of sorted) {
+      const stackCount = stack.count || 0;
+      if (remainingTotal - stackCount >= 32) {
+        surplusBulk.push(stack);
+        remainingTotal -= stackCount;
+      }
+    }
+  }
+
+  return [...disposable, ...surplusBulk];
+}
+
+/**
+ * Recursively toss selected item stacks until the required number of inventory slots is free
+ * @param {object} bot Mineflayer bot instance
+ * @param {Array<object>} stacks Ordered stacks eligible to toss
+ * @param {number} index Current index in the stacks array
+ * @param {number} requiredFreeSlots Minimum number of free inventory slots required
+ * @returns {Promise<void>}
+ */
+async function tossStacksUntilSpace(bot, stacks, index, requiredFreeSlots) {
+  if (bot.inventory.emptySlotCount() >= requiredFreeSlots || index >= stacks.length) {
+    return;
+  }
+
+  const stack = stacks[index];
+  if (stack?.type !== undefined && stack.count > 0) {
+    await bot.toss(stack.type, stack.metadata ?? null, stack.count).catch(() => {});
+  }
+
+  return tossStacksUntilSpace(bot, stacks, index + 1, requiredFreeSlots);
+}
+
+/**
+ * Free inventory slots by tossing disposable clutter and surplus bulk blocks when inventory is full
+ * @param {object} bot Mineflayer bot instance
+ * @param {number} [requiredFreeSlots=1] Minimum number of free inventory slots required
+ * @returns {Promise<boolean>} True if the required number of free slots is available
+ */
+async function freeInventorySlotIfFull(bot, requiredFreeSlots = 1) {
+  if (typeof bot.inventory?.emptySlotCount !== 'function' || typeof bot.toss !== 'function') {
+    return false;
+  }
+
+  if (bot.inventory.emptySlotCount() >= requiredFreeSlots) {
+    return true;
+  }
+
+  const stacksToToss = selectStacksToToss(bot.inventory.items() || []);
+  await tossStacksUntilSpace(bot, stacksToToss, 0, requiredFreeSlots);
+  return bot.inventory.emptySlotCount() >= requiredFreeSlots;
+}
+
+module.exports = { skillChest, isItemToStore, isInventoryCluttered, isDisposableItem, freeInventorySlotIfFull };

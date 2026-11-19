@@ -14,6 +14,10 @@ const TRIVIAL_OBJECTIVES = new Set([
   'air'
 ]);
 
+const NATIVE_SKILL_OBJECTIVES = new Set([
+  'nether_portal'
+]);
+
 /**
  * Assess whether an objective is complex enough to require a multi-step autonomous procedure
  * @param {string} objective Target objective identifier or description
@@ -232,6 +236,18 @@ function evaluateObjectiveCoverage(memory, objective, tracker, options = {}) {
 
   const cleanObjective = objective.toLowerCase().trim();
 
+  if (NATIVE_SKILL_OBJECTIVES.has(cleanObjective)) {
+    return {
+      objective: cleanObjective,
+      status: 'trivial_objective',
+      procedure: null,
+      isReliable: false,
+      canGenerate: false,
+      reason: `Objective '${cleanObjective}' is handled natively and excluded from procedural generation`,
+      record: tracker?.getRecord(cleanObjective) || null
+    };
+  }
+
   if (memory && typeof memory.getAll === 'function') {
     const all = memory.getAll();
     const matching = all.filter(proc => {
@@ -334,6 +350,7 @@ module.exports = {
   DEFAULT_MAX_GENERATION_ATTEMPTS,
   DEFAULT_GENERATION_COOLDOWN_MS,
   TRIVIAL_OBJECTIVES,
+  NATIVE_SKILL_OBJECTIVES,
   isComplexObjective,
   ObjectiveGenerationTracker,
   evaluateObjectiveCoverage

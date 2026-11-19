@@ -2,6 +2,7 @@ const { goals } = require('mineflayer-pathfinder');
 const config = require('../../../infrastructure/config');
 const { countItem, isWoodLog, isPlanks, resolvePlankTarget, findNearbyCraftingTable } = require('../../../perception/inventory');
 const { autoEquipArmorAndShield } = require('./equip');
+const { freeInventorySlotIfFull } = require('./storage');
 
 const AUTO_EQUIP_SUFFIXES = ['_helmet', '_chestplate', '_leggings', '_boots', 'shield'];
 const SINGLE_CRAFT_ITEMS = new Set(['crafting_table', 'furnace', 'chest']);
@@ -311,6 +312,7 @@ async function skillCraft(bot, state, targetName, qty = 1) {
 
   const craftCount = computeCraftOperations(bot, recipes[0], normalizedTarget, qty);
   const countBefore = countItem(bot, normalizedTarget);
+  await freeInventorySlotIfFull(bot, 1);
   const craftExec = await performCraftWithTimeout(bot, recipes[0], station.tableToUse, normalizedTarget, craftCount);
   if (!craftExec.success) return craftExec;
 

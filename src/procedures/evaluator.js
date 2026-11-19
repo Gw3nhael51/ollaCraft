@@ -1226,6 +1226,10 @@ async function evaluateObjective(bot, rawObjective, options = {}) {
   const baselineCount = typeof options.initialCount === 'number' ? options.initialCount : 0;
   const partiallyAchieved = !achieved && actualCount > baselineCount && actualCount > 0;
 
+  const failureMessage = target === 'nether_portal'
+    ? `Objective 'nether_portal' requires the bot to be in 'the_nether' dimension (current: '${bot?.game?.dimension || 'unknown'}')`
+    : `Objective '${target}' requires at least ${count} in inventory, but observed ${actualCount}`;
+
   return {
     achieved,
     partiallyAchieved,
@@ -1234,9 +1238,7 @@ async function evaluateObjective(bot, rawObjective, options = {}) {
     descriptor,
     actual: actualCount,
     expected: count,
-    message: achieved
-      ? null
-      : `Objective '${target}' requires at least ${count} in inventory, but observed ${actualCount}`
+    message: achieved ? null : failureMessage
   };
 }
 

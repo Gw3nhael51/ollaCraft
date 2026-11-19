@@ -496,3 +496,47 @@ test('Evaluator: Integration scenarios (achieved, partially_achieved, not_achiev
   assert.equal(inconclusiveRes.data.unknownConditions.length, 2);
   assert.equal(inconclusiveRes.data.confidence, 0);
 });
+
+test('Evaluator: Nether portal objective failure message references the_nether dimension', async () => {
+  const overworldBot = createMockBot({
+    items: [{ name: 'flint_and_steel', count: 1 }]
+  });
+  overworldBot.game = { dimension: 'overworld' };
+
+  const portalProcedure = {
+    id: 'test_portal_eval',
+    version: 1,
+    name: 'Enter Nether',
+    status: 'experimental',
+    steps: [
+      { id: 'build', action: 'build_portal', parameters: {} }
+    ],
+    metadata: { tags: ['nether_portal'] }
+  };
+
+  const failTrace = {
+    procedureId: 'test_portal_eval',
+    status: 'failed',
+    success: false,
+    steps: [
+      {
+        stepId: 'build',
+        action: 'build_portal',
+        parameters: {},
+        status: 'failed',
+        success: false,
+        reason: 'no_lava_nearby'
+      }
+    ]
+  };
+
+  const res = await evaluateProcedureExecution(overworldBot, portalProcedure, failTrace, {
+    objective: 'nether_portal'
+  });
+
+  assert.equal(res.data.objectiveAchieved, false);
+  const failedObjective = res.data.failedConditions.find(c => c.source === 'objective');
+  assert.ok(failedObjective);
+  assert.ok(failedObjective.message.includes('the_nether'));
+  assert.equal(failedObjective.message.includes('in inventory'), false);
+});

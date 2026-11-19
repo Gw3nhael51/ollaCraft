@@ -73,6 +73,43 @@ test('Storage retains key progression materials and limits bulk blocks to 32', (
   assert.equal(storage.isItemToStore({ name: 'gravel', count: 40 }), true);
 });
 
+test('Storage frees full inventory slots by tossing flowers and surplus bulk while keeping essentials', async () => {
+  const stacks = [
+    { name: 'flint_and_steel', type: 1, metadata: null, count: 1 },
+    { name: 'water_bucket', type: 2, metadata: null, count: 1 },
+    { name: 'raw_iron', type: 3, metadata: null, count: 5 },
+    { name: 'orange_tulip', type: 4, metadata: null, count: 2 },
+    { name: 'cobblestone', type: 5, metadata: null, count: 64 },
+    { name: 'cobblestone', type: 5, metadata: null, count: 40 }
+  ];
+  let freeSlots = 0;
+  const tossed = [];
+
+  const bot = {
+    inventory: {
+      items: () => stacks,
+      emptySlotCount: () => freeSlots
+    },
+    toss: async (type, _meta, count) => {
+      const idx = stacks.findIndex(s => s.type === type && s.count === count);
+      if (idx !== -1) {
+        tossed.push(stacks[idx].name);
+        stacks.splice(idx, 1);
+        freeSlots += 1;
+      }
+    }
+  };
+
+  const freed = await storage.freeInventorySlotIfFull(bot, 2);
+  assert.equal(freed, true);
+  assert.deepEqual(tossed, ['orange_tulip', 'cobblestone']);
+  assert.ok(stacks.some(s => s.name === 'flint_and_steel'));
+  assert.ok(stacks.some(s => s.name === 'water_bucket'));
+  assert.ok(stacks.some(s => s.name === 'raw_iron'));
+  const remainingCobble = stacks.filter(s => s.name === 'cobblestone').reduce((sum, s) => sum + s.count, 0);
+  assert.equal(remainingCobble, 64);
+});
+
 test('Progression resumes at current stage when keeping advanced gear', () => {
   const botMidGame = createMockBot([
     { name: 'iron_pickaxe', count: 1 },

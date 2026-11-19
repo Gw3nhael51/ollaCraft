@@ -151,3 +151,19 @@ test('Coverage: Omits generation for trivial micro-objectives and exhausted retr
   assert.equal(exhaustedCoverage.status, 'attempts_exhausted');
   assert.equal(exhaustedCoverage.canGenerate, false);
 });
+
+test('Coverage: Excludes native skill objectives like nether_portal from procedural reuse and generation', () => {
+  const memory = new ProcedureMemory();
+  const tracker = new ObjectiveGenerationTracker({ maxAttempts: 3, cooldownMs: 0 });
+  const portalProc = createProcedureTemplate('proc_nether_portal_05_exp_6', 'Build Nether Portal', [
+    { id: 'step_1', action: 'craft_recipe', parameters: { recipe: 'obsidian' } }
+  ]);
+  portalProc.status = 'experimental';
+  portalProc.metadata.tags = ['nether_portal'];
+  memory.register(portalProc);
+
+  const coverage = evaluateObjectiveCoverage(memory, 'nether_portal', tracker);
+  assert.equal(coverage.status, 'trivial_objective');
+  assert.equal(coverage.canGenerate, false);
+  assert.equal(coverage.procedure, null);
+});
