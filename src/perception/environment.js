@@ -106,6 +106,59 @@ function clearFloodedZones() {
   floodedZones.length = 0;
 }
 
+const KNOWN_LAVA_LIMIT = 64;
+const knownLavaRegistry = new Map();
+
+/**
+ * Remember a lava source block position for later Nether portal casting
+ * @param {object} pos Lava source coordinates
+ * @param {string} [dimension='overworld'] Dimension where the lava was seen
+ */
+function rememberLava(pos, dimension = 'overworld') {
+  if (!pos) return;
+  const x = Math.floor(pos.x);
+  const y = Math.floor(pos.y);
+  const z = Math.floor(pos.z);
+  const key = `${dimension}:${x},${y},${z}`;
+  knownLavaRegistry.delete(key);
+  knownLavaRegistry.set(key, { position: new Vec3(x, y, z), dimension, seenAt: Date.now() });
+  if (knownLavaRegistry.size > KNOWN_LAVA_LIMIT) {
+    knownLavaRegistry.delete(knownLavaRegistry.keys().next().value);
+  }
+}
+
+/**
+ * List remembered lava sources sorted by distance, skipping blacklisted ones
+ * @param {object|null} fromPos Reference position for distance sorting
+ * @param {string} [dimension='overworld'] Dimension filter
+ * @returns {Array<{ position: Vec3, dimension: string, seenAt: number }>} Sorted remembered lava entries
+ */
+function getKnownLava(fromPos, dimension = 'overworld') {
+  const entries = [...knownLavaRegistry.values()]
+    .filter(entry => entry.dimension === dimension && !isBadBlock(entry.position));
+  if (!fromPos) return entries;
+  return entries.sort((a, b) => a.position.distanceTo(fromPos) - b.position.distanceTo(fromPos));
+}
+
+/**
+ * Forget remembered lava sources around a position (ex: unusable pool)
+ * @param {object} centerPos Center coordinates
+ * @param {number} [radius=8] Forget radius in blocks
+ */
+function forgetLava(centerPos, radius = 8) {
+  if (!centerPos) return;
+  for (const [key, entry] of knownLavaRegistry) {
+    if (entry.position.distanceTo(centerPos) <= radius) knownLavaRegistry.delete(key);
+  }
+}
+
+/**
+ * Clear every remembered lava source
+ */
+function clearKnownLava() {
+  knownLavaRegistry.clear();
+}
+
 /**
  * Record a single scanned block and check whether it is an exposed ore within oreRadius
  * @param {object} bot Mineflayer bot instance
@@ -120,6 +173,9 @@ function recordScannedBlock(bot, blocks, exposedOres, targetPos, withinOreRadius
   if (isBadBlock(targetPos)) return;
 
   blocks[block.name] = (blocks[block.name] || 0) + 1;
+  if (block.name === 'lava' && (!block.metadata || block.metadata === 0)) {
+    rememberLava(targetPos, bot.game?.dimension || 'overworld');
+  }
   if (!withinOreRadius || !isOreBlock(block.name)) return;
 
   const blockWithPos = block.position ? block : { ...block, position: targetPos.clone() };
@@ -376,5 +432,9 @@ module.exports = {
   isBelowSurface,
   estimateSurfaceY,
   SURFACE_MIN_Y,
+  rememberLava,
+  getKnownLava,
+  forgetLava,
+  clearKnownLava,
   VALUABLE_ORES
 };

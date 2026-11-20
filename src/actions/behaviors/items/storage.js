@@ -7,7 +7,8 @@ const ESSENTIAL_ITEMS = new Set([
   'iron_sword', 'diamond_sword', 'netherite_sword', 'shield',
   'iron_helmet', 'iron_chestplate', 'iron_leggings', 'iron_boots',
   'diamond_helmet', 'diamond_chestplate', 'diamond_leggings', 'diamond_boots',
-  'torch', 'bucket', 'water_bucket', 'flint_and_steel',
+  'torch', 'bucket', 'water_bucket', 'lava_bucket', 'flint_and_steel',
+  'crafting_table', 'furnace',
   'cooked_beef', 'cooked_porkchop', 'cooked_mutton', 'cooked_chicken', 'bread', 'apple',
   'diamond', 'raw_iron', 'iron_ingot', 'raw_gold', 'gold_ingot', 'lapis_lazuli',
   'flint', 'blaze_rod', 'blaze_powder', 'ender_pearl', 'ender_eye', 'obsidian',
@@ -29,7 +30,7 @@ const BULK_MATERIALS = new Set(['dirt', 'cobblestone', 'granite', 'diorite', 'an
 
 const FLOWER_KEYWORDS = [
   'tulip', 'dandelion', 'poppy', 'daisy', 'lily_of_the_valley',
-  'allium', 'orchid', 'bluet', 'cornflower', 'sunflower', 'lilac', 'peony', 'rose_bush'
+  'allium', 'orchid', 'bluet', 'cornflower', 'sunflower', 'lilac', 'peony', 'rose_bush', 'pink_petals'
 ];
 
 const DISPOSABLE_EXACT = new Set([
@@ -196,7 +197,10 @@ function isInventoryCluttered(bot) {
   const hasStorableItems = items.some(item => isItemToStore(item));
   if (!hasStorableItems) return false;
 
-  // Trigger storage if occupied main inventory slots exceed threshold or bulk count is high
+  if (typeof bot.inventory?.emptySlotCount === 'function') {
+    return bot.inventory.emptySlotCount() <= 4;
+  }
+
   const bulkCount = items
     .filter(item => BULK_MATERIALS.has(item.name))
     .reduce((sum, item) => sum + item.count, 0);

@@ -96,7 +96,7 @@ function getBlockNamesForTarget(bot, targetItemName) {
     result = ['lapis_ore', 'deepslate_lapis_ore'];
   } else {
     const matchingBlocks = mcData.blocksArray.filter(b => {
-      if (b.name === targetItemName) return true;
+      if (b.name === targetItemName || b.name === `deepslate_${targetItemName}`) return true;
       return Boolean(b.drops?.some(id => mcData.items[id]?.name === targetItemName));
     }).map(b => b.name);
     result = matchingBlocks.length > 0 ? matchingBlocks : [targetItemName];

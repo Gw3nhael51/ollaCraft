@@ -70,15 +70,28 @@ function describeMissingComponents(bot, targetName) {
  * @returns {Promise<{ success: boolean, message?: string }>} Movement result towards the crafting table
  */
 async function approachCraftingTable(bot, tableToUse) {
+  let navTimer = null;
+  let gotoPromise = null;
   try {
     if (bot.entity.position.distanceTo(tableToUse.position) > 3) {
       console.log(`[CRAFT] Moving to crafting table at (${tableToUse.position.x}, ${tableToUse.position.y}, ${tableToUse.position.z})...`);
       const { GoalNear } = goals;
-      await bot.pathfinder.goto(new GoalNear(tableToUse.position.x, tableToUse.position.y, tableToUse.position.z, 2));
+      gotoPromise = bot.pathfinder.goto(new GoalNear(tableToUse.position.x, tableToUse.position.y, tableToUse.position.z, 2));
+      const timeoutPromise = new Promise((_, reject) => {
+        navTimer = setTimeout(() => reject(new Error('Approach crafting table timed out after 15s')), 15000);
+      });
+      await Promise.race([gotoPromise, timeoutPromise]);
     }
     await bot.lookAt(tableToUse.position.offset(0.5, 0.5, 0.5));
   } catch (e) {
     console.warn("Approaching crafting table :", e.message);
+  } finally {
+    if (navTimer) clearTimeout(navTimer);
+    if (gotoPromise) {
+      gotoPromise.catch(() => {});
+      bot.pathfinder?.setGoal?.(null);
+      bot.clearControlStates?.();
+    }
   }
 
   const dist = bot.entity.position.distanceTo(tableToUse.position);

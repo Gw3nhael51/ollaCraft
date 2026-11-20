@@ -131,7 +131,7 @@ async function approachAndBreakBlock(bot, targetBlock, state, actionId) {
 
   console.log(`[MINE] Digging ${targetBlock.name}...`);
   const digPromise = bot.dig(blockToBreak);
-  const digTimeout = new Promise((_, reject) => setTimeout(() => reject(new Error("Digging timeout")), 10000));
+  const digTimeout = new Promise((_, reject) => setTimeout(() => reject(new Error("Digging timeout")), 16000));
   await Promise.race([digPromise, digTimeout]);
   console.log(`[MINE] Block broken, collecting loot...`);
 
