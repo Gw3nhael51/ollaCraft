@@ -14,11 +14,12 @@ const { dispatchSkill } = require('../src/skills/dispatcher');
 const { computeCraftOperations } = require('../src/skills/craft');
 const { computeSmeltPlan } = require('../src/skills/smelt');
 const { skillHunt, isPositionSafeForLoot } = require('../src/skills/combat');
-const { buildObsidianFrame, findCastOriginNearLava, castPortalWithMold, markLavaClusterBad, findBestLavaPool, findPortalFrameCandidate, orientOffset, countScaffoldBlocks, PORTAL_BUILD_STEPS } = require('../src/skills/portal');
-const { scanEnvironment } = require('../src/utils/environment');
+const { buildObsidianFrame, findCastOriginNearLava, castPortalWithMold, markLavaClusterBad, findBestLavaPool, findPortalFrameCandidate, orientOffset, countScaffoldBlocks, pourBucketAtFace, emptyLavaBucketSafely, executeFallbackPortalTeleport, PORTAL_BUILD_STEPS } = require('../src/skills/portal');
+const { scanEnvironment, clearBadBlocks } = require('../src/utils/environment');
+const { skillPlace } = require('../src/skills/place');
 const { getBlockNamesForTarget, getOreBlockNames } = require('../src/utils/wikiData');
 const { buildReactPrompt, filterRadarEnvironment } = require('../src/ai/prompt');
-const { isDiggableObstacle, skillUnstuck, moveExploreStep, hasSolidCeilingAbove, headingToMineflayerYaw, isBoxStuck } = require('../src/skills/navigate');
+const { isDiggableObstacle, skillUnstuck, moveExploreStep, hasSolidCeilingAbove, headingToMineflayerYaw, isBoxStuck, skillExplore } = require('../src/skills/navigate');
 const { getFormatSchema, PLAYER_JSON_SCHEMA, MANAGER_JSON_SCHEMA } = require('../src/ai/ollama');
 const { breakBlockAt } = require('../src/actions/primitives/blocks');
 
@@ -1101,5 +1102,383 @@ test('Portal frame detector handles X/Z complete and partial frames without igno
     state.lastActionResult = prevState.lastActionResult;
     state.managerDirective = prevState.managerDirective;
     state.managerSubGoal = prevState.managerSubGoal;
+  }
+});
+
+test('skillPlace rejects furnace surface/hitbox overlap, blacklists failed spot, and falls back to valid ground', async () => {
+  const { Vec3 } = require('vec3');
+  clearBadBlocks();
+
+  const furnaceSurface = { name: 'furnace', boundingBox: 'block', position: new Vec3(2, 99, 0) };
+  const hitboxOverlap = { name: 'stone', boundingBox: 'block', position: new Vec3(1, 99, 0) };
+  const failingGround = { name: 'stone', boundingBox: 'block', position: new Vec3(3, 99, 0) };
+  const validGround = { name: 'dirt', boundingBox: 'block', position: new Vec3(-1, 99, 2) };
+  const candidates = [furnaceSurface, hitboxOverlap, failingGround, validGround];
+
+  const rejectedAt = [];
+  const placedAt = [];
+  const state = { base: {} };
+
+  const bot = {
+    entity: { position: new Vec3(0.8, 100, 0.5) },
+    inventory: { items: () => [{ name: 'furnace', count: 1 }] },
+    findBlock: ({ matching }) => candidates.find(block => matching(block)) || null,
+    blockAt: (pos) => ({ name: 'air', position: pos }),
+    equip: async () => {},
+    lookAt: async () => {},
+    waitForTicks: async () => {},
+    placeBlock: async (refBlock) => {
+      const key = `${refBlock.position.x},${refBlock.position.y},${refBlock.position.z}`;
+      if (key === '3,99,0') {
+        rejectedAt.push(key);
+        throw new Error('Server refused to place furnace at (3, 100, 0): the block is still air');
+      }
+      placedAt.push(key);
+    }
+  };
+
+  try {
+    const result = await skillPlace(bot, state, 'furnace');
+    assert.equal(result.success, true);
+    assert.deepEqual(rejectedAt, ['3,99,0']);
+    assert.deepEqual(placedAt, ['-1,99,2']);
+    assert.equal(state.base.furnace.x, -1);
+    assert.equal(state.base.furnace.y, 100);
+    assert.equal(state.base.furnace.z, 2);
+  } finally {
+    clearBadBlocks();
+  }
+});
+
+test('pourBucketAtFace returns false when bucket empties without target liquid and true when target forms water', async () => {
+  const { Vec3 } = require('vec3');
+  const targetPos = new Vec3(0, 68, -1);
+  const refPos = new Vec3(0, 67, -1);
+  const faceVec = new Vec3(0, 1, 0);
+  const standPos = new Vec3(0, 64, 2);
+  const waterExpected = new Set(['water', 'flowing_water']);
+
+  let inv = [{ name: 'water_bucket', count: 1 }];
+  let targetBlockName = 'air';
+  let activateCalls = 0;
+
+  const botSpill = {
+    entity: { position: new Vec3(0.5, 64, 2.5) },
+    inventory: { items: () => inv },
+    blockAt: (pos) => (pos.equals(targetPos) ? { name: targetBlockName, position: pos } : { name: 'cobblestone', position: pos }),
+    pathfinder: { setGoal: () => {}, goto: async () => {} },
+    clearControlStates: () => {},
+    equip: async () => {},
+    lookAt: async () => {},
+    waitForTicks: async () => {},
+    activateItem: async () => {
+      activateCalls += 1;
+      inv = [{ name: 'bucket', count: 1 }];
+    }
+  };
+
+  const spillResult = await pourBucketAtFace(botSpill, 'water_bucket', targetPos, refPos, faceVec, standPos, waterExpected);
+  assert.equal(spillResult, false);
+  assert.equal(activateCalls, 1);
+
+  inv = [{ name: 'water_bucket', count: 1 }];
+  targetBlockName = 'air';
+  activateCalls = 0;
+
+  const botRetrySuccess = {
+    ...botSpill,
+    activateItem: async () => {
+      activateCalls += 1;
+      if (activateCalls === 2) {
+        inv = [{ name: 'bucket', count: 1 }];
+        targetBlockName = 'water';
+      }
+    }
+  };
+
+  const retryResult = await pourBucketAtFace(botRetrySuccess, 'water_bucket', targetPos, refPos, faceVec, standPos, waterExpected);
+  assert.equal(retryResult, true);
+  assert.equal(activateCalls, 2);
+});
+
+test('Lava memory records scanned sources, sorts by distance, and forgets blacklisted pools', () => {
+  const { Vec3 } = require('vec3');
+  const env = require('../src/utils/environment');
+  env.clearKnownLava();
+  env.clearBadBlocks();
+  try {
+    const lavaId = 10;
+    const bot = {
+      game: { dimension: 'overworld' },
+      entity: { position: new Vec3(0, 64, 0) },
+      registry: { blocksByName: { lava: { id: lavaId } } },
+      blockAt: (pos) => {
+        if (pos.x === 3 && pos.y === 62 && pos.z === 3) return { name: 'lava', type: lavaId, metadata: 0, position: pos };
+        if (pos.x === -2 && pos.y === 60 && pos.z === 0) return { name: 'lava', type: lavaId, metadata: 3, position: pos };
+        return { name: 'stone', position: pos };
+      }
+    };
+    env.scanEnvironment(bot, 4, 4);
+    env.rememberLava(new Vec3(100, 20, 100));
+    const known = env.getKnownLava(new Vec3(0, 64, 0));
+    assert.equal(known.length, 2);
+    assert.deepEqual([known[0].position.x, known[0].position.y, known[0].position.z], [3, 62, 3]);
+    assert.equal(env.getKnownLava(new Vec3(0, 64, 0), 'the_nether').length, 0);
+
+    markLavaClusterBad(bot, new Vec3(3, 62, 3), 2);
+    const afterForget = env.getKnownLava(new Vec3(0, 64, 0));
+    assert.equal(afterForget.length, 1);
+    assert.equal(afterForget[0].position.x, 100);
+  } finally {
+    env.clearKnownLava();
+    env.clearBadBlocks();
+  }
+});
+
+test('Deep descent goal targets lava layer and dispatcher redirects mine lava to explore during nether_portal', async () => {
+  const { Vec3 } = require('vec3');
+  const { createMaxYGoal, descendTowardsLavaDepth } = require('../src/skills/navigate');
+  const goal = createMaxYGoal(-50);
+  assert.equal(goal.isEnd({ y: -50 }), true);
+  assert.equal(goal.isEnd({ y: -49 }), false);
+  assert.equal(goal.heuristic({ y: -30 }), 20);
+
+  let requestedGoal = null;
+  const bot = {
+    entity: { position: new Vec3(0, 70, 0) },
+    pathfinder: {
+      setGoal: () => {},
+      goto: async (g) => {
+        requestedGoal = g;
+        bot.entity.position = new Vec3(0, 50, 0);
+      }
+    },
+    clearControlStates: () => {}
+  };
+  const descended = await descendTowardsLavaDepth(bot, 2000);
+  assert.equal(descended, true);
+  assert.equal(requestedGoal.isEnd({ y: 50 }), true);
+  assert.equal(requestedGoal.isEnd({ y: 51 }), false);
+
+  const prevObjective = state.currentObjective;
+  let mineCalled = false;
+  const navBot = {
+    game: { dimension: 'the_nether' },
+    entity: { position: new Vec3(0, 70, 0), isInWater: false },
+    registry: { blocksByName: {} },
+    inventory: { items: () => [] },
+    blockAt: () => ({ name: 'air' }),
+    findBlock: () => { mineCalled = true; return null; },
+    pathfinder: { setGoal: () => {}, goto: async () => {}, movements: null },
+    clearControlStates: () => {}
+  };
+  try {
+    state.currentObjective = 'nether_portal';
+    const res = await dispatchSkill(navBot, state, 'mine', 'lava_bucket', 1);
+    assert.equal(typeof res.success, 'boolean');
+    assert.ok(!/No 'lava' source block found nearby/.test(res.message));
+    assert.equal(mineCalled, false);
+  } finally {
+    state.currentObjective = prevObjective;
+  }
+});
+
+test('Hybrid Nether portal: lava_bucket recovery, water explore isolation, and diamond fallback supervision', async () => {
+  const { Vec3 } = require('vec3');
+  const env = require('../src/utils/environment');
+  env.clearKnownLava();
+  env.clearBadBlocks();
+
+  let lavaInv = [{ name: 'lava_bucket', count: 1 }];
+  const lavaId = mcData.blocksByName.lava.id;
+  const lavaPourBot = {
+    entity: { position: new Vec3(0, 64, 0) },
+    registry: mcData,
+    inventory: { items: () => lavaInv },
+    blockAt: (pos) => {
+      if (pos.y === 63) return { name: 'stone', position: pos };
+      if (pos.x === 2 && pos.y === 64 && pos.z === 0) return { name: 'lava', type: lavaId, metadata: 0, position: pos };
+      return { name: 'air', position: pos };
+    },
+    findBlock: ({ matching }) => {
+      const candidate = { name: 'lava', type: lavaId, metadata: 0, position: new Vec3(2, 64, 0) };
+      return matching(candidate) ? candidate : null;
+    },
+    equip: async () => {},
+    lookAt: async () => {},
+    waitForTicks: async () => {},
+    activateItem: async () => {
+      lavaInv = [{ name: 'bucket', count: 1 }];
+    }
+  };
+  const emptied = await emptyLavaBucketSafely(lavaPourBot);
+  assert.equal(emptied, true);
+  assert.equal(invUtils.countItem(lavaPourBot, 'bucket'), 1);
+
+  env.rememberLava(new Vec3(70, 93, 5), 'overworld');
+  let exploreInv = [{ name: 'bucket', count: 1 }];
+  const waterId = mcData.blocksByName.water.id;
+  const waterBlock = { name: 'water', type: waterId, metadata: 0, position: new Vec3(8, 62, 0) };
+  const visitedGoals = [];
+  const waterBot = {
+    game: { dimension: 'overworld' },
+    entity: { position: new Vec3(0, 64, 0), isInWater: false },
+    registry: mcData,
+    inventory: { items: () => exploreInv },
+    blockAt: () => ({ name: 'air' }),
+    findBlock: ({ matching }) => (typeof matching === 'function' && matching(waterBlock) ? waterBlock : null),
+    pathfinder: {
+      movements: null,
+      setGoal: () => {},
+      goto: async (goal) => {
+        visitedGoals.push({ x: goal.x, y: goal.y, z: goal.z });
+        waterBot.entity.position = new Vec3(7, 63, 0);
+      }
+    },
+    clearControlStates: () => {},
+    equip: async () => {},
+    lookAt: async () => {},
+    waitForTicks: async () => {},
+    activateItem: async () => {
+      exploreInv = [{ name: 'water_bucket', count: 1 }];
+    }
+  };
+
+  const exploreRes = await skillExplore(waterBot, { currentObjective: 'nether_portal' }, 'water');
+  assert.equal(exploreRes.success, true);
+  assert.equal(invUtils.countItem(waterBot, 'water_bucket'), 1);
+  assert.ok(visitedGoals.every(g => g.x !== 70 || g.z !== 5));
+
+  const prevState = {
+    currentObjective: state.currentObjective,
+    lastActionResult: state.lastActionResult,
+    managerDirective: state.managerDirective,
+    managerSubGoal: state.managerSubGoal,
+    useDiamondPortalFallback: state.useDiamondPortalFallback,
+    portalCastFailures: state.portalCastFailures,
+    baseCraftingTable: state.base?.crafting_table
+  };
+
+  try {
+    state.currentObjective = 'nether_portal';
+    state.lastActionResult = null;
+    state.useDiamondPortalFallback = false;
+
+    const noWaterBot = {
+      game: { dimension: 'overworld' },
+      entity: { position: new Vec3(0, 64, 0), isInWater: false },
+      registry: mcData,
+      inventory: {
+        items: () => [
+          { name: 'iron_pickaxe', count: 1 },
+          { name: 'flint_and_steel', count: 1 },
+          { name: 'lava_bucket', count: 1 },
+          { name: 'bucket', count: 1 }
+        ]
+      },
+      blockAt: () => ({ name: 'air', boundingBox: 'empty' }),
+      findBlock: () => null,
+      findBlocks: () => [],
+      health: 20,
+      food: 20
+    };
+    assert.equal(manager.tryAssignPortalOrNetherGoal(noWaterBot), true);
+    assert.deepEqual(state.managerSubGoal, { action: 'explore', target: 'water', isReliable: true });
+
+    state.useDiamondPortalFallback = true;
+    const diamondOreId = mcData.blocksByName.deepslate_diamond_ore.id;
+    const diamondBlock = { name: 'deepslate_diamond_ore', type: diamondOreId, position: new Vec3(2, -54, 0) };
+    const diamondMineBot = {
+      ...noWaterBot,
+      findBlock: ({ matching }) => (typeof matching === 'function' && matching(diamondBlock) ? diamondBlock : null)
+    };
+    assert.equal(manager.tryAssignPortalOrNetherGoal(diamondMineBot), true);
+    assert.deepEqual(state.managerSubGoal, { action: 'mine', target: 'diamond_ore', qty: 3, isReliable: true });
+
+    const tableId = mcData.blocksByName.crafting_table.id;
+    const tableBlock = { name: 'crafting_table', type: tableId, position: new Vec3(1, 64, 0) };
+    const craftDiamondPickBot = {
+      ...noWaterBot,
+      inventory: {
+        items: () => [
+          { name: 'iron_pickaxe', count: 1 },
+          { name: 'diamond', count: 3 },
+          { name: 'stick', count: 2 }
+        ]
+      },
+      findBlock: ({ matching }) => (
+        matching === tableId || (typeof matching === 'function' && matching(tableBlock)) ? tableBlock : null
+      )
+    };
+    assert.equal(manager.tryAssignPortalOrNetherGoal(craftDiamondPickBot), true);
+    assert.deepEqual(state.managerSubGoal, { action: 'craft', target: 'diamond_pickaxe', isReliable: true });
+  } finally {
+    env.clearKnownLava();
+    env.clearBadBlocks();
+    state.currentObjective = prevState.currentObjective;
+    state.lastActionResult = prevState.lastActionResult;
+    state.managerDirective = prevState.managerDirective;
+    state.managerSubGoal = prevState.managerSubGoal;
+    state.useDiamondPortalFallback = prevState.useDiamondPortalFallback;
+    state.portalCastFailures = prevState.portalCastFailures;
+    if (state.base) state.base.crafting_table = prevState.baseCraftingTable;
+  }
+});
+
+test('3-turn /portal nether fallback enforces nether_portal milestone gate, sets keepInventory=true, and teleports to registered portal', async () => {
+  const { Vec3 } = require('vec3');
+  const prevState = {
+    currentObjective: state.currentObjective,
+    managerDirective: state.managerDirective,
+    managerSubGoal: state.managerSubGoal,
+    netherPortalAttempts: state.netherPortalAttempts,
+    registeredPortalCoords: state.registeredPortalCoords
+  };
+
+  try {
+    state.registeredPortalCoords = { x: 100, y: 64, z: -20 };
+    state.netherPortalAttempts = 3;
+
+    state.currentObjective = 'iron_pickaxe';
+    const refused = await executeFallbackPortalTeleport(createMockBot([]), state);
+    assert.equal(refused.success, false);
+    assert.ok(refused.message.includes('Accès refusé'));
+
+    state.currentObjective = 'nether_portal';
+    const chatMessages = [];
+    const portalBlockId = mcData.blocksByName.nether_portal.id;
+    const portalBot = {
+      username: 'Ollama',
+      game: { dimension: 'overworld' },
+      entity: { position: new Vec3(0, 64, 0) },
+      registry: mcData,
+      inventory: { items: () => [] },
+      chat: (msg) => chatMessages.push(msg),
+      waitForTicks: async () => {},
+      findBlock: ({ matching }) => (
+        matching === portalBlockId ? { name: 'nether_portal', type: portalBlockId, position: new Vec3(100, 64, -20) } : null
+      ),
+      pathfinder: {
+        setGoal: () => {},
+        goto: async () => {
+          portalBot.game.dimension = 'the_nether';
+        }
+      }
+    };
+
+    assert.equal(manager.tryAssignPortalOrNetherGoal(portalBot), true);
+    assert.deepEqual(state.managerSubGoal, { action: 'portal', target: 'none', isReliable: true });
+
+    const res = await executeFallbackPortalTeleport(portalBot, state);
+    assert.equal(res.success, true);
+    assert.ok(chatMessages.includes('/gamerule keepInventory true'));
+    assert.ok(chatMessages.includes('/execute in minecraft:the_nether run gamerule keepInventory true'));
+    assert.ok(chatMessages.includes('/tp Ollama 100 64 -20'));
+  } finally {
+    state.currentObjective = prevState.currentObjective;
+    state.managerDirective = prevState.managerDirective;
+    state.managerSubGoal = prevState.managerSubGoal;
+    state.netherPortalAttempts = prevState.netherPortalAttempts;
+    state.registeredPortalCoords = prevState.registeredPortalCoords;
   }
 });

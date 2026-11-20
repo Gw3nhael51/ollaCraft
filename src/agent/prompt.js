@@ -339,7 +339,7 @@ function buildReactPrompt(bot, state, environment, craftingTable) {
   const portalFrameHint = detectedFrame
     ? (detectedFrame.isComplete
       ? `\n    - PORTAIL COMPLET ÉTEINT DÉTECTÉ en (${detectedFrame.base.x}, ${detectedFrame.base.y}, ${detectedFrame.base.z}, axe ${detectedFrame.axis}) : utilise 'portal' avec un briquet pour l'allumer !`
-      : `\n    - DÉBUT DE PORTAIL DÉTECTÉ (${detectedFrame.presentCount}/10 obsidienne) en (${detectedFrame.base.x}, ${detectedFrame.base.y}, ${detectedFrame.base.z}, axe ${detectedFrame.axis}) : complète-le avec de l'obsidienne ou de la lave via 'portal'.`)
+      : `\n    - DÉBUT DE PORTAIL DÉTECTÉ (${detectedFrame.presentCount}/10 obsidienne) en (${detectedFrame.base.x}, ${detectedFrame.base.y}, ${detectedFrame.base.z}, axe ${detectedFrame.axis}) : exécute immédiatement l'action 'portal' (target 'none') — NE mine PAS l'obsidienne.`)
     : '';
   const storageHint = state.currentObjective === 'nether_portal'
     ? "Pour 'nether_portal', NE fabrique PAS de coffre et n'utilise PAS 'chest' : les surplus encombrants sont gérés automatiquement. Concentre-toi sur 'explore' (cible 'lava') puis 'portal'."

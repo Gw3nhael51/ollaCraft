@@ -242,6 +242,13 @@ async function requestModelDecision(bot, askOllamaFn) {
   return { decision: takeForcedDecision(state), source: 'recovery' };
 }
 
+const RELIABLE_TARGET_THOUGHTS = new Map([
+  ['mine', (target) => `Exécution directe du minage prioritaire '${target}'.`],
+  ['craft', (target) => `Exécution directe de la fabrication prioritaire '${target}'.`],
+  ['place', (target) => `Placement prioritaire de '${target}'.`],
+  ['smelt', (target) => `Fonte prioritaire de '${target}'.`]
+]);
+
 /**
  * Return a direct decision when a reliable validated procedure is assigned by the Manager
  * @param {object} [currentState=state] Global bot state
@@ -251,6 +258,16 @@ function getReliableProcedureDecision(currentState = state) {
   const subGoal = currentState?.managerSubGoal;
   if (!subGoal?.action || subGoal.isReliable !== true) {
     return null;
+  }
+  if (subGoal.action === 'unstuck') {
+    const justRanUnstuck = currentState.lastActionResult?.action === 'unstuck';
+    if (justRanUnstuck) return null;
+    return {
+      thought: currentState.managerDirective || "Dégagement prioritaire de l'eau ou d'un obstacle.",
+      action: 'unstuck',
+      target: 'none',
+      qty: 1
+    };
   }
   if (subGoal.action === 'portal') {
     const justFailedPortal = currentState.lastActionResult?.success === false && currentState.lastActionResult?.action === 'portal';
@@ -262,34 +279,20 @@ function getReliableProcedureDecision(currentState = state) {
       qty: 1
     };
   }
-  if (subGoal.action === 'mine' && subGoal.target) {
+  if (RELIABLE_TARGET_THOUGHTS.has(subGoal.action) && subGoal.target) {
     const target = cleanTargetIdentifier(subGoal.target);
-    const justFailedMine = (
+    const justFailedAction = (
       currentState.lastActionResult?.success === false &&
-      currentState.lastActionResult?.action === 'mine' &&
+      currentState.lastActionResult?.action === subGoal.action &&
       currentState.lastActionResult?.target === target
     );
-    if (!target || target === 'none' || justFailedMine) return null;
+    if (!target || target === 'none' || justFailedAction) return null;
+    const fallbackThought = RELIABLE_TARGET_THOUGHTS.get(subGoal.action)(target);
     return {
-      thought: currentState.managerDirective || `Exécution directe du minage prioritaire '${target}'.`,
-      action: 'mine',
+      thought: currentState.managerDirective || fallbackThought,
+      action: subGoal.action,
       target,
-      qty: subGoal.qty || 1
-    };
-  }
-  if (subGoal.action === 'craft' && subGoal.target) {
-    const target = cleanTargetIdentifier(subGoal.target);
-    const justFailedCraft = (
-      currentState.lastActionResult?.success === false &&
-      currentState.lastActionResult?.action === 'craft' &&
-      currentState.lastActionResult?.target === target
-    );
-    if (!target || target === 'none' || justFailedCraft) return null;
-    return {
-      thought: currentState.managerDirective || `Exécution directe de la fabrication prioritaire '${target}'.`,
-      action: 'craft',
-      target,
-      qty: 1
+      qty: subGoal.action === 'mine' || subGoal.action === 'smelt' ? (subGoal.qty || 1) : 1
     };
   }
   if (subGoal.action === 'explore') {
@@ -442,6 +445,13 @@ async function handleSurvivalRequest(bot, sessionId = state.survivalSessionId, d
     console.log(`[RESULT] ${executionResult.success ? '✅' : '❌'} ${executionResult.message}`);
 
     recordActionResult(bot, decision, executionResult, source);
+
+    if (state.currentObjective === 'nether_portal' && bot.game?.dimension !== 'the_nether') {
+      state.netherPortalAttempts = (state.netherPortalAttempts || 0) + 1;
+      console.log(`[PORTAL] Tour au palier nether_portal : ${state.netherPortalAttempts}/3`);
+    } else {
+      state.netherPortalAttempts = 0;
+    }
 
     if (isSessionActive(sessionId)) {
       await evaluateManagerTrigger(bot, runManagerFn);
