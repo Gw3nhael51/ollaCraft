@@ -15,6 +15,7 @@ module.exports = {
   currentAdvancement: 'Stone Age',
   completedQuests: new Set(),
   lastDeathPosition: null,
+  lastSafePosition: null,
   base: {
     crafting_table: null,
     furnace: null,
@@ -41,6 +42,8 @@ module.exports = {
   },
   // Path of the JSON file persisting waypoints and milestones (null disables persistence, e.g. in tests)
   progressFile: null,
+  netherPortalAttempts: 0,
+  registeredPortalCoords: null,
   lastActionResult: {
     action: 'none',
     target: 'none',

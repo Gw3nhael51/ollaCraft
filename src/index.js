@@ -15,6 +15,7 @@ const {
   loadProgress, getDimension, getWaypoint, saveWaypoint, removeWaypoint, listWaypoints,
   setMilestone, horizontalDistanceTo
 } = require('./core/progress');
+const { saveRegisteredPortalCoords, loadRegisteredPortalCoords, executeFallbackPortalTeleport } = require('./actions/behaviors/world/portal');
 
 const bot = mineflayer.createBot(config.BOT_CONFIG);
 bot.loadPlugin(pathfinder);
@@ -83,12 +84,65 @@ async function initializeProcedureMemory() {
 }
 
 /**
- * Synchronize inventory progression and start or resume autonomous survival loop
+ * Check whether the bot's current position is on solid dry ground with no lava nearby
+ * @returns {boolean} True if safe to record as a death-back checkpoint
  */
-function launchAutonomousLoop() {
+function isSafeGroundForDback() {
+  if (!bot.entity?.onGround || bot.entity.isInWater || bot.entity.isInLava || !bot.entity.position) {
+    return false;
+  }
+  const pos = bot.entity.position.floored();
+  const below = bot.blockAt(pos.offset(0, -1, 0));
+  if (!below || below.name === 'air' || below.name === 'cave_air' || below.name === 'lava' || below.name === 'flowing_lava' || below.name === 'water' || below.name === 'flowing_water') {
+    return false;
+  }
+  for (let dx = -3; dx <= 3; dx++) {
+    for (let dy = -2; dy <= 2; dy++) {
+      for (let dz = -3; dz <= 3; dz++) {
+        const name = bot.blockAt(pos.offset(dx, dy, dz))?.name;
+        if (name === 'lava' || name === 'flowing_lava') {
+          return false;
+        }
+      }
+    }
+  }
+  return true;
+}
+
+/**
+ * Teleport the bot back to its last safe position (/dback) and consume the checkpoint
+ * @returns {Promise<boolean>} True if a death-back teleport was executed
+ */
+async function executeDeathBack() {
+  const target = state.lastSafePosition;
+  if (!target) {
+    return false;
+  }
+  state.lastSafePosition = null;
+  state.lastDeathPosition = null;
+  const x = Math.floor(target.x);
+  const y = Math.floor(target.y);
+  const z = Math.floor(target.z);
+  console.log(`[DBACK] Teleporting back to safe position (${x}, ${y}, ${z})...`);
+  bot.chat(`/tp ${bot.username} ${x} ${y} ${z}`);
+  if (typeof bot.waitForTicks === 'function') {
+    await bot.waitForTicks(20);
+  }
+  return true;
+}
+
+/**
+ * Synchronize inventory progression and start or resume autonomous survival loop
+ * @param {boolean} [shouldDback=false] Whether to teleport back to pre-death safe coordinates before resuming
+ */
+function launchAutonomousLoop(shouldDback = false) {
   setTimeout(async () => {
     await initializeProcedureMemory();
+    await loadRegisteredPortalCoords(state);
     await waitForInventoryRestore();
+    if (shouldDback) {
+      await executeDeathBack();
+    }
     await autoEquipArmorAndShield(bot);
     syncObjective(bot, state);
     state.hasStarted = true;
@@ -172,6 +226,10 @@ bot.once('spawn', () => {
       wasInWater = false;
       bot.setControlState('jump', false);
     }
+
+    if (isSafeGroundForDback()) {
+      state.lastSafePosition = bot.entity.position.clone();
+    }
   });
 });
 
@@ -194,7 +252,7 @@ bot.on('spawn', () => {
 
   if (shouldResumeAfterDeath) {
     shouldResumeAfterDeath = false;
-    launchAutonomousLoop();
+    launchAutonomousLoop(true);
     return;
   }
 
@@ -318,12 +376,80 @@ function reportWaypointsInChat() {
   });
 }
 
+/**
+ * Handle chat commands to register pre-built Nether portal coordinates or trigger '/portal nether'
+ * @param {string} username Sender username
+ * @param {string} message Raw chat command string
+ * @returns {Promise<boolean>} True if command was handled
+ */
+async function handlePortalChatCommand(username, message) {
+  const trimmed = message.trim();
+  const lower = trimmed.toLowerCase();
+  if (!lower.startsWith('portal') && !lower.startsWith('/portal') && !lower.startsWith('setportal')) {
+    return false;
+  }
+
+  const tokens = trimmed.replace(/^\//, '').split(/\s+/);
+  const subCmd = tokens[0].toLowerCase() === 'setportal' ? 'set' : (tokens[1] || '').toLowerCase();
+  const coordStartIdx = tokens[0].toLowerCase() === 'setportal' ? 1 : 2;
+
+  if (subCmd === 'set') {
+    let coords = null;
+    if (tokens.length >= coordStartIdx + 3) {
+      coords = {
+        x: Number(tokens[coordStartIdx]),
+        y: Number(tokens[coordStartIdx + 1]),
+        z: Number(tokens[coordStartIdx + 2])
+      };
+    } else {
+      const senderPos = bot.players?.[username]?.entity?.position || bot.entity?.position;
+      if (senderPos) {
+        coords = { x: Math.floor(senderPos.x), y: Math.floor(senderPos.y), z: Math.floor(senderPos.z) };
+      }
+    }
+    const saved = await saveRegisteredPortalCoords(state, coords);
+    if (!saved) {
+      bot.chat("Format invalide. Utilise : portal set <x> <y> <z> (ou 'portal set' à côté du portail).");
+      return true;
+    }
+    bot.chat(`📍 Portail Nether enregistré en X:${saved.x}, Y:${saved.y}, Z:${saved.z} (actif au palier nether_portal après 3 tours).`);
+    return true;
+  }
+
+  if (subCmd === 'nether') {
+    if (state.currentObjective !== 'nether_portal') {
+      bot.chat(`🔒 Accès refusé : le palier 'nether_portal' n'est pas encore atteint (actuel : ${state.currentObjective}).`);
+      return true;
+    }
+    if ((state.netherPortalAttempts || 0) < 3) {
+      bot.chat(`⏳ Encore ${3 - (state.netherPortalAttempts || 0)} tour(s) de recherche de lave avant déblocage automatique, téléportation forcée...`);
+    }
+    const res = await executeFallbackPortalTeleport(bot, state);
+    bot.chat(res.message);
+    return true;
+  }
+
+  return false;
+}
+
 // Handle player control commands from chat
 bot.on('chat', async (username, message) => {
   if (username === bot.username) return;
   // Log chat messages for debugging
   console.log(`[CHAT SERVER] ${username ? username + ': ' : ''}${message}`);
   const command = message.trim().toLowerCase();
+
+  if (await handlePortalChatCommand(username, message)) {
+    return;
+  }
+
+  if (command === 'dback' || command === '/dback') {
+    const ok = await executeDeathBack();
+    if (!ok) {
+      bot.chat("Aucune position de mort enregistrée pour /dback.");
+    }
+    return;
+  }
 
   if (command === 'start' && !state.isSurviving) {
     await autoEquipArmorAndShield(bot);
@@ -399,9 +525,17 @@ bot.on('death', () => {
   respawningAfterDeath = true;
   state.isSurviving = false;
   state.activeActionId = (state.activeActionId || 0) + 1;
-  state.lastDeathPosition = bot.entity?.position ? bot.entity.position.clone() : null;
-  if (state.lastDeathPosition) {
-    saveWaypoint(state, 'death', state.lastDeathPosition, getDimension(bot), 'last death (dropped items)');
+  const now = Date.now();
+  const rapidRepeatDeath = Boolean(state.lastDeathTime && (now - state.lastDeathTime) < 90000);
+  state.lastDeathTime = now;
+  if (rapidRepeatDeath) {
+    state.lastSafePosition = null;
+    state.lastDeathPosition = null;
+  } else {
+    state.lastDeathPosition = bot.entity?.position ? bot.entity.position.clone() : null;
+    if (state.lastDeathPosition) {
+      saveWaypoint(state, 'death', state.lastDeathPosition, getDimension(bot), 'last death (dropped items)');
+    }
   }
   state.actionHistory = [];
   state.lastActionResult = {
