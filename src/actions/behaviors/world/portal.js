@@ -1,8 +1,10 @@
+const fs = require('node:fs/promises');
+const path = require('node:path');
 const { Vec3 } = require('vec3');
 const { goals } = require('mineflayer-pathfinder');
 const config = require('../../../infrastructure/config');
 const { countItem, getBestToolForBlock } = require('../../../perception/inventory');
-const { markBadBlock, isBadBlock } = require('../../../perception/environment');
+const { markBadBlock, isBadBlock, forgetLava } = require('../../../perception/environment');
 const { autoEquipArmorAndShield } = require('../items/equip');
 const { freeInventorySlotIfFull } = require('../items/storage');
 const { getDimension, getWaypoint, saveWaypoint } = require('../../../core/progress');
@@ -70,23 +72,102 @@ function findReachableLiquidSource(bot, liquidName) {
   const blockId = bot.registry.blocksByName[liquidName]?.id;
   if (!blockId) return null;
 
-  const isSource = (block) => Boolean(block && block.type === blockId && (!block.metadata || block.metadata === 0));
+  const isSource = (block) => {
+    if (!block || block.type !== blockId) return false;
+    if (block.metadata && block.metadata !== 0) return false;
+    if (typeof isBadBlock === 'function' && isBadBlock(block.position)) return false;
+    return true;
+  };
+
   const feetPos = bot.entity.position.floored ? bot.entity.position.floored() : bot.entity.position;
   const eyeBlock = bot.blockAt(feetPos.offset(0, 1, 0));
   if (isSource(eyeBlock)) return eyeBlock;
   const feetBlock = bot.blockAt(feetPos);
   if (isSource(feetBlock)) return feetBlock;
 
+  const immediateSource = bot.findBlock({ matching: isSource, maxDistance: 6 });
+  if (immediateSource) return immediateSource;
+
+  const isDeepUnderground = Boolean(bot.entity?.position && bot.entity.position.y < 55);
+  let searchRadius = 36;
+  if (liquidName === 'water') {
+    searchRadius = isDeepUnderground ? 12 : 48;
+  }
   const surfaceSource = bot.findBlock({
     matching: (block) => {
       if (!isSource(block)) return false;
-      const above = block.position ? bot.blockAt(block.position.offset(0, 1, 0)) : null;
-      return !above || above.name === 'air' || above.name === 'cave_air';
+      const above1 = block.position ? bot.blockAt(block.position.offset(0, 1, 0)) : null;
+      const above2 = block.position ? bot.blockAt(block.position.offset(0, 2, 0)) : null;
+      const clear1 = !above1 || above1.name === 'air' || above1.name === 'cave_air';
+      const clear2 = !above2 || above2.name === 'air' || above2.name === 'cave_air';
+      return clear1 && clear2;
     },
-    maxDistance: 36
+    maxDistance: searchRadius
   });
 
-  return surfaceSource || bot.findBlock({ matching: isSource, maxDistance: 36 });
+  return surfaceSource || bot.findBlock({ matching: isSource, maxDistance: searchRadius });
+}
+
+/**
+ * Safely empty a carried lava_bucket to recover an empty bucket without burning the bot
+ * @param {object} bot Mineflayer bot instance
+ * @returns {Promise<boolean>} True if an empty bucket is now available in inventory
+ */
+async function emptyLavaBucketSafely(bot) {
+  if (countItem(bot, 'bucket') > 0) return true;
+  const lavaBucket = bot.inventory?.items?.().find(i => i.name === 'lava_bucket');
+  if (!lavaBucket) return false;
+
+  const lavaId = bot.registry?.blocksByName?.lava?.id;
+  const nearbyLava = lavaId && typeof bot.findBlock === 'function'
+    ? bot.findBlock({
+        matching: (b) => b?.type === lavaId && Boolean(findPlacementReference(bot, b.position)),
+        maxDistance: 4.2
+      })
+    : null;
+
+  if (nearbyLava?.position) {
+    const ref = findPlacementReference(bot, nearbyLava.position);
+    if (ref) {
+      await bot.equip(lavaBucket, 'hand');
+      const lookPos = ref.referenceBlock.position.offset(
+        0.5 + ref.faceVector.x * 0.5,
+        0.5 + ref.faceVector.y * 0.5,
+        0.5 + ref.faceVector.z * 0.5
+      );
+      await bot.lookAt(lookPos, true);
+      if (typeof bot.waitForTicks === 'function') await bot.waitForTicks(2);
+      await bot.activateItem();
+      if (typeof bot.waitForTicks === 'function') await bot.waitForTicks(8);
+      if (countItem(bot, 'bucket') > 0) return true;
+    }
+  }
+
+  const groundBlock = typeof bot.findBlock === 'function'
+    ? bot.findBlock({
+        matching: (b) => {
+          if (!b?.position || NON_SOLID_BLOCKS.has(b.name)) return false;
+          const dist = bot.entity?.position?.distanceTo ? bot.entity.position.distanceTo(b.position) : 0;
+          if (dist < 1.8 || dist > 3.6) return false;
+          const above = bot.blockAt(b.position.offset(0, 1, 0));
+          return above?.name === 'air' || above?.name === 'cave_air';
+        },
+        maxDistance: 4
+      })
+    : null;
+
+  if (!groundBlock?.position) return false;
+  const dumpPos = groundBlock.position.offset(0, 1, 0);
+  await bot.equip(lavaBucket, 'hand');
+  await bot.lookAt(groundBlock.position.offset(0.5, 1, 0.5), true);
+  if (typeof bot.waitForTicks === 'function') await bot.waitForTicks(2);
+  await bot.activateItem();
+  if (typeof bot.waitForTicks === 'function') await bot.waitForTicks(8);
+
+  if (bot.blockAt(dumpPos)?.name === 'lava' || bot.blockAt(dumpPos)?.name === 'flowing_lava') {
+    await ensureScaffoldBlock(bot, dumpPos, bot.entity.position).catch(() => {});
+  }
+  return countItem(bot, 'bucket') > 0;
 }
 
 /**
@@ -126,21 +207,23 @@ async function fillBucketFromSource(bot, liquidName) {
     bot.pathfinder.setGoal(null);
     bot.clearControlStates();
 
+    const expectedFilled = liquidName === 'water' ? 'water_bucket' : 'lava_bucket';
+    const beforeCount = countItem(bot, expectedFilled);
+
     await bot.equip(bucketItem, 'hand');
     await bot.lookAt(sourceBlock.position.offset(0.5, 0.9, 0.5), true);
     await bot.waitForTicks(2);
     await bot.activateItem();
     await bot.waitForTicks(8);
 
-    const expectedFilled = liquidName === 'water' ? 'water_bucket' : 'lava_bucket';
-    if (countItem(bot, expectedFilled) === 0) {
+    if (countItem(bot, expectedFilled) === beforeCount) {
       await bot.lookAt(sourceBlock.position.offset(0.5, 0.5, 0.5), true);
       await bot.waitForTicks(2);
       await bot.activateItem();
       await bot.waitForTicks(8);
     }
 
-    if (countItem(bot, expectedFilled) === 0 && bot.entity?.position?.distanceTo && bot.entity.position.distanceTo(sourceBlock.position) > 2.4 && bot.pathfinder?.goto) {
+    if (countItem(bot, expectedFilled) === beforeCount && bot.pathfinder?.goto) {
       let closeTimer = null;
       try {
         const { GoalNear } = goals;
@@ -160,12 +243,18 @@ async function fillBucketFromSource(bot, liquidName) {
       await bot.waitForTicks(8);
     }
 
-    if (countItem(bot, expectedFilled) > 0) {
+    if (countItem(bot, expectedFilled) > beforeCount) {
       return { success: true, message: `Successfully filled '${expectedFilled}' from nearby ${liquidName} source.` };
     }
 
-    return { success: false, message: `Attempted to scoop ${liquidName} but '${expectedFilled}' was not acquired.` };
+    if (sourceBlock?.position) {
+      markLavaClusterBad(bot, sourceBlock.position, 8);
+    }
+    return { success: false, message: `Attempted to scoop ${liquidName} but '${expectedFilled}' was not acquired. Source marked bad.` };
   } catch (err) {
+    if (sourceBlock?.position) {
+      markLavaClusterBad(bot, sourceBlock.position, 8);
+    }
     return { success: false, message: `Failed to scoop ${liquidName} : ${err.message}` };
   } finally {
     if (navTimer) clearTimeout(navTimer);
@@ -398,13 +487,15 @@ async function tryMineFormedObsidian(bot) {
   if (!canMineObsidian) return false;
 
   const obsidianId = bot.registry.blocksByName.obsidian?.id;
-  const formedObsidian = obsidianId ? bot.findBlock({ matching: obsidianId, maxDistance: 6 }) : null;
+  const formedObsidian = obsidianId ? bot.findBlock({ matching: obsidianId, maxDistance: 12 }) : null;
   if (!formedObsidian) return false;
 
+  await moveNearPosition(bot, formedObsidian.position, 4.0, 2);
   const pickaxe = getBestToolForBlock(bot, formedObsidian);
   if (pickaxe) await bot.equip(pickaxe, 'hand').catch(() => {});
   await bot.dig(formedObsidian);
-  await bot.waitForTicks(8);
+  await moveNearPosition(bot, formedObsidian.position, 1.5, 1);
+  if (typeof bot.waitForTicks === 'function') await bot.waitForTicks(8);
   return true;
 }
 
@@ -450,17 +541,38 @@ function evaluateFrameCandidate(bot, base, axis, coreOffsets) {
   }
 
   let presentCount = 0;
+  let hasElevatedObsidian = false;
   const missingOffsets = [];
   for (const off of coreOffsets) {
     const oriented = orientOffset(off, axis);
     if (bot.blockAt(base.plus(oriented))?.name === 'obsidian') {
       presentCount += 1;
+      if (off.y >= 1) hasElevatedObsidian = true;
     } else {
       missingOffsets.push(oriented);
     }
   }
 
-  if (presentCount < 2) return null;
+  if (presentCount < 2 || (!hasElevatedObsidian && presentCount < 3)) return null;
+  if (missingOffsets.length > 0) {
+    const mustBeClearOfObsidian = [
+      new Vec3(0, 4, -1),
+      new Vec3(1, 4, -1),
+      new Vec3(-1, 4, 0),
+      new Vec3(0, 1, 1),
+      new Vec3(1, 1, 1),
+      new Vec3(0, 2, 1),
+      new Vec3(1, 2, 1),
+      new Vec3(0, 3, 1),
+      new Vec3(1, 3, 1),
+      new Vec3(0, 4, 1),
+      new Vec3(1, 4, 1)
+    ];
+    for (const checkOff of mustBeClearOfObsidian) {
+      const blockName = bot.blockAt(base.plus(orientOffset(checkOff, axis)))?.name;
+      if (blockName === 'obsidian' || blockName === 'bedrock') return null;
+    }
+  }
   return {
     base,
     axis,
@@ -580,15 +692,16 @@ async function moveNearPosition(bot, pos, maxDist = 4.2, goalRadius = 2) {
 function markLavaClusterBad(bot, centerPos, radius = 8) {
   if (!centerPos) return;
   markBadBlock(centerPos);
+  forgetLava(centerPos, radius + 2);
   if (typeof bot?.blockAt !== 'function') return;
 
-  const lavaNames = new Set(['lava', 'flowing_lava']);
+  const liquidNames = new Set(['lava', 'flowing_lava', 'water', 'flowing_water']);
   for (let dy = -2; dy <= 2; dy++) {
     for (let dx = -radius; dx <= radius; dx++) {
       for (let dz = -radius; dz <= radius; dz++) {
         const pos = new Vec3(centerPos.x + dx, centerPos.y + dy, centerPos.z + dz);
         const block = bot.blockAt(pos);
-        if (block && lavaNames.has(block.name)) {
+        if (block && liquidNames.has(block.name)) {
           markBadBlock(pos);
         }
       }
@@ -678,7 +791,7 @@ function isValidCastOrigin(bot, basePos) {
   if (!floorOffsets.every(off => isSolid(basePos.plus(off)))) return false;
 
   const standCoords = [new Vec3(0, 0, 2), new Vec3(1, 0, 2)];
-  const hasValidStand = standCoords.some(s => (
+  const hasValidStand = standCoords.every(s => (
     isSolid(basePos.plus(s)) &&
     isStandClear(basePos.plus(s).offset(0, 1, 0)) &&
     isStandClear(basePos.plus(s).offset(0, 2, 0))
@@ -687,8 +800,13 @@ function isValidCastOrigin(bot, basePos) {
 
   for (let x = -1; x <= 2; x++) {
     for (let y = 1; y <= 4; y++) {
-      for (let z = -1; z <= 0; z++) {
-        if (isLiquidOrBedrock(basePos.offset(x, y, z))) return false;
+      for (let z = -1; z <= 2; z++) {
+        const pos = basePos.offset(x, y, z);
+        if (isLiquidOrBedrock(pos)) return false;
+        const isDoorway = z === 0 && (x === 0 || x === 1) && y >= 1 && y <= 3;
+        if ((z !== 0 || isDoorway) && bot.blockAt(pos)?.name === 'obsidian') {
+          return false;
+        }
       }
     }
   }
@@ -706,7 +824,7 @@ function findCastOriginNearLava(bot, lavaPos) {
   if (!lavaPos) return null;
 
   const candidates = [];
-  for (let dy = -2; dy <= 3; dy++) {
+  for (let dy = -4; dy <= 6; dy++) {
     for (let dx = -14; dx <= 14; dx++) {
       for (let dz = -14; dz <= 14; dz++) {
         if (Math.abs(dx) < 2 && Math.abs(dz) < 2) continue;
@@ -833,17 +951,32 @@ async function pourBucketAtFace(bot, bucketName, targetPos, refPos, faceVec, sta
   const bucketItem = bot.inventory.items().find(i => i.name === bucketName);
   if (!bucketItem) return false;
 
-  await moveNearPosition(bot, standPos, 1.8, 1);
+  const beforeCount = countItem(bot, bucketName);
+
+  await moveNearPosition(bot, standPos, 1.0, 0);
   bot.pathfinder?.setGoal?.(null);
   bot.clearControlStates?.();
 
   await bot.equip(bucketItem, 'hand');
-  await bot.lookAt(refPos.offset(0.5 + faceVec.x * 0.45, 0.5 + faceVec.y * 0.45, 0.5 + faceVec.z * 0.45), true);
-  await bot.waitForTicks(3);
-  await bot.activateItem();
-  await bot.waitForTicks(10);
 
-  return expectedNames.has(bot.blockAt(targetPos)?.name);
+  const lookPos = refPos.offset(0.5 + faceVec.x * 0.5, 0.5 + faceVec.y * 0.5, 0.5 + faceVec.z * 0.5);
+  await bot.lookAt(lookPos, true);
+  if (typeof bot.waitForTicks === 'function') await bot.waitForTicks(4);
+  await bot.activateItem();
+  if (typeof bot.waitForTicks === 'function') await bot.waitForTicks(10);
+
+  if (!expectedNames.has(bot.blockAt(targetPos)?.name) && countItem(bot, bucketName) === beforeCount) {
+    const altLook = refPos.offset(0.5 + faceVec.x * 0.45, 0.5 + faceVec.y * 0.45, 0.5 + faceVec.z * 0.45);
+    await bot.lookAt(altLook, true);
+    if (typeof bot.waitForTicks === 'function') await bot.waitForTicks(4);
+    await bot.activateItem();
+    if (typeof bot.waitForTicks === 'function') await bot.waitForTicks(10);
+  }
+
+  const placedName = bot.blockAt(targetPos)?.name || 'unknown';
+  const ok = expectedNames.has(placedName);
+  console.log(`[PORTAL] pourBucketAtFace(${bucketName} @ (${targetPos.x},${targetPos.y},${targetPos.z})) -> ${placedName} (ok=${ok})`);
+  return ok;
 }
 
 /**
@@ -868,6 +1001,7 @@ async function castMoldSteps(bot, basePos, steps, index) {
     if (!scoop.success) return false;
   }
 
+  await ensureScaffoldBlock(bot, basePos.plus(step.ref), basePos.plus(step.stand));
   await clearBlockIfSolid(bot, targetPos, basePos.plus(step.stand));
   const obsidianSet = new Set(['obsidian', 'lava', 'flowing_lava']);
   await pourBucketAtFace(
@@ -881,11 +1015,63 @@ async function castMoldSteps(bot, basePos, steps, index) {
   );
   await bot.waitForTicks(12);
 
+  const afterCastName = bot.blockAt(targetPos)?.name;
+  if (afterCastName === 'lava' || afterCastName === 'flowing_lava') {
+    await bot.waitForTicks(20);
+  }
+
   if (bot.blockAt(targetPos)?.name !== 'obsidian') {
     return false;
   }
 
   return castMoldSteps(bot, basePos, steps, index + 1);
+}
+
+/**
+ * Increment mold-casting failure count and enable diamond_pickaxe hybrid fallback after repeated failures
+ * @param {object|null} state Global bot state
+ */
+function recordMoldCastFailure(state) {
+  if (!state) return;
+  state.portalCastFailures = (state.portalCastFailures || 0) + 1;
+  if (state.portalCastFailures >= 2) {
+    state.useDiamondPortalFallback = true;
+    console.log(`[PORTAL] Mold casting failed ${state.portalCastFailures} times; enabling diamond_pickaxe hybrid fallback.`);
+  }
+}
+
+/**
+ * Recover placed mold water back into a water_bucket before leaving the casting site
+ * @param {object} bot Mineflayer bot instance
+ * @param {object} base Portal mold origin
+ * @param {Function} at Axis-oriented offset helper
+ * @param {Vec3} frontStandCenter Center front stand offset
+ * @param {Vec3} frontStandRightMid Right-center front stand offset
+ * @returns {Promise<void>}
+ */
+async function recoverMoldWater(bot, base, at, frontStandCenter, frontStandRightMid) {
+  if (countItem(bot, 'water_bucket') > 0) return;
+  if (countItem(bot, 'bucket') === 0 && countItem(bot, 'lava_bucket') > 0) {
+    await emptyLavaBucketSafely(bot);
+  }
+  if (countItem(bot, 'bucket') === 0) return;
+
+  const leftWaterPos = base.plus(at(0, 4, -1));
+  if (bot.blockAt(leftWaterPos)?.name === 'water') {
+    if (bot.blockAt(base.plus(at(0, 4, 0)))?.name === 'obsidian') {
+      await clearBlockIfSolid(bot, base.plus(at(-1, 4, 0)), base.plus(frontStandCenter));
+    }
+    await moveNearPosition(bot, base.plus(frontStandCenter), 4.0, 2);
+    await retrieveWaterSource(bot, leftWaterPos.offset(0.5, 0.5, 0.5));
+  }
+  const rightWaterPos = base.plus(at(1, 4, -1));
+  if (countItem(bot, 'water_bucket') === 0 && bot.blockAt(rightWaterPos)?.name === 'water') {
+    await moveNearPosition(bot, base.plus(frontStandRightMid), 4.0, 2);
+    await retrieveWaterSource(bot, rightWaterPos.offset(0.5, 0.5, 0.5));
+  }
+  if (countItem(bot, 'water_bucket') === 0 && countItem(bot, 'bucket') > 0) {
+    await fillBucketFromSource(bot, 'water').catch(() => {});
+  }
 }
 
 /**
@@ -897,10 +1083,16 @@ async function castMoldSteps(bot, basePos, steps, index) {
  * @returns {Promise<{ success: boolean, message: string }>}
  */
 async function castPortalWithMold(bot, state, lavaBlock, presetFrame = null) {
-  const axis = presetFrame?.axis || 'x';
-  const at = (x, y, z) => orientOffset(new Vec3(x, y, z), axis);
+  let axis = presetFrame?.axis || 'x';
+  let at = (x, y, z) => orientOffset(new Vec3(x, y, z), axis);
 
   let base = presetFrame?.base || state?.portalCastOrigin;
+  if (base && bot.blockAt(base.plus(at(0, 4, -1)))?.name === 'obsidian') {
+    base = null;
+    if (state) state.portalCastOrigin = null;
+    axis = 'x';
+    at = (x, y, z) => orientOffset(new Vec3(x, y, z), axis);
+  }
   if (!presetFrame?.base && base && (!bot.entity?.position?.distanceTo || bot.entity.position.distanceTo(base) > 32)) {
     base = null;
   }
@@ -979,12 +1171,34 @@ async function castPortalWithMold(bot, state, lavaBlock, presetFrame = null) {
   const clearSteps = [
     { offset: at(0, 0, 0), stand: frontStandCenter },
     { offset: at(1, 0, 0), stand: frontStandRightMid },
+    { offset: at(-1, 1, 0), stand: frontStandLeft },
+    { offset: at(-1, 2, 0), stand: frontStandLeft },
+    { offset: at(-1, 3, 0), stand: frontStandLeft },
+    { offset: at(2, 1, 0), stand: frontStandRight },
+    { offset: at(2, 2, 0), stand: frontStandRight },
+    { offset: at(2, 3, 0), stand: frontStandRight },
     { offset: at(0, 1, 0), stand: frontStandCenter },
     { offset: at(1, 1, 0), stand: frontStandRightMid },
     { offset: at(0, 2, 0), stand: frontStandCenter },
     { offset: at(1, 2, 0), stand: frontStandRightMid },
     { offset: at(0, 3, 0), stand: frontStandCenter },
     { offset: at(1, 3, 0), stand: frontStandRightMid },
+    { offset: at(0, 4, 0), stand: frontStandCenter },
+    { offset: at(1, 4, 0), stand: frontStandRightMid },
+    { offset: at(0, 1, 1), stand: frontStandCenter },
+    { offset: at(1, 1, 1), stand: frontStandRightMid },
+    { offset: at(0, 2, 1), stand: frontStandCenter },
+    { offset: at(1, 2, 1), stand: frontStandRightMid },
+    { offset: at(0, 3, 1), stand: frontStandCenter },
+    { offset: at(1, 3, 1), stand: frontStandRightMid },
+    { offset: at(0, 4, 1), stand: frontStandCenter },
+    { offset: at(1, 4, 1), stand: frontStandRightMid },
+    { offset: at(-1, 4, 0), stand: frontStandLeft },
+    { offset: at(2, 4, 0), stand: frontStandRight },
+    { offset: at(0, 3, 2), stand: frontStandCenter },
+    { offset: at(1, 3, 2), stand: frontStandRightMid },
+    { offset: at(0, 4, 2), stand: frontStandCenter },
+    { offset: at(1, 4, 2), stand: frontStandRightMid },
     { offset: at(0, 4, -1), stand: frontStandCenter },
     { offset: at(1, 4, -1), stand: frontStandRightMid }
   ];
@@ -1004,14 +1218,18 @@ async function castPortalWithMold(bot, state, lavaBlock, presetFrame = null) {
     { offset: at(2, 1, -1), stand: frontStandRight },
     { offset: at(2, 2, -1), stand: frontStandRight },
     { offset: at(2, 3, -1), stand: frontStandRight },
-    { offset: at(2, 4, -1), stand: frontStandRight },
-    { offset: at(-1, 4, 0), stand: frontStandLeft }
+    { offset: at(2, 4, -1), stand: frontStandRight }
+    // NOTE: at(-1, 4, 0) deliberately omitted here — it was blocking the water raycast.
+    // Placed after successful water pour.
   ];
   const moldReady = await buildMoldScaffolds(bot, base, requiredColumns, 0, false);
   if (!moldReady) {
+    recordMoldCastFailure(state);
+    if (state) state.portalCastOrigin = null;
+    if (lavaBlock) markLavaClusterBad(bot, lavaBlock.position);
     return {
       success: false,
-      message: "Could not complete portal casting mold (blocked face or insufficient scaffold blocks)."
+      message: "Could not complete portal casting mold (blocked face or insufficient scaffold blocks). Site abandoned."
     };
   }
 
@@ -1026,10 +1244,14 @@ async function castPortalWithMold(bot, state, lavaBlock, presetFrame = null) {
   const waterSet = new Set(['water', 'flowing_water']);
   if (countItem(bot, 'water_bucket') === 0) {
     const filledWater = await fillBucketFromSource(bot, 'water');
-    if (!filledWater.success) return filledWater;
+    if (!filledWater.success) {
+      if (state) state.portalCastOrigin = null;
+      return filledWater;
+    }
   }
 
-  await pourBucketAtFace(
+  // Pour water and *verify* success (critical to avoid silent loop)
+  let waterPoured = await pourBucketAtFace(
     bot,
     'water_bucket',
     base.plus(at(0, 4, -1)),
@@ -1040,6 +1262,40 @@ async function castPortalWithMold(bot, state, lavaBlock, presetFrame = null) {
   );
   await bot.waitForTicks(14);
 
+  if (!waterPoured && !waterSet.has(bot.blockAt(base.plus(at(0, 4, -1)))?.name)) {
+    if (countItem(bot, 'water_bucket') === 0 && countItem(bot, 'bucket') > 0) {
+      await fillBucketFromSource(bot, 'water').catch(() => {});
+    }
+    if (countItem(bot, 'water_bucket') > 0) {
+      waterPoured = await pourBucketAtFace(
+        bot,
+        'water_bucket',
+        base.plus(at(0, 4, -1)),
+        base.plus(at(0, 3, -1)),
+        at(0, 1, 0),
+        base.plus(at(0, 1, 1)),
+        waterSet
+      );
+      await bot.waitForTicks(14);
+    }
+  }
+
+  if (!waterPoured && !waterSet.has(bot.blockAt(base.plus(at(0, 4, -1)))?.name)) {
+    if (countItem(bot, 'water_bucket') === 0 && countItem(bot, 'bucket') > 0) {
+      await fillBucketFromSource(bot, 'water').catch(() => {});
+    }
+    recordMoldCastFailure(state);
+    if (state) state.portalCastOrigin = null;
+    if (lavaBlock) markLavaClusterBad(bot, lavaBlock.position);
+    return {
+      success: false,
+      message: "Failed to place water_bucket for mold casting. Lava site marked bad, will try another."
+    };
+  }
+
+  // Now safe to place the previously omitted top-left scaffold
+  await ensureScaffoldBlock(bot, base.plus(at(-1, 4, 0)), base.plus(frontStandLeft));
+
   const leftSteps = [
     { offset: at(0, 0, 0), ref: at(0, -1, 0), face: at(0, 1, 0), stand: at(0, 1, 1) },
     { offset: at(-1, 1, 0), ref: at(-1, 1, -1), face: at(0, 0, 1), stand: frontStandLeft },
@@ -1048,7 +1304,7 @@ async function castPortalWithMold(bot, state, lavaBlock, presetFrame = null) {
     { offset: at(0, 4, 0), ref: at(-1, 4, 0), face: at(1, 0, 0), stand: frontStandRightMid }
   ];
   await castMoldSteps(bot, base, leftSteps, 0);
-  await bot.waitForTicks(14);
+  await bot.waitForTicks(28);
 
   const rightCascade = bot.blockAt(base.plus(at(1, 3, 0)))?.name;
   if (!waterSet.has(rightCascade)) {
@@ -1079,16 +1335,7 @@ async function castPortalWithMold(bot, state, lavaBlock, presetFrame = null) {
   await castMoldSteps(bot, base, rightSteps, 0);
   await bot.waitForTicks(30);
 
-  const leftWaterPos = base.plus(at(0, 4, -1));
-  if (bot.blockAt(leftWaterPos)?.name === 'water') {
-    await moveNearPosition(bot, base.plus(frontStandCenter), 4.0, 2);
-    await retrieveWaterSource(bot, leftWaterPos.offset(0.5, 0.5, 0.5));
-  }
-  const rightWaterPos = base.plus(at(1, 4, -1));
-  if (bot.blockAt(rightWaterPos)?.name === 'water') {
-    await moveNearPosition(bot, base.plus(frontStandRightMid), 4.0, 2);
-    await retrieveWaterSource(bot, rightWaterPos.offset(0.5, 0.5, 0.5));
-  }
+  await recoverMoldWater(bot, base, at, frontStandCenter, frontStandRightMid);
 
   const innerClearSteps = [
     { offset: at(0, 1, 0), stand: at(0, 1, 1) },
@@ -1104,6 +1351,16 @@ async function castPortalWithMold(bot, state, lavaBlock, presetFrame = null) {
     const builtCount = PORTAL_BUILD_STEPS
       .filter(s => !s.isCorner && bot.blockAt(base.plus(orientOffset(s.offset, axis)))?.name === 'obsidian')
       .length;
+    // After two partial failures we abandon the site
+    if (builtCount < 3) {
+      recordMoldCastFailure(state);
+      if (state) state.portalCastOrigin = null;
+      if (lavaBlock) markLavaClusterBad(bot, lavaBlock.position);
+      return {
+        success: false,
+        message: `Portal mold cast failed early (${builtCount}/10 obsidian). Site abandoned.`
+      };
+    }
     return {
       success: false,
       message: `Portal mold cast partially completed (${builtCount}/10 obsidian); run 'portal' again to finish.`
@@ -1350,6 +1607,114 @@ async function buildObsidianFrame(bot) {
   }
 }
 
+const DEFAULT_PORTAL_COORDS_FILE = path.join(process.cwd(), 'data', 'procedures', 'portal_coords.json');
+
+/**
+ * Persist pre-built Nether portal coordinates in memory and on disk
+ * @param {object} state Global bot state
+ * @param {{ x: number, y: number, z: number }} coords Portal coordinates
+ * @param {string} [filePath=DEFAULT_PORTAL_COORDS_FILE] Persistence file path
+ * @returns {Promise<{ x: number, y: number, z: number }|null>} Saved coordinates or null
+ */
+async function saveRegisteredPortalCoords(state, coords, filePath = DEFAULT_PORTAL_COORDS_FILE) {
+  if (!coords || !Number.isFinite(Number(coords.x)) || !Number.isFinite(Number(coords.y)) || !Number.isFinite(Number(coords.z))) {
+    return null;
+  }
+  const normalized = {
+    x: Math.round(Number(coords.x)),
+    y: Math.round(Number(coords.y)),
+    z: Math.round(Number(coords.z))
+  };
+  if (state) {
+    state.registeredPortalCoords = normalized;
+  }
+  try {
+    await fs.mkdir(path.dirname(filePath), { recursive: true });
+    await fs.writeFile(filePath, JSON.stringify(normalized, null, 2), 'utf8');
+  } catch (err) {
+    console.warn(`[PORTAL] Could not persist portal coordinates: ${err.message}`);
+  }
+  return normalized;
+}
+
+/**
+ * Load persisted pre-built Nether portal coordinates from disk or environment
+ * @param {object} state Global bot state
+ * @param {string} [filePath=DEFAULT_PORTAL_COORDS_FILE] Persistence file path
+ * @returns {Promise<{ x: number, y: number, z: number }|null>} Loaded coordinates or null
+ */
+async function loadRegisteredPortalCoords(state, filePath = DEFAULT_PORTAL_COORDS_FILE) {
+  try {
+    const raw = await fs.readFile(filePath, 'utf8');
+    const parsed = JSON.parse(raw);
+    if (Number.isFinite(Number(parsed?.x)) && Number.isFinite(Number(parsed?.y)) && Number.isFinite(Number(parsed?.z))) {
+      const normalized = {
+        x: Math.round(Number(parsed.x)),
+        y: Math.round(Number(parsed.y)),
+        z: Math.round(Number(parsed.z))
+      };
+      if (state) state.registeredPortalCoords = normalized;
+      return normalized;
+    }
+  } catch {
+    if (process.env.PORTAL_NETHER_COORDS) {
+      const parts = process.env.PORTAL_NETHER_COORDS.split(',').map(Number);
+      if (parts.length === 3 && parts.every(Number.isFinite)) {
+        const envCoords = { x: Math.round(parts[0]), y: Math.round(parts[1]), z: Math.round(parts[2]) };
+        if (state) state.registeredPortalCoords = envCoords;
+        return envCoords;
+      }
+    }
+  }
+  return state?.registeredPortalCoords || null;
+}
+
+/**
+ * Verify keepInventory gamerule, teleport to pre-built Nether portal after 3 failed turns at nether_portal milestone, and enter the Nether
+ * @param {object} bot Mineflayer bot instance
+ * @param {object|null} state Global bot state
+ * @returns {Promise<{ success: boolean, message: string }>} Teleport and portal entry result
+ */
+async function executeFallbackPortalTeleport(bot, state) {
+  if (state?.currentObjective !== 'nether_portal') {
+    return {
+      success: false,
+      message: "Accès refusé : la commande '/portal nether' est uniquement accessible au palier 'nether_portal'."
+    };
+  }
+  const coords = state?.registeredPortalCoords;
+  if (!coords || !Number.isFinite(coords.x) || !Number.isFinite(coords.y) || !Number.isFinite(coords.z)) {
+    return {
+      success: false,
+      message: "Aucune coordonnée de portail enregistrée. Utilise 'portal set <x> <y> <z>' en chat."
+    };
+  }
+
+  console.log(`[PORTAL] 3-turn fallback reached: enforcing gamerule keepInventory=true and teleporting to pre-built portal at (${coords.x}, ${coords.y}, ${coords.z})...`);
+  bot.chat?.('/gamerule keepInventory true');
+  bot.chat?.('/execute in minecraft:the_nether run gamerule keepInventory true');
+  if (typeof bot.waitForTicks === 'function') await bot.waitForTicks(10);
+
+  const botName = bot.username || 'Ollama';
+  bot.chat?.(`/tp ${botName} ${coords.x} ${coords.y} ${coords.z}`);
+  if (typeof bot.waitForTicks === 'function') await bot.waitForTicks(35);
+
+  const portalId = bot.registry?.blocksByName?.nether_portal?.id;
+  const activePortal = portalId && typeof bot.findBlock === 'function'
+    ? bot.findBlock({ matching: portalId, maxDistance: 24 })
+    : null;
+  if (activePortal) {
+    return igniteAndEnterPortal(bot, null);
+  }
+
+  const existingFrame = findPortalFrameCandidate(bot, 24);
+  if (existingFrame) {
+    return completePartialPortalFrame(bot, existingFrame, state);
+  }
+
+  return igniteAndEnterPortal(bot, new Vec3(coords.x, coords.y, coords.z));
+}
+
 /**
  * Manage speedrun Nether portal creation, ignition, and dimension entry
  * @param {object} bot Mineflayer bot instance
@@ -1376,6 +1741,19 @@ async function skillPortal(bot, state = null, target = null) {
     };
   }
 
+  if (
+    state?.currentObjective === 'nether_portal' &&
+    (state?.netherPortalAttempts || 0) >= 3 &&
+    state?.registeredPortalCoords
+  ) {
+    const distToRegistered = bot.entity?.position?.distanceTo
+      ? bot.entity.position.distanceTo(new Vec3(state.registeredPortalCoords.x, state.registeredPortalCoords.y, state.registeredPortalCoords.z))
+      : Infinity;
+    if (distToRegistered > 16) {
+      return executeFallbackPortalTeleport(bot, state);
+    }
+  }
+
   // Enter immediately if an active Nether portal block is already nearby
   const portalId = bot.registry.blocksByName.nether_portal?.id;
   const activePortal = portalId ? bot.findBlock({ matching: portalId, maxDistance: 48 }) : null;
@@ -1397,14 +1775,33 @@ async function skillPortal(bot, state = null, target = null) {
     return igniteAndEnterPortal(bot, buildResult.portalInnerPos, 'x', state);
   }
 
+  const hasDiamondTierPick = countItem(bot, 'diamond_pickaxe') > 0 || countItem(bot, 'netherite_pickaxe') > 0;
+  if (hasDiamondTierPick && countItem(bot, 'obsidian') < 10) {
+    const mined = await tryMineFormedObsidian(bot);
+    if (mined) {
+      if (countItem(bot, 'obsidian') >= 10) {
+        const buildResult = await buildObsidianFrame(bot);
+        if (!buildResult.success) return buildResult;
+        return igniteAndEnterPortal(bot, buildResult.portalInnerPos);
+      }
+      return { success: true, message: `Harvested obsidian directly (${countItem(bot, 'obsidian')}/10).` };
+    }
+  }
+
   if (countItem(bot, 'water_bucket') === 0) {
+    if (countItem(bot, 'bucket') === 0 && countItem(bot, 'lava_bucket') > 0) {
+      await emptyLavaBucketSafely(bot);
+    }
     if (countItem(bot, 'bucket') === 0) {
       return {
         success: false,
         message: "Missing 'bucket'. Craft a bucket with 3 iron ingots first ('craft bucket')."
       };
     }
-    return fillBucketFromSource(bot, 'water');
+    const fillRes = await fillBucketFromSource(bot, 'water');
+    if (!fillRes.success || !findBestLavaPool(bot)) {
+      return fillRes;
+    }
   }
 
   return castObsidianAtLavaPool(bot, state);
@@ -1414,6 +1811,8 @@ module.exports = {
   skillPortal,
   returnToOverworld,
   fillBucketFromSource,
+  emptyLavaBucketSafely,
+  pourBucketAtFace,
   igniteAndEnterPortal,
   buildObsidianFrame,
   findPlacementReference,
@@ -1425,5 +1824,8 @@ module.exports = {
   castPortalWithMold,
   markLavaClusterBad,
   countScaffoldBlocks,
+  saveRegisteredPortalCoords,
+  loadRegisteredPortalCoords,
+  executeFallbackPortalTeleport,
   PORTAL_BUILD_STEPS
 };

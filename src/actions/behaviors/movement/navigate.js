@@ -2,9 +2,9 @@ const crypto = require('node:crypto');
 const { Vec3 } = require('vec3');
 const { goals } = require('mineflayer-pathfinder');
 const config = require('../../../infrastructure/config');
-const { getBestToolForBlock, isWoodLog, isPlanks, hasToolType } = require('../../../perception/inventory');
-const { isBadBlock, hasTerrainAbove, isBelowSurface, estimateSurfaceY } = require('../../../perception/environment');
-const { markLavaClusterBad } = require('../world/portal');
+const { getBestToolForBlock, isWoodLog, isPlanks, hasToolType, countItem } = require('../../../perception/inventory');
+const { isBadBlock, hasTerrainAbove, isBelowSurface, estimateSurfaceY, rememberLava, getKnownLava, forgetLava } = require('../../../perception/environment');
+const { markLavaClusterBad, fillBucketFromSource, emptyLavaBucketSafely } = require('../world/portal');
 const { getOreDepthHint } = require('../../../minecraft/knowledge');
 const { escapeWater, isInLiquid } = require('./water');
 
@@ -19,6 +19,13 @@ const MIN_CLIMB_LEG_MS = 5000;
 // Longest time worth spending on one block while digging a way out of a hole
 const UNSTUCK_DIG_LIMIT_MS = 7000;
 
+const DEEP_CAVE_DIGGABLE_BLOCKS = new Set([
+  'deepslate', 'cobbled_deepslate', 'tuff', 'granite', 'diorite', 'andesite', 'netherrack', 'blackstone', 'basalt'
+]);
+const DRY_GROUND_BLOCKS = new Set([
+  ...config.VALID_GROUND_BLOCKS, 'obsidian', 'cobbled_deepslate', 'tuff', 'granite', 'diorite', 'andesite', 'netherrack', 'blackstone', 'basalt'
+]);
+
 /**
  * Check whether an adjacent block can be dug quickly during an unstuck maneuver
  * @param {object|null} block Candidate block
@@ -27,7 +34,7 @@ const UNSTUCK_DIG_LIMIT_MS = 7000;
  */
 function isDiggableObstacle(block, bot = null) {
   if (!block?.name) return false;
-  if (config.SOFT_BLOCKS.has(block.name)) return true;
+  if (config.SOFT_BLOCKS.has(block.name) || DEEP_CAVE_DIGGABLE_BLOCKS.has(block.name)) return true;
   if (block.name.endsWith('_leaves') || isWoodLog(block.name)) return true;
 
   // With a pickaxe in the pocket, deepslate, andesite or ore walls are no obstacle either
@@ -117,7 +124,7 @@ function findNearestDryLand(bot, maxDistance = 36) {
 
   return bot.findBlock({
     matching: (block) => {
-      if (!block?.position || !config.VALID_GROUND_BLOCKS.has(block.name)) return false;
+      if (!block?.position || !DRY_GROUND_BLOCKS.has(block.name) || isBadBlock(block.position)) return false;
       const above1 = bot.blockAt(block.position.offset(0, 1, 0));
       const above2 = bot.blockAt(block.position.offset(0, 2, 0));
       const clear1 = !above1 || above1.name === 'air' || above1.name === 'cave_air';
@@ -178,6 +185,9 @@ async function skillUnstuck(bot) {
   // searches a real route (diving or digging when needed) and reports honestly when the bot is still in water
   if (isInLiquid(bot)) {
     console.log("[UNSTUCK] Bot is in water: looking for a way out...");
+    if (countItem(bot, 'bucket') > 0) {
+      await fillBucketFromSource(bot, 'water').catch(() => {});
+    }
     if (currentExploreHeadingRad === null) {
       currentExploreHeadingRad = (crypto.randomInt(0, 360) * Math.PI) / 180;
     }
@@ -261,6 +271,11 @@ async function climbOutOfHole(bot, startY, timeoutMs = 12000) {
 
 const EXPLORE_WINDOW_SIZE = 6;
 const EXPLORE_BUDGET_MS = 34000;
+const LAVA_DEPTH_TARGET_Y = -50;
+const LAVA_DESCENT_STEP = 20;
+const LAVA_MISSES_BEFORE_DESCENT = 2;
+const KNOWN_LAVA_MAX_TRAVEL = 400;
+let lavaSearchMisses = 0;
 let currentExploreHeadingRad = null;
 let recentExplorePositions = [];
 
@@ -660,6 +675,188 @@ async function stepTowardsLava(bot, lavaBlock) {
 }
 
 /**
+ * Build a pathfinder goal satisfied once the bot reaches or goes below a target altitude
+ * @param {number} targetY Maximum altitude considered as goal
+ * @returns {object} Pathfinder-compatible goal object
+ */
+function createMaxYGoal(targetY) {
+  return {
+    heuristic: (node) => Math.max(0, node.y - targetY),
+    isEnd: (node) => node.y <= targetY,
+    hasChanged: () => false,
+    isValid: () => true
+  };
+}
+
+/**
+ * Dig and walk downwards towards deep cave layers where lava pools are abundant
+ * @param {object} bot Mineflayer bot instance
+ * @param {number} timeoutMs Maximum descent duration in milliseconds
+ * @returns {Promise<boolean>} True if the bot dropped at least a few blocks
+ */
+async function descendTowardsLavaDepth(bot, timeoutMs) {
+  const startY = Math.floor(bot.entity.position.y);
+  const targetY = Math.max(LAVA_DEPTH_TARGET_Y, startY - LAVA_DESCENT_STEP);
+  let navTimer = null;
+  let gotoPromise = null;
+  console.log(`[EXPLORE] No lava found nearby; descending from Y:${startY} towards Y:${targetY} (deep lava layer)...`);
+  try {
+    gotoPromise = bot.pathfinder.goto(createMaxYGoal(targetY));
+    const timeoutPromise = new Promise((_, reject) => {
+      navTimer = setTimeout(() => reject(new Error('Descent timeout')), timeoutMs);
+    });
+    await Promise.race([gotoPromise, timeoutPromise]);
+  } catch (err) {
+    console.warn('[EXPLORE] Descent impeded:', err.message);
+  } finally {
+    if (navTimer) clearTimeout(navTimer);
+    gotoPromise?.catch(() => {});
+    bot.pathfinder?.setGoal?.(null);
+    bot.clearControlStates?.();
+  }
+  return Math.floor(bot.entity.position.y) <= startY - 3;
+}
+
+/**
+ * Travel towards the nearest remembered lava source when none is currently loaded nearby
+ * @param {object} bot Mineflayer bot instance
+ * @param {number} timeoutMs Maximum travel duration in milliseconds
+ * @returns {Promise<string|null>} Success message or null if no progress was made
+ */
+async function travelToKnownLava(bot, timeoutMs) {
+  const dimension = bot.game?.dimension || 'overworld';
+  const pos = bot.entity.position;
+  const known = getKnownLava(pos, dimension)[0];
+  if (!known || timeoutMs < 5000) return null;
+
+  const dist = known.position.distanceTo(pos);
+  if (dist > KNOWN_LAVA_MAX_TRAVEL) return null;
+
+  const { x, y, z } = known.position;
+  console.log(`[EXPLORE] Returning to remembered lava at (${x}, ${y}, ${z}), ${Math.round(dist)} blocks away...`);
+  if (dist <= 40) {
+    const outcome = await stepTowardsLava(bot, { position: known.position });
+    return outcome.reached ? outcome.message : null;
+  }
+
+  const dx = x - pos.x;
+  const dz = z - pos.z;
+  const horiz = Math.hypot(dx, dz) || 1;
+  const waypointX = Math.round(pos.x + (dx / horiz) * 24);
+  const waypointZ = Math.round(pos.z + (dz / horiz) * 24);
+  try {
+    await moveExploreStep(bot, waypointX, waypointZ, false, Math.min(14000, timeoutMs - 2000));
+  } catch (err) {
+    console.warn('[EXPLORE] Travel to remembered lava impeded:', err.message);
+  }
+  const moved = Math.hypot(bot.entity.position.x - pos.x, bot.entity.position.z - pos.z);
+  if (moved >= 6) return `Travelling back towards remembered lava at (${x}, ${y}, ${z}).`;
+  forgetLava(known.position, 2);
+  return null;
+}
+
+/**
+ * Locate a nearby reachable water source block within exploration range
+ * @param {object} bot Mineflayer bot instance
+ * @param {number} [maxDistance=64] Maximum search radius
+ * @returns {object|null} Water source block or null
+ */
+function findNearbyWaterForExplore(bot, maxDistance = 64) {
+  const waterId = bot.registry?.blocksByName?.water?.id;
+  if (!waterId || typeof bot.findBlock !== 'function') return null;
+
+  const isEligibleWater = (block) => Boolean(
+    block?.position &&
+    block.type === waterId &&
+    (!block.metadata || block.metadata === 0) &&
+    !isBadBlock(block.position)
+  );
+
+  const immediateWater = bot.findBlock({ matching: isEligibleWater, maxDistance: 8 });
+  if (immediateWater) return immediateWater;
+
+  const surfaceWater = bot.findBlock({
+    matching: (block) => {
+      if (!isEligibleWater(block)) return false;
+      const above = bot.blockAt(block.position.offset(0, 1, 0));
+      return !above || above.name === 'air' || above.name === 'cave_air';
+    },
+    maxDistance
+  });
+  return surfaceWater || bot.findBlock({ matching: isEligibleWater, maxDistance });
+}
+
+/**
+ * Navigate incrementally towards a detected water source and fill an empty bucket when within reach
+ * @param {object} bot Mineflayer bot instance
+ * @param {object} waterBlock Detected water source block
+ * @returns {Promise<{ reached: boolean, message?: string }>} Step outcome
+ */
+async function stepTowardsWater(bot, waterBlock) {
+  const pos = bot.entity.position;
+  const startSnapshot = { x: pos.x, y: pos.y, z: pos.z };
+  const waterPos = waterBlock.position;
+  const dx = waterPos.x - pos.x;
+  const dy = waterPos.y - pos.y;
+  const dz = waterPos.z - pos.z;
+  const dist = Math.hypot(dx, dy, dz);
+  const horizDist = Math.hypot(dx, dz);
+
+  let goalPos = waterPos;
+  const goalRadius = 2;
+  if (dist > 12 || Math.abs(dy) > 8) {
+    const stepScale = horizDist > 10 ? 10 / horizDist : 1;
+    const stepX = Math.round(pos.x + dx * stepScale);
+    const stepZ = Math.round(pos.z + dz * stepScale);
+    let stepY = waterPos.y;
+    if (dy < -6) stepY = Math.round(pos.y) - 6;
+    else if (dy > 6) stepY = Math.round(pos.y) + 6;
+    goalPos = new Vec3(stepX, stepY, stepZ);
+  }
+
+  let navTimer = null;
+  try {
+    const { GoalNear } = goals;
+    console.log(`[EXPLORE] Stepping towards water source via (${goalPos.x}, ${goalPos.y}, ${goalPos.z})...`);
+    const gotoPromise = bot.pathfinder.goto(new GoalNear(goalPos.x, goalPos.y, goalPos.z, goalRadius));
+    const timeoutPromise = new Promise((_, reject) => {
+      navTimer = setTimeout(() => reject(new Error("Exploration timeout towards water")), 16000);
+    });
+    await Promise.race([gotoPromise, timeoutPromise]);
+  } catch (error) {
+    console.warn("Water exploration impeded :", error.message);
+  } finally {
+    if (navTimer) clearTimeout(navTimer);
+    bot.pathfinder?.setGoal?.(null);
+    bot.clearControlStates?.();
+  }
+
+  const afterPos = bot.entity.position;
+  const distAfter = Math.hypot(waterPos.x - afterPos.x, waterPos.y - afterPos.y, waterPos.z - afterPos.z);
+
+  if (distAfter <= 32) {
+    if (countItem(bot, 'bucket') === 0 && countItem(bot, 'lava_bucket') > 0) {
+      await emptyLavaBucketSafely(bot);
+    }
+    if (countItem(bot, 'bucket') > 0 && countItem(bot, 'water_bucket') === 0) {
+      const scoopRes = await fillBucketFromSource(bot, 'water');
+      if (scoopRes.success) {
+        return { reached: true, message: scoopRes.message };
+      }
+    }
+  }
+
+  if (distAfter <= 10) {
+    return { reached: true, message: "Located water source nearby; ready to fill 'water_bucket'." };
+  }
+  const movedDist = Math.hypot(afterPos.x - startSnapshot.x, afterPos.y - startSnapshot.y, afterPos.z - startSnapshot.z);
+  if (movedDist >= 3) {
+    return { reached: true, message: "Stepped closer towards water source." };
+  }
+  return { reached: false };
+}
+
+/**
  * Explore surroundings by walking towards outward coordinates or nearby portal targets
  * @param {object} bot Mineflayer bot instance
  * @param {object|null} [state=null] Global bot state
@@ -723,15 +920,91 @@ async function skillExplore(bot, state = null, target = null) {
     console.warn(`[EXPLORE] Could not climb towards the surface from Y:${Math.round(bot.entity.position.y)}; exploring the galleries instead.`);
   }
 
+  if (bot.game?.dimension !== 'the_nether') {
+    const visibleLava = findNearbyLavaForExplore(bot, 56);
+    if (visibleLava?.position) {
+      rememberLava(visibleLava.position, bot.game?.dimension || 'overworld');
+    }
+  }
+
   let attemptedAscent = false;
   let climbedToSurface = false;
-  const seekingLava = state?.currentObjective === 'nether_portal' || target === 'lava';
+  const needsWaterForPortal = Boolean(
+    bot.game?.dimension !== 'the_nether' &&
+    state?.currentObjective === 'nether_portal' &&
+    countItem(bot, 'water_bucket') === 0 &&
+    countItem(bot, 'obsidian') < 10 &&
+    (countItem(bot, 'bucket') > 0 || countItem(bot, 'lava_bucket') > 0)
+  );
+  const seekingWater = bot.game?.dimension !== 'the_nether' && (
+    cleanTarget === 'water' ||
+    cleanTarget === 'water_bucket' ||
+    needsWaterForPortal
+  );
+  const seekingDiamond = bot.game?.dimension !== 'the_nether' && (
+    cleanTarget === 'diamond' ||
+    cleanTarget === 'diamond_ore' ||
+    cleanTarget === 'deepslate_diamond_ore'
+  );
+  const seekingLava = bot.game?.dimension !== 'the_nether' && !seekingWater && !seekingDiamond && (
+    state?.currentObjective === 'nether_portal' || cleanTarget === 'lava'
+  );
+
+  if (seekingWater) {
+    if (countItem(bot, 'bucket') === 0 && countItem(bot, 'lava_bucket') > 0) {
+      await emptyLavaBucketSafely(bot);
+    }
+    const waterBlock = findNearbyWaterForExplore(bot, 64);
+    if (waterBlock?.position) {
+      const waterOutcome = await stepTowardsWater(bot, waterBlock);
+      if (waterOutcome.reached) {
+        return { success: true, message: waterOutcome.message };
+      }
+    } else if (isUnderground && remainingMs() >= 15000) {
+      attemptedAscent = true;
+      if (await trySurfaceAscent(bot, 14000)) {
+        climbedToSurface = true;
+        if (bot.entity.position.y < 62) {
+          return { success: true, message: "Climbed closer to surface to search for water." };
+        }
+      }
+    }
+  }
+
+  if (seekingDiamond && hasToolType(bot, '_pickaxe') && !bot.entity?.isInWater && bot.entity.position.y > LAVA_DEPTH_TARGET_Y + 2 && remainingMs() >= 10000) {
+    if (await descendTowardsLavaDepth(bot, Math.min(24000, remainingMs() - 2000))) {
+      return {
+        success: true,
+        message: `Descended to Y:${Math.round(bot.entity.position.y)} to search deep deepslate layers for diamond_ore.`
+      };
+    }
+  }
+
   if (seekingLava) {
     const lavaBlock = findNearbyLavaForExplore(bot, 56);
     if (lavaBlock?.position) {
+      lavaSearchMisses = 0;
+      rememberLava(lavaBlock.position, bot.game?.dimension || 'overworld');
       const stepOutcome = await stepTowardsLava(bot, lavaBlock);
       if (stepOutcome.reached) {
         return { success: true, message: stepOutcome.message };
+      }
+    } else {
+      const memoryMessage = await travelToKnownLava(bot, remainingMs());
+      if (memoryMessage) {
+        return { success: true, message: memoryMessage };
+      }
+      lavaSearchMisses += 1;
+      const canDescend = hasToolType(bot, '_pickaxe') &&
+        !bot.entity?.isInWater &&
+        bot.entity.position.y > LAVA_DEPTH_TARGET_Y + 2 &&
+        lavaSearchMisses >= LAVA_MISSES_BEFORE_DESCENT &&
+        remainingMs() >= 10000;
+      if (canDescend && await descendTowardsLavaDepth(bot, Math.min(24000, remainingMs() - 2000))) {
+        return {
+          success: true,
+          message: `Descended to Y:${Math.round(bot.entity.position.y)} to search deep caves for lava (lava is abundant below Y:-50).`
+        };
       }
     }
 
@@ -812,7 +1085,8 @@ async function skillExplore(bot, state = null, target = null) {
       }
     }
 
-    if (isUnderground && !attemptedAscent && remainingMs() >= 13000 && await trySurfaceAscent(bot, 11000)) {
+    const keepDepthForLava = (seekingLava || seekingDiamond) && hasToolType(bot, '_pickaxe');
+    if (isUnderground && !attemptedAscent && !keepDepthForLava && remainingMs() >= 13000 && await trySurfaceAscent(bot, 11000)) {
       return { success: true, message: "Climbed closer to surface while exploring." };
     }
 
@@ -845,5 +1119,8 @@ module.exports = {
   hasDropAhead,
   getHeadingAwayFromSpawn,
   headingToMineflayerYaw,
-  isBoxStuck
+  isBoxStuck,
+  createMaxYGoal,
+  descendTowardsLavaDepth,
+  travelToKnownLava
 };

@@ -15,6 +15,7 @@ const { skillEndPortal } = require('./behaviors/world/endportal');
 const { skillDragon } = require('./behaviors/combat/dragon');
 const { skillGoto } = require('./behaviors/movement/waypoint');
 const { collectDeployedTableIfAny } = require('./behaviors/items/table');
+const { countItem } = require('../perception/inventory');
 const { createDefaultRegistry } = require('../procedures/registry');
 const { validateProcedure } = require('../procedures/validator');
 const { executeProcedure } = require('../procedures/runner');
@@ -212,6 +213,8 @@ async function skillProcedure(bot, state, target, qty, options = {}) {
   };
 }
 
+const LAVA_MINE_TARGETS = new Set(['lava', 'flowing_lava', 'lava_bucket']);
+
 /**
  * Route an AI-decided action to its corresponding execution skill
  * @param {object} bot Mineflayer bot instance
@@ -231,6 +234,19 @@ async function dispatchSkill(bot, state, action, target, qty, options = {}) {
   if (action === 'unstuck') return skillUnstuck(bot);
   if (action === 'explore') return skillExplore(bot, state, target);
   if (action === 'wiki') return skillWiki(bot, target);
+  if (action === 'mine' && state?.currentObjective === 'nether_portal' && typeof target === 'string' && LAVA_MINE_TARGETS.has(target.toLowerCase().trim())) {
+    return skillExplore(bot, state, 'lava');
+  }
+  if (
+    action === 'mine' &&
+    state?.currentObjective === 'nether_portal' &&
+    typeof target === 'string' &&
+    target.toLowerCase().trim() === 'obsidian' &&
+    countItem(bot, 'diamond_pickaxe') === 0 &&
+    countItem(bot, 'netherite_pickaxe') === 0
+  ) {
+    return skillPortal(bot, state);
+  }
   if (action === 'mine') return skillMine(bot, state, target, qty);
   if (action === 'craft') return skillCraft(bot, state, target, qty, options);
   if (action === 'place') return skillPlace(bot, state, target);
