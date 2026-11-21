@@ -279,7 +279,7 @@ async function strikePortalFrame(bot, flint, portalBasePos, existingPortalId) {
   try {
     await bot.placeBlock(bottomObsidian, new Vec3(0, 1, 0));
   } catch {
-    await bot.activateBlock(bottomObsidian).catch(() => {});
+    await bot.activateBlock(bottomObsidian, new Vec3(0, 1, 0)).catch(() => {});
   }
   await bot.waitForTicks(10);
   return existingPortalId ? bot.findBlock({ matching: existingPortalId, maxDistance: 12 }) : null;
@@ -424,7 +424,7 @@ function findPlacementReference(bot, targetPos) {
   for (const dir of ADJACENT_DIRECTIONS) {
     const neighborPos = targetPos.plus(dir);
     const neighbor = bot.blockAt(neighborPos);
-    if (neighbor && !NON_SOLID_BLOCKS.has(neighbor.name)) {
+    if (neighbor && !NON_SOLID_BLOCKS.has(neighbor.name) && neighbor.boundingBox !== 'empty') {
       const refPosition = neighbor.position || neighborPos;
       return {
         referenceBlock: { ...neighbor, position: refPosition },
@@ -953,7 +953,7 @@ async function pourBucketAtFace(bot, bucketName, targetPos, refPos, faceVec, sta
 
   const beforeCount = countItem(bot, bucketName);
 
-  await moveNearPosition(bot, standPos, 1.0, 0);
+  await moveNearPosition(bot, standPos, 0.6, 1);
   bot.pathfinder?.setGoal?.(null);
   bot.clearControlStates?.();
 
@@ -1200,7 +1200,21 @@ async function castPortalWithMold(bot, state, lavaBlock, presetFrame = null) {
     { offset: at(0, 4, 2), stand: frontStandCenter },
     { offset: at(1, 4, 2), stand: frontStandRightMid },
     { offset: at(0, 4, -1), stand: frontStandCenter },
-    { offset: at(1, 4, -1), stand: frontStandRightMid }
+    { offset: at(1, 4, -1), stand: frontStandRightMid },
+    { offset: at(-1, 1, 1), stand: frontStandLeft },
+    { offset: at(-1, 2, 1), stand: frontStandLeft },
+    { offset: at(-1, 3, 1), stand: frontStandLeft },
+    { offset: at(2, 1, 1), stand: frontStandRight },
+    { offset: at(2, 2, 1), stand: frontStandRight },
+    { offset: at(2, 3, 1), stand: frontStandRight },
+    { offset: at(-1, 1, 2), stand: frontStandCenter },
+    { offset: at(-1, 2, 2), stand: frontStandCenter },
+    { offset: at(0, 1, 2), stand: at(0, 1, 1) },
+    { offset: at(0, 2, 2), stand: at(0, 1, 1) },
+    { offset: at(1, 1, 2), stand: at(1, 1, 1) },
+    { offset: at(1, 2, 2), stand: at(1, 1, 1) },
+    { offset: at(2, 1, 2), stand: frontStandRightMid },
+    { offset: at(2, 2, 2), stand: frontStandRightMid }
   ];
   await clearMoldSpaces(bot, base, clearSteps, 0);
 
@@ -1500,10 +1514,16 @@ async function placeSingleObsidianAt(bot, targetPos, isCorner = false, remaining
   if (currentBlock?.name === 'obsidian') return true;
   if (isCorner && currentBlock && !NON_SOLID_BLOCKS.has(currentBlock.name)) return true;
 
-  if (currentBlock && !NON_SOLID_BLOCKS.has(currentBlock.name)) {
-    const tool = getBestToolForBlock(bot, currentBlock);
+  if (bot.entity?.position?.distanceTo && bot.entity.position.distanceTo(targetPos) > 4.0 && bot.pathfinder?.goto) {
+    const { GoalNear } = goals;
+    await bot.pathfinder.goto(new GoalNear(targetPos.x, targetPos.y, targetPos.z, 2)).catch(() => {});
+  }
+
+  const refreshedBlock = bot.blockAt(targetPos);
+  if (refreshedBlock && !NON_SOLID_BLOCKS.has(refreshedBlock.name)) {
+    const tool = getBestToolForBlock(bot, refreshedBlock);
     if (tool) await bot.equip(tool, 'hand').catch(() => {});
-    await bot.dig(currentBlock).catch(() => {});
+    await bot.dig(refreshedBlock).catch(() => {});
   }
 
   const itemToPlace = selectFrameStepItem(bot, isCorner, remainingCoreBlocks);
@@ -1511,11 +1531,6 @@ async function placeSingleObsidianAt(bot, targetPos, isCorner = false, remaining
 
   const placementRef = findPlacementReference(bot, targetPos);
   if (!placementRef) return false;
-
-  if (bot.entity?.position?.distanceTo && bot.entity.position.distanceTo(targetPos) > 4.2 && bot.pathfinder?.goto) {
-    const { GoalNear } = goals;
-    await bot.pathfinder.goto(new GoalNear(targetPos.x, targetPos.y, targetPos.z, 3)).catch(() => {});
-  }
 
   const { referenceBlock, faceVector } = placementRef;
   await bot.equip(itemToPlace, 'hand');
@@ -1571,14 +1586,20 @@ async function buildObsidianFrame(bot) {
     };
   }
 
-  const refBlock = bot.findBlock({
-    matching: (block) => {
-      if (!config.VALID_GROUND_BLOCKS.has(block.name)) return false;
-      const above = bot.blockAt(block.position.offset(0, 1, 0));
-      return above?.name === 'air';
-    },
-    maxDistance: 4
-  });
+  const feetPos = bot.entity?.position?.floored ? bot.entity.position.floored() : null;
+  const isValidPortalGround = (block, minHorizDist) => {
+    if (!block || !config.VALID_GROUND_BLOCKS.has(block.name)) return false;
+    if (!block.position) return true;
+    if (feetPos && Math.hypot(block.position.x - feetPos.x, block.position.z - feetPos.z) < minHorizDist) {
+      return false;
+    }
+    const above = bot.blockAt(block.position.offset(0, 1, 0));
+    return above?.name === 'air' || above?.name === 'cave_air';
+  };
+
+  const refBlock =
+    bot.findBlock({ matching: (block) => isValidPortalGround(block, 2), maxDistance: 6 }) ||
+    bot.findBlock({ matching: (block) => isValidPortalGround(block, 0), maxDistance: 4 });
 
   if (!refBlock) {
     return { success: false, portalInnerPos: null, message: "No flat ground nearby to build the Nether portal." };
@@ -1765,14 +1786,15 @@ async function skillPortal(bot, state = null, target = null) {
   if (existingFrame?.isComplete) {
     return completePartialPortalFrame(bot, existingFrame, state);
   }
-  if (existingFrame && (countItem(bot, 'obsidian') > 0 || findBestLavaPool(bot))) {
-    return completePartialPortalFrame(bot, existingFrame, state);
-  }
 
   if (countItem(bot, 'obsidian') >= 10) {
     const buildResult = await buildObsidianFrame(bot);
     if (!buildResult.success) return buildResult;
     return igniteAndEnterPortal(bot, buildResult.portalInnerPos, 'x', state);
+  }
+
+  if (existingFrame && (countItem(bot, 'obsidian') > 0 || findBestLavaPool(bot))) {
+    return completePartialPortalFrame(bot, existingFrame, state);
   }
 
   const hasDiamondTierPick = countItem(bot, 'diamond_pickaxe') > 0 || countItem(bot, 'netherite_pickaxe') > 0;

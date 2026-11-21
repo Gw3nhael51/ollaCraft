@@ -26,7 +26,7 @@ function isBedMaterial(name) {
 }
 
 // Retain limited terrain and utility blocks for bridging and flint harvesting
-const BULK_MATERIALS = new Set(['dirt', 'cobblestone', 'granite', 'diorite', 'andesite', 'cobbled_deepslate', 'gravel', 'sand']);
+const BULK_MATERIALS = new Set(['dirt', 'cobblestone', 'granite', 'diorite', 'andesite', 'cobbled_deepslate', 'tuff', 'gravel', 'sand']);
 
 const FLOWER_KEYWORDS = [
   'tulip', 'dandelion', 'poppy', 'daisy', 'lily_of_the_valley',

@@ -6,6 +6,7 @@ const {
   isBlockExposedToAir, VALUABLE_ORES, markBadBlock, isBadBlock, isBlockSubmerged, isInFloodedZone
 } = require('../../../perception/environment');
 const { fillBucketFromSource } = require('../world/portal');
+const { freeInventorySlotIfFull } = require('../items/storage');
 
 const LIQUID_TARGETS = new Map([
   ['water', 'water'],
@@ -16,6 +17,19 @@ const LIQUID_TARGETS = new Map([
   ['flowing_lava', 'lava'],
   ['lava_bucket', 'lava']
 ]);
+
+/**
+ * Check whether lava occupies a block position or the block immediately beneath it
+ * @param {object} bot Mineflayer bot instance
+ * @param {object|null} pos Block position vector
+ * @returns {boolean} True when lava or flowing_lava is present at or below pos
+ */
+function hasLavaUnderOrAt(bot, pos) {
+  if (!pos || typeof bot.blockAt !== 'function') return false;
+  const atPos = bot.blockAt(pos)?.name;
+  const below = bot.blockAt(pos.offset(0, -1, 0))?.name;
+  return atPos === 'lava' || atPos === 'flowing_lava' || below === 'lava' || below === 'flowing_lava';
+}
 
 /**
  * Move briefly towards destroyed block position to vacuum item drops
@@ -66,22 +80,27 @@ async function equipBestMiningTool(bot, block) {
  * @returns {object|null} Matching block or null
  */
 function findMineableTargetBlock(bot, targetName, isOpportunistic) {
-  const searchWithCandidates = (candidateSet) => bot.findBlock({
+  const clean = typeof targetName === 'string' ? targetName.toLowerCase().trim() : '';
+  const searchWithCandidates = (candidateSet, skipLava = false) => bot.findBlock({
     matching: (block) => {
       if (!block?.position) return candidateSet.has(block?.name);
       if (!candidateSet.has(block.name) || isBadBlock(block.position)) return false;
       // Mining under water is five times slower and is how the bot drowns: only dry blocks are targeted
       if (isBlockSubmerged(bot, block) || isInFloodedZone(block.position)) return false;
+      if (skipLava && hasLavaUnderOrAt(bot, block.position)) return false;
       return !isOpportunistic || (isBlockExposedToAir(bot, block) && canHarvestBlock(bot, block).canHarvest);
     },
     maxDistance: 30
   });
 
   const primarySet = isOpportunistic ? VALUABLE_ORES : new Set(getBlockNamesForTarget(bot, targetName));
+  if (!isOpportunistic && clean === 'obsidian') {
+    const safeObsidian = searchWithCandidates(primarySet, true);
+    if (safeObsidian) return safeObsidian;
+  }
   const primaryMatch = searchWithCandidates(primarySet);
   if (primaryMatch || isOpportunistic) return primaryMatch;
 
-  const clean = typeof targetName === 'string' ? targetName.toLowerCase().trim() : '';
   if (isWoodLog(clean) && !GENERIC_LOG_NAMES.has(clean)) {
     return searchWithCandidates(new Set(getBlockNamesForTarget(bot, 'log')));
   }
@@ -137,9 +156,11 @@ async function approachAndBreakBlock(bot, targetBlock, state, actionId) {
 
   if (state && state.activeActionId !== actionId) return { cancelled: true };
 
-  await bot.pathfinder.goto(new GoalNear(targetBlock.position.x, targetBlock.position.y, targetBlock.position.z, 1)).catch(() => {});
-  await collectDrops(bot, targetBlock.position);
-  await bot.waitForTicks(6);
+  if (!hasLavaUnderOrAt(bot, targetBlock.position)) {
+    await bot.pathfinder.goto(new GoalNear(targetBlock.position.x, targetBlock.position.y, targetBlock.position.z, 1)).catch(() => {});
+    await collectDrops(bot, targetBlock.position);
+  }
+  await bot.waitForTicks(8);
 
   return { cancelled: false, blockToBreak };
 }
@@ -438,6 +459,7 @@ async function skillMine(bot, state, targetName, count) {
     return fillBucketFromSource(bot, LIQUID_TARGETS.get(cleanTarget));
   }
 
+  await freeInventorySlotIfFull(bot, 3);
   const actionId = state.activeActionId;
   // Cap per-cycle block count to prevent safety timeout overflows
   const targetQuantity = Math.min(3, Math.max(1, count || 1));
