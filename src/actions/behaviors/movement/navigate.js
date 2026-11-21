@@ -86,15 +86,16 @@ async function findAndDigEscapeRoute(bot, cardinals, index) {
 
   if (isDiggableObstacle(sideEyeBlock, bot)) {
     console.log(`[UNSTUCK] Passable wall found in direction (${dir.x}, ${dir.y}, ${dir.z}) : ${sideEyeBlock.name}. Digging escape path...`);
+    const digTimeoutMs = hasToolType(bot, '_pickaxe') ? 8000 : 18000;
     try {
       const eyeTool = getBestToolForBlock(bot, sideEyeBlock);
       if (eyeTool) await bot.equip(eyeTool, 'hand').catch(() => {});
-      await digWithTimeout(bot, sideEyeBlock, 8000);
+      await digWithTimeout(bot, sideEyeBlock, digTimeoutMs);
 
       if (isDiggableObstacle(sideFeetBlock, bot)) {
         const feetTool = getBestToolForBlock(bot, sideFeetBlock);
         if (feetTool) await bot.equip(feetTool, 'hand').catch(() => {});
-        await digWithTimeout(bot, sideFeetBlock, 8000);
+        await digWithTimeout(bot, sideFeetBlock, digTimeoutMs);
       }
 
       const targetPos = bot.entity.position.plus(dir);
@@ -208,7 +209,7 @@ async function skillUnstuck(bot) {
     try {
       const tool = getBestToolForBlock(bot, headBlock);
       if (tool) await bot.equip(tool, 'hand').catch(() => {});
-      await digWithTimeout(bot, headBlock, 10000);
+      await digWithTimeout(bot, headBlock, hasToolType(bot, '_pickaxe') ? 10000 : 18000);
       console.log("[UNSTUCK] Ceiling block broken successfully.");
     } catch (error) {
       console.warn("[UNSTUCK] Failed to break ceiling block :", error.message);
@@ -498,6 +499,139 @@ function hasSolidCeilingAbove(bot) {
   return hasTerrainAbove(bot, 20);
 }
 
+const PILLAR_SCAFFOLD_BLOCKS = [
+  'cobblestone', 'cobbled_deepslate', 'dirt', 'stone', 'andesite', 'diorite', 'granite', 'tuff', 'netherrack', 'deepslate'
+];
+const NON_SOLID_PILLAR_BLOCKS = new Set([
+  'air', 'cave_air', 'void_air', 'short_grass', 'tall_grass', 'grass', 'fern', 'torch', 'wall_torch', 'snow'
+]);
+const PILLAR_HAZARD_BLOCKS = new Set([
+  'lava', 'flowing_lava', 'water', 'flowing_water', 'bedrock', 'obsidian'
+]);
+
+/**
+ * Find the highest-priority solid scaffold item carried in inventory for vertical pillaring
+ * @param {object} bot Mineflayer bot instance
+ * @returns {object|null} Matching inventory item or null
+ */
+function findPillarScaffoldItem(bot) {
+  const items = typeof bot.inventory?.items === 'function' ? bot.inventory.items() : [];
+  for (const name of PILLAR_SCAFFOLD_BLOCKS) {
+    const match = items.find(i => i.name === name);
+    if (match) return match;
+  }
+  return null;
+}
+
+/**
+ * Recursively dig one block overhead and jump-place a scaffold block beneath feet until deadline or surface
+ * @param {object} bot Mineflayer bot instance
+ * @param {number} startY Initial floored Y altitude before pillaring
+ * @param {number} deadlineMs Epoch deadline timestamp in milliseconds
+ * @param {number} sameYRetries Consecutive retries at the same altitude (for falling blocks)
+ * @returns {Promise<boolean>} True if net positive vertical gain was achieved
+ */
+async function pillarUpRecursive(bot, startY, deadlineMs, sameYRetries) {
+  if (Date.now() >= deadlineMs || bot.entity.position.y >= 64 || bot.entity.isInWater || sameYRetries >= 3) {
+    return Math.floor(bot.entity.position.y) > startY;
+  }
+
+  const scaffoldItem = findPillarScaffoldItem(bot);
+  if (!scaffoldItem) return Math.floor(bot.entity.position.y) > startY;
+
+  const feetPos = bot.entity.position.floored
+    ? bot.entity.position.floored()
+    : new Vec3(Math.floor(bot.entity.position.x), Math.floor(bot.entity.position.y), Math.floor(bot.entity.position.z));
+
+  const headAbove = bot.blockAt(feetPos.offset(0, 2, 0));
+  const aboveHeadAbove = bot.blockAt(feetPos.offset(0, 3, 0));
+  if ((headAbove && PILLAR_HAZARD_BLOCKS.has(headAbove.name)) || (aboveHeadAbove && PILLAR_HAZARD_BLOCKS.has(aboveHeadAbove.name))) {
+    return Math.floor(bot.entity.position.y) > startY;
+  }
+
+  if (headAbove && !NON_SOLID_PILLAR_BLOCKS.has(headAbove.name)) {
+    const tool = getBestToolForBlock(bot, headAbove);
+    const digMs = typeof headAbove.digTime === 'function'
+      ? headAbove.digTime(tool?.type ?? null, false, false, false, [], {})
+      : (hasToolType(bot, '_pickaxe') ? 2000 : 8000);
+    if (!Number.isFinite(digMs) || Date.now() + digMs > deadlineMs + 4000) {
+      return Math.floor(bot.entity.position.y) > startY;
+    }
+    if (tool && typeof bot.equip === 'function') {
+      await bot.equip(tool, 'hand').catch(() => {});
+    }
+    try {
+      await digWithTimeout(bot, headAbove, Math.max(8000, Math.ceil(digMs) + 4000));
+    } catch {
+      return Math.floor(bot.entity.position.y) > startY;
+    }
+    await bot.waitForTicks(2);
+    const afterDig = bot.blockAt(feetPos.offset(0, 2, 0));
+    if (afterDig && !NON_SOLID_PILLAR_BLOCKS.has(afterDig.name)) {
+      return pillarUpRecursive(bot, startY, deadlineMs, sameYRetries + 1);
+    }
+  }
+
+  const belowBlock = bot.blockAt(feetPos.offset(0, -1, 0));
+  if (!belowBlock || NON_SOLID_PILLAR_BLOCKS.has(belowBlock.name)) {
+    return Math.floor(bot.entity.position.y) > startY;
+  }
+
+  const dx = (feetPos.x + 0.5) - bot.entity.position.x;
+  const dz = (feetPos.z + 0.5) - bot.entity.position.z;
+  if (Math.hypot(dx, dz) > 0.18 && typeof bot.lookAt === 'function') {
+    await bot.lookAt(new Vec3(feetPos.x + 0.5, bot.entity.position.y + 1.6, feetPos.z + 0.5), true).catch(() => {});
+    bot.setControlState('forward', true);
+    await bot.waitForTicks(2);
+    bot.clearControlStates?.();
+  }
+
+  const belowPos = belowBlock.position || feetPos.offset(0, -1, 0);
+  if (typeof bot.equip === 'function') {
+    await bot.equip(scaffoldItem, 'hand').catch(() => {});
+  }
+  if (typeof bot.lookAt === 'function') {
+    await bot.lookAt(belowPos.offset(0.5, 1, 0.5), true).catch(() => {});
+  }
+  bot.setControlState('jump', true);
+  await bot.waitForTicks(4);
+  await bot.placeBlock(belowBlock, new Vec3(0, 1, 0)).catch(() => {});
+  bot.setControlState('jump', false);
+  await bot.waitForTicks(5);
+
+  const newY = Math.floor(bot.entity.position.y);
+  if (newY <= feetPos.y) return newY > startY;
+  return pillarUpRecursive(bot, startY, deadlineMs, 0);
+}
+
+/**
+ * Climb vertically using 1x1 pillaring when underground pathfinding stalls or no pickaxe is carried
+ * @param {object} bot Mineflayer bot instance
+ * @param {number} [timeoutMs=24000] Maximum pillaring budget in milliseconds
+ * @returns {Promise<boolean>} True if bot gained at least 1 block of altitude
+ */
+async function tryPillarUp(bot, timeoutMs = 24000) {
+  if (
+    !bot.entity?.position ||
+    bot.entity.isInWater ||
+    typeof bot.blockAt !== 'function' ||
+    typeof bot.dig !== 'function' ||
+    typeof bot.placeBlock !== 'function' ||
+    typeof bot.waitForTicks !== 'function' ||
+    typeof bot.setControlState !== 'function'
+  ) {
+    return false;
+  }
+  const startY = Math.floor(bot.entity.position.y);
+  bot.pathfinder?.setGoal?.(null);
+  bot.clearControlStates?.();
+  try {
+    return await pillarUpRecursive(bot, startY, Date.now() + timeoutMs, 0);
+  } finally {
+    bot.clearControlStates?.();
+  }
+}
+
 /**
  * Attempt to climb upwards toward surface elevation when deep underground
  * @param {object} bot Mineflayer bot instance
@@ -507,12 +641,22 @@ function hasSolidCeilingAbove(bot) {
  */
 async function trySurfaceAscent(bot, timeoutMs = 14000, goalY = null) {
   if (!bot.entity?.position || !goals.GoalY) return false;
+  const hasPick = hasToolType(bot, '_pickaxe');
+  const startY = Math.floor(bot.entity.position.y);
+  const minGain = hasPick ? 3 : 1;
+
+  if (!hasPick && await tryPillarUp(bot, Math.min(timeoutMs, 26000))) {
+    console.log(`[EXPLORE] Pillar ascent reached Y:${Math.round(bot.entity.position.y)}`);
+    return true;
+  }
+
   let navTimer = null;
   let gotoPromise = null;
   const startX = bot.entity.position.x;
   const startZ = bot.entity.position.z;
   try {
-    const targetY = goalY ?? Math.min(72, Math.round(bot.entity.position.y) + 10);
+    const stepUp = hasPick ? 10 : 6;
+    const targetY = goalY ?? Math.min(72, Math.round(bot.entity.position.y) + stepUp);
     console.log(`[EXPLORE] Climbing towards Y:${targetY}...`);
     gotoPromise = bot.pathfinder.goto(new goals.GoalY(targetY));
     const timeoutPromise = new Promise((_, reject) => {
@@ -528,6 +672,14 @@ async function trySurfaceAscent(bot, timeoutMs = 14000, goalY = null) {
     console.log(`[EXPLORE] Ascent complete; now at Y:${Math.round(endPos.y)}`);
     return true;
   } catch (err) {
+    if (Math.floor(bot.entity.position.y) >= startY + minGain) {
+      console.log(`[EXPLORE] Partial ascent reached Y:${Math.round(bot.entity.position.y)}`);
+      return true;
+    }
+    if (hasPick && timeoutMs >= 10000 && await tryPillarUp(bot, 8000)) {
+      console.log(`[EXPLORE] Pillar fallback reached Y:${Math.round(bot.entity.position.y)}`);
+      return true;
+    }
     console.warn('[EXPLORE] Surface ascent failed:', err.message);
     return false;
   } finally {
@@ -946,8 +1098,16 @@ async function skillExplore(bot, state = null, target = null) {
     cleanTarget === 'diamond_ore' ||
     cleanTarget === 'deepslate_diamond_ore'
   );
-  const seekingLava = bot.game?.dimension !== 'the_nether' && !seekingWater && !seekingDiamond && (
-    state?.currentObjective === 'nether_portal' || cleanTarget === 'lava'
+  const seekingSurface = bot.game?.dimension !== 'the_nether' && !seekingWater && !seekingDiamond && (
+    cleanTarget.includes('log') ||
+    cleanTarget === 'tree' ||
+    cleanTarget === 'wood' ||
+    cleanTarget === 'planks' ||
+    cleanTarget === 'crafting_table' ||
+    cleanTarget === 'base'
+  );
+  const seekingLava = bot.game?.dimension !== 'the_nether' && !seekingWater && !seekingDiamond && !seekingSurface && (
+    state?.currentObjective === 'nether_portal' || (cleanTarget === 'lava' && !state?.currentObjective)
   );
 
   if (seekingWater) {
@@ -1023,6 +1183,16 @@ async function skillExplore(bot, state = null, target = null) {
         if (bot.entity.position.y < 62) {
           return { success: true, message: "Climbed closer to surface to search for lava pools." };
         }
+      }
+    }
+  }
+
+  if (seekingSurface && isUnderground && remainingMs() >= 10000) {
+    attemptedAscent = true;
+    if (await trySurfaceAscent(bot, Math.min(28000, remainingMs() - 2000))) {
+      climbedToSurface = true;
+      if (bot.entity.position.y < 62) {
+        return { success: true, message: "Climbed closer to surface to search for surface resources." };
       }
     }
   }
@@ -1122,5 +1292,6 @@ module.exports = {
   isBoxStuck,
   createMaxYGoal,
   descendTowardsLavaDepth,
-  travelToKnownLava
+  travelToKnownLava,
+  tryPillarUp
 };
