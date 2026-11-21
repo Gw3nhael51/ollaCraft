@@ -7,10 +7,43 @@ const { askOllama } = require('./ollama');
 const { dispatchSkill } = require('../actions/dispatcher');
 const { skillUnstuck } = require('../actions/behaviors/movement/navigate');
 const { runManagerCycle, shouldRunManager, cleanTargetIdentifier } = require('./manager');
+const { getPriorityDecision, getPlannedDecision } = require('./planner');
+const {
+  recordOutcome, isActionBlocked, detectStuck, forceRecovery, takeForcedDecision, getSuggestedTemperature
+} = require('./recovery');
+const { hasMilestone } = require('../core/progress');
 
 const ACTION_TIMEOUT_MS = 45000;
 const PROCEDURE_TIMEOUT_MS = 60000;
 const PROCEDURE_ENVELOPE_TIMEOUT_MS = 75000;
+// Long multi-phase skills need more than the default action budget
+const ACTION_TIMEOUTS_MS = {
+  portal: 150000,
+  goto: 50000,
+  bed: 60000,
+  stronghold: 75000,
+  endportal: 130000,
+  dragon: 60000
+};
+// Pause before the next cycle: a model call deserves a breather, a planned step does not
+const LLM_CYCLE_DELAY_MS = 1500;
+const PLANNED_CYCLE_DELAY_MS = 500;
+// Planned cycles chain quickly: space out chat announcements so the server's anti-spam never kicks the bot
+const ANNOUNCEMENT_INTERVAL_MS = 2500;
+let lastAnnouncementAt = 0;
+
+/**
+ * Announce the chosen action in chat, at a rate the server's spam protection tolerates
+ * @param {object} bot Mineflayer bot instance
+ * @param {object} decision Decision about to be executed
+ */
+function announceDecision(bot, decision) {
+  const now = Date.now();
+  if (now - lastAnnouncementAt < ANNOUNCEMENT_INTERVAL_MS) return;
+  lastAnnouncementAt = now;
+  const safeTarget = decision.target && decision.target !== 'none' ? ` (${decision.target})` : '';
+  bot.chat(`Action : ${decision.action}${safeTarget}`.slice(0, 60));
+}
 
 /**
  * Locate a placed crafting table nearby or at remembered base coordinates
@@ -84,11 +117,9 @@ async function executeDecisionWithTimeout(bot, decision, options = {}) {
   let actionTimer = null;
   state.activeActionId = (state.activeActionId || 0) + 1;
   const isProcedure = decision.action === 'procedure';
-  let timeoutLimitMs = ACTION_TIMEOUT_MS;
+  let timeoutLimitMs = ACTION_TIMEOUTS_MS[decision.action] || ACTION_TIMEOUT_MS;
   if (decision.action === 'smelt') {
     timeoutLimitMs = Math.max(ACTION_TIMEOUT_MS, (decision.qty || 1) * 12000 + 20000);
-  } else if (decision.action === 'portal') {
-    timeoutLimitMs = 150000;
   } else if (isProcedure) {
     timeoutLimitMs = options.procedureEnvelopeTimeoutMs || PROCEDURE_ENVELOPE_TIMEOUT_MS;
   }
@@ -124,11 +155,13 @@ async function executeDecisionWithTimeout(bot, decision, options = {}) {
 }
 
 /**
- * Record an action execution result in state and bounded history
+ * Record an action execution result in state, bounded history and the anti-loop failure memory
+ * @param {object} bot Mineflayer bot instance
  * @param {object} decision Executed decision
  * @param {{ success: boolean, message: string }} executionResult Skill execution result
+ * @param {string} [source='llm'] Where the decision came from ('llm', 'plan', 'manager', 'procedure', 'recovery')
  */
-function recordActionResult(decision, executionResult) {
+function recordActionResult(bot, decision, executionResult, source = 'llm') {
   const entry = {
     action: decision.action,
     target: decision.target || 'none',
@@ -136,10 +169,66 @@ function recordActionResult(decision, executionResult) {
     message: executionResult.message
   };
   state.lastActionResult = entry;
+  state.lastDecisionSource = source;
   state.actionHistory.push({ ...entry });
   if (state.actionHistory.length > 8) {
     state.actionHistory.shift();
   }
+  recordOutcome(bot, state, decision, executionResult);
+
+  if (state.metrics) {
+    if (source === 'llm') state.metrics.llmDecisions += 1;
+    else state.metrics.deterministicDecisions += 1;
+  }
+}
+
+/**
+ * Pick the next action without consulting the model whenever the situation leaves no real choice.
+ * Priority: forced recovery step, survival reflexes and stage logistics, the Manager's reliable
+ * sub-goal (validated procedures), then the next feasible step of the dependency plan.
+ * @param {object} bot Mineflayer bot instance
+ * @returns {{ decision: object, source: string }|null} Automatic decision or null when the model must decide
+ */
+function selectAutomaticDecision(bot) {
+  const forced = takeForcedDecision(state);
+  if (forced) return { decision: forced, source: 'recovery' };
+
+  const priority = getPriorityDecision(bot, state);
+  if (priority.decision) return { decision: priority.decision, source: 'plan' };
+
+  const reliable = getReliableProcedureDecision(state);
+  if (reliable && !isActionBlocked(state, reliable.action, reliable.target)) {
+    return { decision: reliable, source: reliable.action === 'procedure' ? 'procedure' : 'manager' };
+  }
+
+  if (!priority.deferred) {
+    const planned = getPlannedDecision(bot, state);
+    if (planned) return { decision: planned, source: 'plan' };
+  }
+  return null;
+}
+
+/**
+ * Ask the Player model for a decision, refusing any action that keeps failing
+ * @param {object} bot Mineflayer bot instance
+ * @param {Function} askOllamaFn Model query function
+ * @returns {Promise<{ decision: object|null, source: string }>} Model decision, or a recovery step replacing a refused one
+ */
+async function requestModelDecision(bot, askOllamaFn) {
+  const environment = scanEnvironment(bot, 20);
+  const craftingTable = findAvailableCraftingTable(bot);
+  const prompt = buildReactPrompt(bot, state, environment, craftingTable);
+
+  // The temperature rises while the bot stagnates so the model stops answering the same thing
+  const rawDecision = await askOllamaFn(prompt, undefined, undefined, { temperature: getSuggestedTemperature(state) });
+  const decision = resolvePlayerDecision(rawDecision);
+  if (!decision || !isActionBlocked(state, decision.action, decision.target)) {
+    return { decision, source: 'llm' };
+  }
+
+  console.log(`[ANTI-LOOP] Model asked again for '${decision.action} ${decision.target}', which keeps failing: replaced by a recovery step.`);
+  forceRecovery(bot, state, `le modèle redemande '${decision.action} ${decision.target}' déjà en échec répété`);
+  return { decision: takeForcedDecision(state), source: 'recovery' };
 }
 
 /**
@@ -241,15 +330,16 @@ function resolvePlayerDecision(rawDecision) {
 /**
  * Synchronize quest objective and trigger the supervisor cycle when needed
  * @param {object} bot Mineflayer bot instance
+ * @param {Function} [runManagerFn=runManagerCycle] Supervisor cycle (injectable for tests)
  * @returns {Promise<void>} Promise resolved after evaluation
  */
-async function evaluateManagerTrigger(bot) {
+async function evaluateManagerTrigger(bot, runManagerFn = runManagerCycle) {
   const objectiveBeforeSync = state.currentObjective;
   syncObjective(bot, state);
   const objectiveChanged = state.currentObjective !== objectiveBeforeSync;
 
   if (shouldRunManager(bot, state, objectiveChanged)) {
-    await runManagerCycle(bot);
+    await runManagerFn(bot);
   } else {
     state.cyclesSinceLastManager = (state.cyclesSinceLastManager || 0) + 1;
   }
@@ -281,24 +371,41 @@ async function handleSurvivalRequest(bot, sessionId = state.survivalSessionId, d
   try {
     const objectiveBeforeSync = state.currentObjective;
     syncObjective(bot, state);
+
+    if (hasMilestone(state, 'dragon_defeated')) {
+      state.isSurviving = false;
+      console.log("🏆 Ender Dragon defeated: the full progression chain is complete. Autonomous mode stopped.");
+      bot.chat("🏆 Ender Dragon vaincu ! Progression terminée, je m'arrête.");
+      return;
+    }
+
     if (state.currentObjective !== objectiveBeforeSync) {
       state.managerSubGoal = null;
       await runManagerFn(bot);
       if (!isSessionActive(sessionId)) return;
     }
 
-    let decision = getReliableProcedureDecision(state);
-    if (decision) {
-      console.log(`\n=== PROCEDURAL EXECUTION CYCLE (objective : ${state.currentObjective}, procedure : ${decision.target}) ===`);
-    } else {
-      const environment = scanEnvironment(bot, 20);
-      const craftingTable = findAvailableCraftingTable(bot);
-      const prompt = buildReactPrompt(bot, state, environment, craftingTable);
+    // Caught in a failure loop: cancel the approach and queue a different action before deciding anything
+    const stuck = detectStuck(bot, state);
+    if (stuck.stuck) {
+      forceRecovery(bot, state, stuck.reason);
+      bot.chat(`Blocage détecté : ${stuck.reason}`.slice(0, 100));
+    }
 
+    let decision = null;
+    let source = 'llm';
+    const automatic = selectAutomaticDecision(bot);
+    if (automatic) {
+      decision = automatic.decision;
+      source = automatic.source;
+      const cycleLabel = source === 'procedure' ? 'PROCEDURAL EXECUTION' : `DETERMINISTIC (${source})`;
+      console.log(`\n=== ${cycleLabel} CYCLE (objective : ${state.currentObjective}, action : ${decision.action} ${decision.target}) ===`);
+    } else {
       console.log(`\n=== REACT THINKING CYCLE (objective : ${state.currentObjective}) ===`);
-      const rawDecision = await askOllamaFn(prompt);
+      const modelChoice = await requestModelDecision(bot, askOllamaFn);
       if (!isSessionActive(sessionId)) return;
-      decision = resolvePlayerDecision(rawDecision);
+      decision = modelChoice.decision;
+      source = modelChoice.source;
     }
 
     if (!decision) {
@@ -313,22 +420,21 @@ async function handleSurvivalRequest(bot, sessionId = state.survivalSessionId, d
     if (decision.thought) {
       console.log(`[AI THOUGHT] ${decision.thought}`);
     }
-    const safeTarget = decision.target && decision.target !== 'none' ? ` (${decision.target})` : '';
-    const safeActionAnnouncement = `Action : ${decision.action}${safeTarget}`.slice(0, 60);
-    bot.chat(safeActionAnnouncement);
+    announceDecision(bot, decision);
 
     const executionResult = await executeDecisionWithTimeout(bot, decision, deps);
     if (!isSessionActive(sessionId)) return;
     console.log(`[RESULT] ${executionResult.success ? '✅' : '❌'} ${executionResult.message}`);
 
-    recordActionResult(decision, executionResult);
+    recordActionResult(bot, decision, executionResult, source);
 
     if (isSessionActive(sessionId)) {
-      await evaluateManagerTrigger(bot);
+      await evaluateManagerTrigger(bot, runManagerFn);
     }
 
     if (isSessionActive(sessionId) && scheduleNext) {
-      setTimeout(() => handleSurvivalRequest(bot, sessionId, deps), 1500);
+      const delayMs = source === 'llm' ? LLM_CYCLE_DELAY_MS : PLANNED_CYCLE_DELAY_MS;
+      setTimeout(() => handleSurvivalRequest(bot, sessionId, deps), delayMs);
     }
   } catch (error) {
     console.error("Unexpected error in survival cycle :", error);
@@ -342,6 +448,7 @@ module.exports = {
   handleSurvivalRequest,
   resolvePlayerDecision,
   getReliableProcedureDecision,
+  selectAutomaticDecision,
   executeDecisionWithTimeout,
   recoverFromActionTimeout
 };

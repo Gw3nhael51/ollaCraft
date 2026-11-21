@@ -9,6 +9,12 @@ const { skillHunt, skillFight } = require('./behaviors/combat/combat');
 const { skillChest } = require('./behaviors/items/storage');
 const { skillEquip } = require('./behaviors/items/equip');
 const { skillPortal } = require('./behaviors/world/portal');
+const { skillBed } = require('./behaviors/world/bed');
+const { skillStronghold } = require('./behaviors/world/stronghold');
+const { skillEndPortal } = require('./behaviors/world/endportal');
+const { skillDragon } = require('./behaviors/combat/dragon');
+const { skillGoto } = require('./behaviors/movement/waypoint');
+const { collectDeployedTableIfAny } = require('./behaviors/items/table');
 const { createDefaultRegistry } = require('../procedures/registry');
 const { validateProcedure } = require('../procedures/validator');
 const { executeProcedure } = require('../procedures/runner');
@@ -18,6 +24,10 @@ const { IDENTIFIER_REGEX, ALLOWED_STATUSES } = require('../procedures/schema');
 
 const defaultActionRegistry = createDefaultRegistry();
 const defaultProcedureMemory = new ProcedureMemory();
+
+// Actions performed at the crafting table or without moving: they do not count as leaving it.
+// 'unstuck' is an emergency (drowning, buried): the table is collected by the following action instead.
+const TABLE_SIDE_ACTIONS = new Set(['craft', 'place', 'wiki', 'eat', 'equip', 'unstuck']);
 
 /**
  * Execute an autonomous registered procedure safely through semantic validation and runner
@@ -213,11 +223,16 @@ async function skillProcedure(bot, state, target, qty, options = {}) {
  * @returns {Promise<{ success: boolean, message: string }>} Execution result
  */
 async function dispatchSkill(bot, state, action, target, qty, options = {}) {
+  // Any action that walks away from the deployed crafting table first breaks it and takes it along
+  if (state?.deployedTable && !TABLE_SIDE_ACTIONS.has(action)) {
+    await collectDeployedTableIfAny(bot, state);
+  }
+
   if (action === 'unstuck') return skillUnstuck(bot);
   if (action === 'explore') return skillExplore(bot, state, target);
   if (action === 'wiki') return skillWiki(bot, target);
   if (action === 'mine') return skillMine(bot, state, target, qty);
-  if (action === 'craft') return skillCraft(bot, state, target, qty);
+  if (action === 'craft') return skillCraft(bot, state, target, qty, options);
   if (action === 'place') return skillPlace(bot, state, target);
   if (action === 'smelt') return skillSmelt(bot, state, target, qty);
   if (action === 'eat') return skillEat(bot, target);
@@ -225,7 +240,12 @@ async function dispatchSkill(bot, state, action, target, qty, options = {}) {
   if (action === 'fight') return skillFight(bot, target);
   if (action === 'chest') return skillChest(bot, state);
   if (action === 'equip') return skillEquip(bot, target);
-  if (action === 'portal') return skillPortal(bot, state);
+  if (action === 'portal') return skillPortal(bot, state, target);
+  if (action === 'goto') return skillGoto(bot, state, target);
+  if (action === 'bed') return skillBed(bot, state, target);
+  if (action === 'stronghold') return skillStronghold(bot, state);
+  if (action === 'endportal') return skillEndPortal(bot, state);
+  if (action === 'dragon') return skillDragon(bot, state);
   if (action === 'procedure') return skillProcedure(bot, state, target, qty, options);
   return { success: false, message: `Unknown action '${action}'.` };
 }

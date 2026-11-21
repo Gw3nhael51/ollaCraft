@@ -68,11 +68,14 @@ function recordTokenUsage(data, role) {
  * @param {string} promptText Prompt complet envoyé au modèle
  * @param {string} [modelName] Nom du modèle Ollama cible
  * @param {string} [role] Rôle de l'appelant ('joueur' ou 'manager')
+ * @param {object} [options={}] Options d'inférence
+ * @param {number} [options.temperature=0.1] Température d'échantillonnage (augmentée quand le bot stagne)
  * @returns {Promise<object|null>} Décision JSON analysée ou null en cas d'échec
  */
-async function askOllama(promptText, modelName = config.OLLAMA_MODEL_PLAYER, role = 'joueur') {
+async function askOllama(promptText, modelName = config.OLLAMA_MODEL_PLAYER, role = 'joueur', options = {}) {
   try {
     const host = config.OLLAMA_HOST || 'http://localhost:11434';
+    const temperature = Number.isFinite(options.temperature) ? Math.min(1, Math.max(0, options.temperature)) : 0.1;
     const response = await fetch(`${host}/api/generate`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -83,8 +86,11 @@ async function askOllama(promptText, modelName = config.OLLAMA_MODEL_PLAYER, rol
         stream: false,
         format: getFormatSchema(role),
         think: false,
+        keep_alive: config.OLLAMA_KEEP_ALIVE,
         options: {
-          temperature: 0.1
+          temperature,
+          num_ctx: config.OLLAMA_NUM_CTX,
+          num_predict: config.OLLAMA_NUM_PREDICT
         }
       })
     });

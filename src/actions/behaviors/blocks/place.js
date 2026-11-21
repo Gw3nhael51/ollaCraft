@@ -1,6 +1,5 @@
-const { Vec3 } = require('vec3');
-const config = require('../../../infrastructure/config');
 const { fillBucketFromSource } = require('../world/portal');
+const { findGroundPlacement, placeOnGround } = require('./placement');
 
 const WATER_SCOOP_TARGETS = new Set(['water', 'water_source', 'water_bucket']);
 
@@ -20,35 +19,25 @@ async function skillPlace(bot, state, targetName) {
   const item = bot.inventory.items().find(i => i.name === targetName);
   if (!item) return { success: false, message: `You do not have '${targetName}' in your inventory.` };
 
-  const refBlock = bot.findBlock({
-    matching: (block) => {
-      if (!config.VALID_GROUND_BLOCKS.has(block.name) && block.boundingBox !== 'block') return false;
-      if (!block?.position) return true;
-      const above = bot.blockAt(block.position.offset(0, 1, 0));
-      const botPos = bot.entity.position.floored();
-      const placePos = block.position.offset(0, 1, 0);
-      const collides = botPos.equals(placePos) || botPos.offset(0, 1, 0).equals(placePos);
-      const isAir = above?.name === 'air' || above?.name === 'cave_air' || above?.name === 'void_air';
-      return isAir && !collides;
-    },
-    maxDistance: 4
-  });
-
+  const refBlock = findGroundPlacement(bot, { maxDistance: 4 });
   if (!refBlock) return { success: false, message: "No clear ground with air above to place this block." };
 
   try {
-    await bot.equip(item, 'hand');
-    await bot.lookAt(refBlock.position.offset(0.5, 1, 0.5));
-    await bot.placeBlock(refBlock, new Vec3(0, 1, 0));
+    const placedPos = await placeOnGround(bot, item, refBlock);
 
     if (targetName === 'crafting_table') {
-      state.base.crafting_table = refBlock.position.offset(0, 1, 0).clone();
+      // Track the table as deployed so it is broken and collected as soon as the bot leaves it
+      state.deployedTable = placedPos;
+      return {
+        success: true,
+        message: "'crafting_table' deployed. It is portable: it will be collected automatically when you move on, so craft what you need now."
+      };
     }
     if (targetName === 'furnace') {
-      state.base.furnace = refBlock.position.offset(0, 1, 0).clone();
+      state.base.furnace = placedPos;
     }
     if (targetName === 'chest') {
-      state.base.chest = refBlock.position.offset(0, 1, 0).clone();
+      state.base.chest = placedPos;
     }
 
     return { success: true, message: `'${targetName}' placed on the ground successfully.` };

@@ -1,6 +1,6 @@
 const config = require('../infrastructure/config');
 const invUtils = require('../perception/inventory');
-const { getMcData, getBlockNamesForTarget, canHarvestBlock } = require('./wikiData');
+const { getMcData, getBlockNamesForTarget, canHarvestBlock, isOreBlock } = require('./wikiData');
 
 const SMELT_RECIPES = new Map([
   ['iron_ingot', { input: 'raw_iron', fallbackInput: 'iron_ore' }],
@@ -11,13 +11,60 @@ const SMELT_RECIPES = new Map([
   ['charcoal', { input: 'log', fallbackInput: null }]
 ]);
 
+const BED_ACQUISITION = {
+  method: 'craft',
+  action: 'craft',
+  target: 'bed',
+  requiresTable: true,
+  requires: [{ name: 'wool', count: 3 }, { name: 'planks', count: 3 }]
+};
+
 const SPECIAL_ACQUISITIONS = new Map([
   ['water_bucket', { method: 'scoop', action: 'mine', target: 'water', requires: [{ name: 'bucket', count: 1 }] }],
   ['lava_bucket', { method: 'scoop', action: 'mine', target: 'lava', requires: [{ name: 'bucket', count: 1 }] }],
   ['blaze_rod', { method: 'combat', action: 'fight', target: 'blaze', requires: [] }],
   ['ender_pearl', { method: 'combat', action: 'fight', target: 'enderman', requires: [] }],
-  ['nether_portal', { method: 'portal', action: 'portal', target: 'none', requires: [{ name: 'flint_and_steel', count: 1 }] }]
+  ['string', { method: 'combat', action: 'fight', target: 'spider', requires: [] }],
+  ['feather', { method: 'combat', action: 'hunt', target: 'chicken', requires: [] }],
+  ['wool', { method: 'combat', action: 'hunt', target: 'sheep', requires: [] }],
+  // Gravel only drops flint about one time out of ten: the step repeats until flint lands in the inventory
+  ['flint', { method: 'mine', action: 'mine', target: 'gravel', requires: [] }],
+  ['bed', BED_ACQUISITION],
+  ['end_bed', BED_ACQUISITION],
+  ['nether_portal', { method: 'portal', action: 'portal', target: 'none', requires: [{ name: 'flint_and_steel', count: 1 }] }],
+  ['stronghold', { method: 'triangulation', action: 'stronghold', target: 'none', requires: [] }],
+  ['end_portal', { method: 'portal', action: 'endportal', target: 'none', requires: [] }],
+  ['ender_dragon', { method: 'combat', action: 'dragon', target: 'none', requires: [] }]
 ]);
+
+// Altitude where each ore is most common in 1.20: guides the descent when no ore block is loaded nearby
+const ORE_DEPTH_HINTS = new Map([
+  ['diamond', -58],
+  ['redstone', -58],
+  ['gold', -16],
+  ['lapis', 0],
+  ['iron', 15],
+  ['copper', 44],
+  ['coal', 44],
+  ['emerald', 80]
+]);
+
+/**
+ * Return the altitude where a resource is most common, for ores worth digging down to
+ * @param {string} targetName Item or block identifier (e.g. 'diamond', 'deepslate_iron_ore', 'raw_gold')
+ * @returns {number|null} Recommended Y level or null when the target is not a known ore
+ */
+function getOreDepthHint(targetName) {
+  if (typeof targetName !== 'string') return null;
+  const base = targetName
+    .toLowerCase()
+    .trim()
+    .replace(/^deepslate_/, '')
+    .replace(/^raw_/, '')
+    .replace(/_ore$/, '')
+    .replace(/_lazuli$/, '');
+  return ORE_DEPTH_HINTS.has(base) ? ORE_DEPTH_HINTS.get(base) : null;
+}
 
 const PICKAXE_TIER_TOOLS = [
   'wooden_pickaxe',
@@ -77,6 +124,42 @@ function parseRecipeDefinition(mcData, recipe, targetName) {
 }
 
 /**
+ * List the item names consumed by a recipe
+ * @param {object} mcData Minecraft data registry
+ * @param {object} recipe Recipe definition
+ * @returns {string[]} Ingredient item names
+ */
+function getRecipeIngredientNames(mcData, recipe) {
+  const rawIds = recipe.inShape ? recipe.inShape.flat().filter(Boolean) : (recipe.ingredients || []);
+  return rawIds.map(id => mcData.items[id]?.name).filter(Boolean);
+}
+
+/**
+ * Detect a storage-block "decompression" recipe (e.g. 1 diamond_block -> 9 diamond), useless to obtain a raw resource
+ * @param {object} mcData Minecraft data registry
+ * @param {object} recipe Recipe definition
+ * @returns {boolean} True if the recipe only unpacks a storage block
+ */
+function isDecompressionRecipe(mcData, recipe) {
+  const names = new Set(getRecipeIngredientNames(mcData, recipe));
+  if (names.size !== 1) return false;
+  const [onlyIngredient] = names;
+  return (recipe.result?.count || 1) === 9 || onlyIngredient.endsWith('_block');
+}
+
+/**
+ * Pick the recipe that builds an item from basic materials rather than unpacking or re-dyeing another item
+ * @param {object} mcData Minecraft data registry
+ * @param {Array<object>} recipes Candidate recipes for one item
+ * @returns {object} Preferred recipe
+ */
+function selectPrimaryRecipe(mcData, recipes) {
+  const constructive = recipes.filter(recipe => !isDecompressionRecipe(mcData, recipe));
+  const withoutDye = constructive.find(recipe => !getRecipeIngredientNames(mcData, recipe).some(name => name.endsWith('_dye')));
+  return withoutDye || constructive[0] || recipes[0];
+}
+
+/**
  * Sélectionner l'outil minimal requis pour récolter un bloc donné
  * @param {object} mcData Registre minecraft-data
  * @param {string} blockName Nom du bloc
@@ -121,6 +204,41 @@ function resolveMiningSource(bot, targetName) {
 }
 
 /**
+ * Check whether an item is a raw resource dropped by an ore block (diamond, raw_iron, coal, redstone...)
+ * @param {object} bot Instance du bot Mineflayer
+ * @param {string} targetName Nom de l'item désiré
+ * @returns {boolean} True if at least one ore block yields the item
+ */
+function isOreResource(bot, targetName) {
+  return getBlockNamesForTarget(bot, targetName).some(name => isOreBlock(name));
+}
+
+/**
+ * Build the knowledge sheet of a resource obtained by mining, listing the tool only when none carried can harvest it
+ * @param {object} bot Instance du bot Mineflayer
+ * @param {string} cleanTarget Identifiant Minecraft cible
+ * @param {{ blockName: string, requiredTool: string|null }|null} mineSrc Source de minage résolue
+ * @returns {object} Fiche de connaissance structurée
+ */
+function buildMiningKnowledge(bot, cleanTarget, mineSrc) {
+  const blockName = mineSrc?.blockName || cleanTarget;
+  const requiredTool = mineSrc?.requiredTool || null;
+  // A better pickaxe already carried satisfies the requirement: do not plan a redundant lower-tier tool
+  const alreadyHarvestable = !requiredTool || blockName === 'log' || canHarvestBlock(bot, blockName).canHarvest;
+  return {
+    target: cleanTarget,
+    method: 'mine',
+    action: 'mine',
+    actionTarget: blockName,
+    outputCount: 1,
+    requiresTable: false,
+    requiresFurnace: false,
+    requiredTool,
+    prerequisites: alreadyHarvestable ? [] : [{ name: requiredTool, count: 1 }]
+  };
+}
+
+/**
  * Consulter les connaissances structurées Minecraft pour obtenir un item ou bloc
  * @param {object} bot Instance du bot Mineflayer
  * @param {string} targetName Identifiant Minecraft cible
@@ -132,15 +250,22 @@ function getItemKnowledge(bot, targetName) {
     return { target: '', method: 'unknown', prerequisites: [] };
   }
 
-  if (SPECIAL_ACQUISITIONS.has(cleanTarget)) {
-    const special = SPECIAL_ACQUISITIONS.get(cleanTarget);
+  // Any colored bed or wool resolves to its generic acquisition (the craft adapts to the wool color carried)
+  let specialKey = cleanTarget;
+  if (!SPECIAL_ACQUISITIONS.has(specialKey)) {
+    if (invUtils.isBed(cleanTarget)) specialKey = 'bed';
+    else if (invUtils.isWool(cleanTarget)) specialKey = 'wool';
+  }
+
+  if (SPECIAL_ACQUISITIONS.has(specialKey)) {
+    const special = SPECIAL_ACQUISITIONS.get(specialKey);
     return {
       target: cleanTarget,
       method: special.method,
       action: special.action,
       actionTarget: special.target,
       outputCount: 1,
-      requiresTable: false,
+      requiresTable: Boolean(special.requiresTable),
       requiresFurnace: false,
       requiredTool: null,
       prerequisites: special.requires
@@ -167,24 +292,14 @@ function getItemKnowledge(bot, targetName) {
   const itemDef = mcData.itemsByName[lookupName];
   const recipes = itemDef ? mcData.recipes[itemDef.id] : null;
 
-  // Prioriser : Utiliser le minage pour la pierre et les bûches brutes
-  if (cleanTarget === 'cobblestone' || invUtils.isWoodLog(cleanTarget)) {
-    const mineSrc = resolveMiningSource(bot, cleanTarget);
-    return {
-      target: cleanTarget,
-      method: 'mine',
-      action: 'mine',
-      actionTarget: mineSrc?.blockName || cleanTarget,
-      outputCount: 1,
-      requiresTable: false,
-      requiresFurnace: false,
-      requiredTool: mineSrc?.requiredTool || null,
-      prerequisites: mineSrc?.requiredTool ? [{ name: mineSrc.requiredTool, count: 1 }] : []
-    };
+  // Prioriser : Utiliser le minage pour la pierre, les bûches brutes et toute ressource issue d'un minerai.
+  // Sans cela 'diamond', 'raw_iron' ou 'coal' se résolvaient en "décompresser un bloc de stockage" (plan circulaire).
+  if (cleanTarget === 'cobblestone' || invUtils.isWoodLog(cleanTarget) || isOreResource(bot, cleanTarget)) {
+    return buildMiningKnowledge(bot, cleanTarget, resolveMiningSource(bot, cleanTarget));
   }
 
   if (recipes?.length > 0) {
-    const parsed = parseRecipeDefinition(mcData, recipes[0], cleanTarget);
+    const parsed = parseRecipeDefinition(mcData, selectPrimaryRecipe(mcData, recipes), cleanTarget);
     return {
       target: cleanTarget,
       method: 'craft',
@@ -200,17 +315,7 @@ function getItemKnowledge(bot, targetName) {
 
   const mineSrc = resolveMiningSource(bot, cleanTarget);
   if (mineSrc) {
-    return {
-      target: cleanTarget,
-      method: 'mine',
-      action: 'mine',
-      actionTarget: mineSrc.blockName,
-      outputCount: 1,
-      requiresTable: false,
-      requiresFurnace: false,
-      requiredTool: mineSrc.requiredTool,
-      prerequisites: mineSrc.requiredTool ? [{ name: mineSrc.requiredTool, count: 1 }] : []
-    };
+    return buildMiningKnowledge(bot, cleanTarget, mineSrc);
   }
 
   return {
@@ -234,9 +339,6 @@ function getItemKnowledge(bot, targetName) {
  * @returns {boolean} Vrai si la station est posée à portée
  */
 function hasPlacedStation(bot, state, stationName) {
-  if (stationName === 'crafting_table') {
-    return Boolean(invUtils.findNearbyCraftingTable(bot, state));
-  }
   const blockId = bot.registry?.blocksByName?.[stationName]?.id;
   const nearby = blockId && typeof bot.findBlock === 'function'
     ? bot.findBlock({ matching: blockId, maxDistance: config.CRAFTING_TABLE_RANGE })
@@ -278,17 +380,12 @@ function collectDependencySteps(bot, targetName, neededCount, state, virtualInve
     collectDependencySteps(bot, prereq.name, reqTotal, state, virtualInventory, visited, steps);
   }
 
-  if (knowledge.requiresTable && !hasPlacedStation(bot, state, 'crafting_table')) {
+  // L'établi est portable : 'craft' le déploie puis le récupère, il suffit d'en posséder un (aucune étape 'place')
+  if (knowledge.requiresTable && !invUtils.findNearbyCraftingTable(bot, state)) {
     const tableOwned = virtualInventory.get('crafting_table') ?? invUtils.countItem(bot, 'crafting_table');
     if (tableOwned < 1) {
       collectDependencySteps(bot, 'crafting_table', 1, state, virtualInventory, visited, steps);
     }
-    steps.push({
-      action: 'place',
-      target: 'crafting_table',
-      qty: 1,
-      reason: `Poser un établi pour fabriquer '${clean}'.`
-    });
   }
 
   if (knowledge.requiresFurnace && !hasPlacedStation(bot, state, 'furnace')) {
@@ -410,6 +507,9 @@ module.exports = {
   getItemKnowledge,
   resolveGoalPlan,
   parseRecipeDefinition,
+  selectPrimaryRecipe,
+  getOreDepthHint,
   SMELT_RECIPES,
-  SPECIAL_ACQUISITIONS
+  SPECIAL_ACQUISITIONS,
+  ORE_DEPTH_HINTS
 };

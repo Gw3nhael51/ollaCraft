@@ -5,6 +5,12 @@ const { countItem, getBestToolForBlock } = require('../../../perception/inventor
 const { markBadBlock, isBadBlock } = require('../../../perception/environment');
 const { autoEquipArmorAndShield } = require('../items/equip');
 const { freeInventorySlotIfFull } = require('../items/storage');
+const { getDimension, getWaypoint, saveWaypoint } = require('../../../core/progress');
+const { travelTowards } = require('../movement/waypoint');
+const { ensureSpawnBed } = require('./bed');
+
+// 'portal' targets meaning "go back to the Overworld" when the bot stands in the Nether
+const RETURN_TARGETS = new Set(['overworld', 'return', 'back', 'home']);
 
 const NON_SOLID_BLOCKS = new Set([
   'air', 'cave_air', 'void_air', 'water', 'flowing_water', 'lava', 'flowing_lava', 'fire', 'soul_fire'
@@ -195,9 +201,10 @@ async function strikePortalFrame(bot, flint, portalBasePos, existingPortalId) {
  * @param {object} bot Mineflayer bot instance
  * @param {object} portalBasePos Bottom-left inner coordinate of the portal frame
  * @param {string} [axis='x'] Horizontal orientation axis of the portal frame ('x' or 'z')
+ * @param {object|null} [state=null] Global bot state (enables the spawn bed requirement and portal waypoints)
  * @returns {Promise<{ success: boolean, message: string }>}
  */
-async function igniteAndEnterPortal(bot, portalBasePos, axis = 'x') {
+async function igniteAndEnterPortal(bot, portalBasePos, axis = 'x', state = null) {
   const existingPortalId = bot.registry.blocksByName.nether_portal?.id;
   let portalBlock = existingPortalId ? bot.findBlock({ matching: existingPortalId, maxDistance: 24 }) : null;
 
@@ -214,6 +221,21 @@ async function igniteAndEnterPortal(bot, portalBasePos, axis = 'x') {
     return { success: false, message: "Portal frame could not be ignited or no active 'nether_portal' found nearby." };
   }
 
+  if (state) {
+    // Remember where the portal is so the bot can come back to it after a death
+    saveWaypoint(state, 'nether_portal', portalBlock.position, getDimension(bot), 'Nether portal (Overworld side)');
+
+    // The respawn point must be set next to the portal before leaving the Overworld
+    const bed = await ensureSpawnBed(bot, state, 'spawn_bed', { reuseRange: 48, acceptRemote: true });
+    if (!bed.success) {
+      return {
+        success: false,
+        message: `Nether portal is ready but a spawn bed is required before entering: ${bed.message}`
+      };
+    }
+    if (bed.placed) console.log(`[PORTAL] ${bed.message}`);
+  }
+
   let navTimer = null;
   try {
     console.log(`[PORTAL] Entering Nether portal at (${portalBlock.position.x}, ${portalBlock.position.y}, ${portalBlock.position.z})...`);
@@ -227,7 +249,10 @@ async function igniteAndEnterPortal(bot, portalBasePos, axis = 'x') {
     // Wait inside portal block for dimension transition (up to 8 seconds)
     await bot.waitForTicks(160);
 
-    if (bot.game?.dimension === 'the_nether') {
+    if (getDimension(bot) === 'the_nether') {
+      if (state && bot.entity?.position) {
+        saveWaypoint(state, 'nether_exit', bot.entity.position, 'the_nether', 'Nether portal (Nether side)');
+      }
       return { success: true, message: "Successfully transitioned into the Nether!" };
     }
 
@@ -237,6 +262,67 @@ async function igniteAndEnterPortal(bot, portalBasePos, axis = 'x') {
   } finally {
     if (navTimer) clearTimeout(navTimer);
   }
+}
+
+/**
+ * Wait until the server has moved the bot into the expected dimension
+ * @param {object} bot Mineflayer bot instance
+ * @param {string} expectedDimension Normalized dimension name
+ * @param {number} [ticksLeft=160] Remaining ticks to wait
+ * @returns {Promise<boolean>} True once the bot is in the expected dimension
+ */
+async function waitForDimension(bot, expectedDimension, ticksLeft = 160) {
+  if (getDimension(bot) === expectedDimension) return true;
+  if (ticksLeft <= 0) return false;
+  await bot.waitForTicks(10);
+  return waitForDimension(bot, expectedDimension, ticksLeft - 10);
+}
+
+/**
+ * Walk back to the Nether-side portal (nearby or memorized) and return to the Overworld
+ * @param {object} bot Mineflayer bot instance
+ * @param {object|null} state Global bot state
+ * @returns {Promise<{ success: boolean, message: string }>} Return trip step result
+ */
+async function returnToOverworld(bot, state) {
+  const portalId = bot.registry.blocksByName.nether_portal?.id;
+  const findPortal = (range) => (portalId ? bot.findBlock({ matching: portalId, maxDistance: range }) : null);
+
+  let portalBlock = findPortal(64);
+  if (!portalBlock) {
+    const exitWaypoint = getWaypoint(state, 'nether_exit');
+    if (!exitWaypoint) {
+      return { success: false, message: "No Nether portal nearby and none memorized. Use 'explore' to find one or build a new one." };
+    }
+    const leg = await travelTowards(bot, exitWaypoint, { radius: 6, legDistance: 40, timeoutMs: 30000 });
+    portalBlock = findPortal(48);
+    if (!portalBlock) {
+      return leg.arrived || leg.progressed
+        ? { success: true, message: `Heading back to the Nether portal: ${Math.round(leg.remaining)} blocks remaining.` }
+        : { success: false, message: `No progress towards the Nether portal (${leg.error || 'path blocked'}).` };
+    }
+  }
+
+  let navTimer = null;
+  try {
+    console.log(`[PORTAL] Returning to the Overworld through (${portalBlock.position.x}, ${portalBlock.position.y}, ${portalBlock.position.z})...`);
+    const gotoPromise = bot.pathfinder.goto(new goals.GoalBlock(portalBlock.position.x, portalBlock.position.y, portalBlock.position.z));
+    const timeoutPromise = new Promise((_, reject) => {
+      navTimer = setTimeout(() => reject(new Error("Navigation timeout towards portal")), 20000);
+    });
+    await Promise.race([gotoPromise, timeoutPromise]).catch(() => {});
+  } finally {
+    if (navTimer) clearTimeout(navTimer);
+    bot.pathfinder.setGoal?.(null);
+  }
+
+  if (await waitForDimension(bot, 'overworld')) {
+    if (state && bot.entity?.position) {
+      saveWaypoint(state, 'nether_portal', bot.entity.position, 'overworld', 'Nether portal (Overworld side)');
+    }
+    return { success: true, message: 'Back in the Overworld through the Nether portal.' };
+  }
+  return { success: false, message: 'Reached the Nether portal but the dimension did not change yet; retry.' };
 }
 
 /**
@@ -1025,7 +1111,7 @@ async function castPortalWithMold(bot, state, lavaBlock, presetFrame = null) {
   }
 
   await moveNearPosition(bot, base.plus(at(0, 1, 1)), 2.5, 1);
-  const enterRes = await igniteAndEnterPortal(bot, base.offset(0, 1, 0), axis);
+  const enterRes = await igniteAndEnterPortal(bot, base.offset(0, 1, 0), axis, state);
   if (enterRes.success && state) {
     state.portalCastOrigin = null;
   }
@@ -1045,7 +1131,7 @@ async function completePartialPortalFrame(bot, frame, state = null) {
   }
 
   if (frame.isComplete) {
-    return igniteAndEnterPortal(bot, frame.base.offset(0, 1, 0), frame.axis);
+    return igniteAndEnterPortal(bot, frame.base.offset(0, 1, 0), frame.axis, state);
   }
 
   const initialObsidian = countItem(bot, 'obsidian');
@@ -1056,7 +1142,7 @@ async function completePartialPortalFrame(bot, frame, state = null) {
     }));
     await placePortalFrameStep(bot, frame.base, orientedSteps, 0);
     if (hasCompletePortalFrame(bot, frame.base, frame.axis)) {
-      return igniteAndEnterPortal(bot, frame.base.offset(0, 1, 0), frame.axis);
+      return igniteAndEnterPortal(bot, frame.base.offset(0, 1, 0), frame.axis, state);
     }
     if (countItem(bot, 'obsidian') < initialObsidian) {
       return { success: true, message: "Placed carried obsidian onto partial Nether portal frame." };
@@ -1268,16 +1354,25 @@ async function buildObsidianFrame(bot) {
  * Manage speedrun Nether portal creation, ignition, and dimension entry
  * @param {object} bot Mineflayer bot instance
  * @param {object|null} [state=null] Global bot state
+ * @param {string|null} [target=null] 'overworld' to travel back from the Nether
  * @returns {Promise<{ success: boolean, message: string }>}
  */
-async function skillPortal(bot, state = null) {
+async function skillPortal(bot, state = null, target = null) {
   await autoEquipArmorAndShield(bot);
   await freeInventorySlotIfFull(bot, 1);
 
-  if (bot.game?.dimension === 'the_nether') {
+  const dimension = getDimension(bot);
+  if (dimension === 'the_end') {
+    return { success: false, message: "Nether portals do not work in the End. Use 'dragon' to fight the Ender Dragon." };
+  }
+  if (dimension === 'the_nether') {
+    const cleanTarget = typeof target === 'string' ? target.toLowerCase().trim() : '';
+    if (RETURN_TARGETS.has(cleanTarget)) {
+      return returnToOverworld(bot, state);
+    }
     return {
       success: true,
-      message: "Already inside the Nether! Use 'explore' to locate a Fortress or 'fight' on 'blaze'."
+      message: "Already inside the Nether! Use 'explore' to locate a Fortress or 'fight' on 'blaze'. Use 'portal' with target 'overworld' to go back."
     };
   }
 
@@ -1285,7 +1380,7 @@ async function skillPortal(bot, state = null) {
   const portalId = bot.registry.blocksByName.nether_portal?.id;
   const activePortal = portalId ? bot.findBlock({ matching: portalId, maxDistance: 48 }) : null;
   if (activePortal) {
-    return igniteAndEnterPortal(bot, null);
+    return igniteAndEnterPortal(bot, null, 'x', state);
   }
 
   const existingFrame = findPortalFrameCandidate(bot, 48);
@@ -1299,7 +1394,7 @@ async function skillPortal(bot, state = null) {
   if (countItem(bot, 'obsidian') >= 10) {
     const buildResult = await buildObsidianFrame(bot);
     if (!buildResult.success) return buildResult;
-    return igniteAndEnterPortal(bot, buildResult.portalInnerPos);
+    return igniteAndEnterPortal(bot, buildResult.portalInnerPos, 'x', state);
   }
 
   if (countItem(bot, 'water_bucket') === 0) {
@@ -1317,6 +1412,7 @@ async function skillPortal(bot, state = null) {
 
 module.exports = {
   skillPortal,
+  returnToOverworld,
   fillBucketFromSource,
   igniteAndEnterPortal,
   buildObsidianFrame,

@@ -123,6 +123,32 @@ flowchart TD
 
 2. **Tactical ReAct Player** ([`src/agent/loop.js`](src/agent/loop.js)): Runs the **Perception &rarr; Dependency Plan &amp; Dynamic Radar Prompt &rarr; Validated Procedure Bypass or Structured LLM Output &rarr; Skill/Procedure Dispatch &rarr; Terrain-Aware Recovery &rarr; Feedback** cycle. On `death`, action history, base memory, and temporary bad-block blacklists are cleanly reset.
 
+### 3.1 Decision priority inside one cycle ([`src/agent/loop.js`](src/agent/loop.js))
+
+Each cycle picks its action from the first source that has one, so the Player model is only consulted when nothing deterministic applies:
+
+```mermaid
+flowchart TD
+    START["Cycle start: syncObjective + stuck detection"] --> FORCED{"Forced recovery step queued? (recovery.js)"}
+    FORCED -->|yes| EXEC["Execute skill"]
+    FORCED -->|no| REFLEX{"Survival reflex or stage logistics? (planner.js)"}
+    REFLEX -->|yes| EXEC
+    REFLEX -->|no| PROC{"Reliable Manager sub-goal / validated procedure?"}
+    PROC -->|yes| EXEC
+    PROC -->|no| PLAN{"Next feasible step of the dependency plan?"}
+    PLAN -->|yes| EXEC
+    PLAN -->|no| LLM["Player LLM (temperature rises while stagnating)"]
+    LLM --> BLOCKED{"Answer refused by failure memory?"}
+    BLOCKED -->|yes| RECOVER["forceRecovery: different action"] --> EXEC
+    BLOCKED -->|no| EXEC
+    EXEC --> RECORD["recordOutcome: failure memory + stagnation counters"]
+```
+
+- **Planner** ([`src/agent/planner.js`](src/agent/planner.js)): survival reflexes (`unstuck`, `eat`), stage rules (Nether logistics, return to the memorized portal after a death, `stronghold`, `endportal`, `dragon`) and the next feasible step of `resolveGoalPlan`. A wanted block that is not loaded nearby becomes a targeted `explore` (ore targets dig down to their generation altitude).
+- **Recovery** ([`src/agent/recovery.js`](src/agent/recovery.js)): an `(action, target)` pair failing twice is refused for 5 minutes. Stagnation is measured on a progress signature (dimension, objective, 8-block position cell, inventory). `forceRecovery` cancels the running action, refuses the repeated pair and queues an action absent from the recent history (`unstuck`, `explore relocate`, `goto <waypoint>`), escalating with each recovery. The `debug` chat command calls the same function.
+- **Progress store** ([`src/core/progress.js`](src/core/progress.js)): waypoints, sticky milestones, eye throws and the stronghold estimate are persisted in `data/progress-<host>_<port>_<user>.json`.
+- **Knowledge fixes** ([`src/minecraft/knowledge.js`](src/minecraft/knowledge.js)): raw resources dropped by ores (`diamond`, `raw_iron`, `coal`...) are mined instead of being resolved to the storage-block decompression recipe, which previously produced circular plans.
+
 ---
 
 ## 4. Verified Action Primitives & Registry (`src/actions/primitives` & `src/procedures/registry.js`)

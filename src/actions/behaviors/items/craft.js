@@ -1,8 +1,11 @@
 const { goals } = require('mineflayer-pathfinder');
 const config = require('../../../infrastructure/config');
-const { countItem, isWoodLog, isPlanks, resolvePlankTarget, findNearbyCraftingTable } = require('../../../perception/inventory');
+const {
+  countItem, isWoodLog, isPlanks, isBed, resolvePlankTarget, resolveBedTarget, findNearbyCraftingTable, getQuestRequirement
+} = require('../../../perception/inventory');
 const { autoEquipArmorAndShield } = require('./equip');
 const { freeInventorySlotIfFull } = require('./storage');
+const { deployCraftingTable, collectCraftingTable } = require('./table');
 
 const AUTO_EQUIP_SUFFIXES = ['_helmet', '_chestplate', '_leggings', '_boots', 'shield'];
 const SINGLE_CRAFT_ITEMS = new Set(['crafting_table', 'furnace', 'chest']);
@@ -22,7 +25,10 @@ function checkCraftPreconditions(bot, targetName, item) {
     return { success: false, message: `You ALREADY own '${targetName}'. No need to craft another, proceed to next step.` };
   }
   if (targetName === 'crafting_table' && countItem(bot, 'crafting_table') > 0) {
-    return { success: false, message: `You ALREADY have a crafting table in your inventory. Use 'place' to set it down.` };
+    return {
+      success: false,
+      message: "You ALREADY carry a crafting table. It is portable: call 'craft' directly on the item you need, the table is deployed and collected automatically."
+    };
   }
 
   if (targetName === 'crafting_table') {
@@ -218,7 +224,8 @@ async function collectDroppedCraftItem(bot, normalizedTarget) {
 }
 
 /**
- * Check whether a crafting table is required and move the bot towards a placed one if needed
+ * Check whether a crafting table is required and make one available: reuse a table within reach,
+ * otherwise deploy the carried portable table right where the bot stands
  * @param {object} bot Mineflayer bot instance
  * @param {object} state Global bot state
  * @param {object} item Item registry entry
@@ -230,24 +237,76 @@ async function prepareCraftingStation(bot, state, item, targetName) {
   const fitsInPersonalGrid = Recipe.find(item.id, null).some(r => !r.requiresTable);
   if (fitsInPersonalGrid) return { ok: true, tableToUse: null };
 
-  const tableToUse = findNearbyCraftingTable(bot, state);
+  let tableToUse = findNearbyCraftingTable(bot, state);
   if (!tableToUse) {
-    const hasTableInPocket = countItem(bot, 'crafting_table') > 0;
-    return {
-      ok: false,
-      errorResult: {
-        success: false,
-        message: hasTableInPocket
-          ? `'${targetName}' requires a crafting table. You carry one in inventory, use 'place' with target 'crafting_table' to place it!`
-          : `'${targetName}' requires a crafting table. No nearby table found. Craft one ("craft crafting_table") or return to base.`
-      }
-    };
+    if (countItem(bot, 'crafting_table') === 0) {
+      return {
+        ok: false,
+        errorResult: {
+          success: false,
+          message: `'${targetName}' requires a crafting table and you carry none. Craft one first ('craft' with target 'crafting_table'): it is portable and deployed automatically.`
+        }
+      };
+    }
+
+    const deployment = await deployCraftingTable(bot, state);
+    if (!deployment.success) {
+      return {
+        ok: false,
+        errorResult: {
+          success: false,
+          message: `'${targetName}' requires a crafting table but it could not be deployed here (${deployment.message}). Move to open ground ('explore') and retry.`
+        }
+      };
+    }
+    tableToUse = deployment.block;
   }
 
   const approach = await approachCraftingTable(bot, tableToUse);
   if (!approach.success) return { ok: false, errorResult: approach };
 
   return { ok: true, tableToUse };
+}
+
+/**
+ * Tell whether the very next step of the current objective is another crafting-table recipe
+ * @param {object} bot Mineflayer bot instance
+ * @param {object} state Global bot state
+ * @returns {boolean} True if the table should stay deployed for an immediate follow-up craft
+ */
+function isNextStepAnotherTableCraft(bot, state) {
+  if (!state?.currentObjective) return false;
+  try {
+    const { resolveGoalPlan, getItemKnowledge } = require('../../../minecraft/knowledge');
+    const required = getQuestRequirement(bot, state, state.currentObjective);
+    const nextStep = resolveGoalPlan(bot, state.currentObjective, required, state).nextAction;
+    return nextStep?.action === 'craft' && getItemKnowledge(bot, nextStep.target).requiresTable === true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Leave the crafting table: break it and take it back unless the next step needs it right away
+ * @param {object} bot Mineflayer bot instance
+ * @param {object} state Global bot state
+ * @param {object} tableBlock Crafting table block that was just used
+ * @param {object} [options={}] Craft options
+ * @param {boolean} [options.keepTable=false] Force the table to stay deployed
+ * @returns {Promise<string>} Short note describing what happened to the table
+ */
+async function releaseCraftingTable(bot, state, tableBlock, options = {}) {
+  if (!tableBlock?.position) return '';
+
+  if (options.keepTable || isNextStepAnotherTableCraft(bot, state)) {
+    if (state) state.deployedTable = tableBlock.position.clone ? tableBlock.position.clone() : tableBlock.position;
+    return ' Crafting table kept deployed for the next craft.';
+  }
+
+  const collection = await collectCraftingTable(bot, state, tableBlock);
+  return collection.collected
+    ? ' Crafting table collected back into inventory.'
+    : ' Warning: the crafting table could not be recovered, craft a new one when needed.';
 }
 
 /**
@@ -289,14 +348,18 @@ async function waitForCraftedInventorySync(bot, normalizedTarget, countBefore) {
  * @param {object} state Global bot state
  * @param {string} targetName Target item name to craft
  * @param {number} [qty=1] Requested craft operations count
+ * @param {object} [options={}] Craft options
+ * @param {boolean} [options.keepTable=false] Keep the crafting table deployed after the craft
  * @returns {Promise<{ success: boolean, message: string }>} Crafting operation result
  */
-async function skillCraft(bot, state, targetName, qty = 1) {
+async function skillCraft(bot, state, targetName, qty = 1, options = {}) {
   if (isWoodLog(targetName)) {
     return { success: false, message: "Raw logs and wood cannot be crafted: harvest them with 'mine' on trees." };
   }
 
-  const initialTarget = isPlanks(targetName) ? resolvePlankTarget(bot, targetName) : targetName;
+  let initialTarget = targetName;
+  if (isPlanks(targetName)) initialTarget = resolvePlankTarget(bot, targetName);
+  else if (isBed(targetName)) initialTarget = resolveBedTarget(bot);
   const item = bot.registry.itemsByName[initialTarget];
 
   const preconditionError = checkCraftPreconditions(bot, targetName, item);
@@ -305,7 +368,28 @@ async function skillCraft(bot, state, targetName, qty = 1) {
   const station = await prepareCraftingStation(bot, state, item, targetName);
   if (!station.ok) return station.errorResult;
 
-  const { recipes, normalizedTarget } = resolveCraftRecipes(bot, item, initialTarget, station.tableToUse, qty);
+  const outcome = await craftAtStation(bot, item, initialTarget, targetName, station.tableToUse, qty);
+
+  // Leaving the table: it is broken and carried away instead of being remembered as a base
+  if (station.tableToUse) {
+    const tableNote = await releaseCraftingTable(bot, state, station.tableToUse, options);
+    return { success: outcome.success, message: `${outcome.message}${tableNote}` };
+  }
+  return outcome;
+}
+
+/**
+ * Resolve the recipe, run the craft and verify the item reached the inventory
+ * @param {object} bot Mineflayer bot instance
+ * @param {object} item Item registry entry
+ * @param {string} initialTarget Concrete item name to craft
+ * @param {string} targetName Item name originally requested
+ * @param {object|null} tableToUse Crafting table block or null for the personal grid
+ * @param {number} qty Requested craft operations count
+ * @returns {Promise<{ success: boolean, message: string }>} Crafting operation result
+ */
+async function craftAtStation(bot, item, initialTarget, targetName, tableToUse, qty) {
+  const { recipes, normalizedTarget } = resolveCraftRecipes(bot, item, initialTarget, tableToUse, qty);
   if (recipes.length === 0) {
     return { success: false, message: `Missing required components in inventory to craft '${targetName}'.` };
   }
@@ -313,7 +397,7 @@ async function skillCraft(bot, state, targetName, qty = 1) {
   const craftCount = computeCraftOperations(bot, recipes[0], normalizedTarget, qty);
   const countBefore = countItem(bot, normalizedTarget);
   await freeInventorySlotIfFull(bot, 1);
-  const craftExec = await performCraftWithTimeout(bot, recipes[0], station.tableToUse, normalizedTarget, craftCount);
+  const craftExec = await performCraftWithTimeout(bot, recipes[0], tableToUse, normalizedTarget, craftCount);
   if (!craftExec.success) return craftExec;
 
   const countAfter = await waitForCraftedInventorySync(bot, normalizedTarget, countBefore);

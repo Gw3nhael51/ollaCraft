@@ -10,8 +10,19 @@ const ESSENTIAL_ITEMS = new Set([
   'torch', 'bucket', 'water_bucket', 'flint_and_steel',
   'cooked_beef', 'cooked_porkchop', 'cooked_mutton', 'cooked_chicken', 'bread', 'apple',
   'diamond', 'raw_iron', 'iron_ingot', 'raw_gold', 'gold_ingot', 'lapis_lazuli',
-  'flint', 'blaze_rod', 'blaze_powder', 'ender_pearl', 'ender_eye', 'obsidian'
+  'flint', 'blaze_rod', 'blaze_powder', 'ender_pearl', 'ender_eye', 'obsidian',
+  // The portable crafting table and everything the end-game stages consume
+  'crafting_table', 'bow', 'arrow', 'string', 'feather', 'stick', 'coal', 'charcoal'
 ]);
+
+/**
+ * Check whether an item is part of the spawn bed logistics (the bed itself or the wool to craft it)
+ * @param {string} name Item name
+ * @returns {boolean} True for beds and wool of any color
+ */
+function isBedMaterial(name) {
+  return name.endsWith('_bed') || name.endsWith('_wool');
+}
 
 // Retain limited terrain and utility blocks for bridging and flint harvesting
 const BULK_MATERIALS = new Set(['dirt', 'cobblestone', 'granite', 'diorite', 'andesite', 'cobbled_deepslate', 'gravel', 'sand']);
@@ -22,8 +33,8 @@ const FLOWER_KEYWORDS = [
 ];
 
 const DISPOSABLE_EXACT = new Set([
-  'rotten_flesh', 'spider_eye', 'gunpowder', 'string', 'raw_copper',
-  'copper_ingot', 'bone', 'arrow', 'feather', 'egg', 'snowball'
+  'rotten_flesh', 'spider_eye', 'gunpowder', 'raw_copper',
+  'copper_ingot', 'bone', 'egg', 'snowball'
 ]);
 
 /**
@@ -32,9 +43,9 @@ const DISPOSABLE_EXACT = new Set([
  * @returns {boolean} True if the item is disposable clutter
  */
 function isDisposableItem(item) {
-  if (!item?.name || ESSENTIAL_ITEMS.has(item.name)) return false;
+  if (!item?.name || ESSENTIAL_ITEMS.has(item.name) || isBedMaterial(item.name)) return false;
   if (DISPOSABLE_EXACT.has(item.name)) return true;
-  if (item.name.includes('sapling') || item.name.includes('seeds') || item.name.endsWith('_wool')) {
+  if (item.name.includes('sapling') || item.name.includes('seeds')) {
     return true;
   }
   return FLOWER_KEYWORDS.some(keyword => item.name.includes(keyword));
@@ -46,7 +57,7 @@ function isDisposableItem(item) {
  * @returns {boolean} True if the item is bulky and should be stored
  */
 function isItemToStore(item) {
-  if (ESSENTIAL_ITEMS.has(item.name)) return false;
+  if (ESSENTIAL_ITEMS.has(item.name) || isBedMaterial(item.name)) return false;
 
   if (BULK_MATERIALS.has(item.name)) {
     return item.count > 32;

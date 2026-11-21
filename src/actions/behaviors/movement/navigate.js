@@ -5,6 +5,10 @@ const config = require('../../../infrastructure/config');
 const { getBestToolForBlock, isWoodLog, hasToolType } = require('../../../perception/inventory');
 const { isBadBlock } = require('../../../perception/environment');
 const { markLavaClusterBad } = require('../world/portal');
+const { getOreDepthHint } = require('../../../minecraft/knowledge');
+
+// Exploration hints naming creatures that only live on the surface
+const SURFACE_TARGETS = new Set(['sheep', 'chicken', 'cow', 'pig', 'spider', 'enderman', 'wool', 'feather', 'string']);
 
 /**
  * Check whether an adjacent block can be dug quickly during an unstuck maneuver
@@ -460,6 +464,50 @@ async function trySurfaceAscent(bot, timeoutMs = 14000) {
 }
 
 /**
+ * Dig a descending staircase towards the altitude where a wanted ore is most common
+ * @param {object} bot Mineflayer bot instance
+ * @param {number} targetY Altitude to reach
+ * @param {number} [timeoutMs=26000] Maximum descent duration for this step
+ * @returns {Promise<boolean>} True if the bot ended at least two blocks lower
+ */
+async function descendTowardsDepth(bot, targetY, timeoutMs = 26000) {
+  if (!bot.entity?.position || typeof bot.pathfinder?.goto !== 'function') return false;
+  const startX = bot.entity.position.x;
+  const startY = bot.entity.position.y;
+  const startZ = bot.entity.position.z;
+  if (currentExploreHeadingRad === null) {
+    currentExploreHeadingRad = (crypto.randomInt(0, 360) * Math.PI) / 180;
+  }
+
+  // A sloped tunnel rather than a vertical shaft: safer around lava pockets and easy to climb back out
+  const drop = Math.min(10, Math.max(3, Math.round(startY - targetY)));
+  const stepY = Math.round(startY) - drop;
+  const run = drop + 2;
+  const goalX = Math.round(startX + Math.cos(currentExploreHeadingRad) * run);
+  const goalZ = Math.round(startZ + Math.sin(currentExploreHeadingRad) * run);
+
+  let navTimer = null;
+  let gotoPromise = null;
+  try {
+    console.log(`[EXPLORE] Digging a staircase down to Y:${stepY} (ore level Y:${targetY})...`);
+    gotoPromise = bot.pathfinder.goto(new goals.GoalNear(goalX, stepY, goalZ, 2));
+    const timeoutPromise = new Promise((_, reject) => {
+      navTimer = setTimeout(() => reject(new Error("Descent timeout")), timeoutMs);
+    });
+    await Promise.race([gotoPromise, timeoutPromise]);
+  } catch (err) {
+    console.warn('[EXPLORE] Descent impeded:', err.message);
+    currentExploreHeadingRad = (currentExploreHeadingRad + Math.PI * 0.5) % (Math.PI * 2);
+  } finally {
+    if (navTimer) clearTimeout(navTimer);
+    gotoPromise?.catch(() => {});
+    bot.pathfinder.setGoal(null);
+    bot.clearControlStates();
+  }
+  return bot.entity.position.y <= startY - 2;
+}
+
+/**
  * Navigate incrementally towards a detected lava pool using short waypoints to prevent pathfinder timeouts
  * @param {object} bot Mineflayer bot instance
  * @param {object} lavaBlock Detected lava source block
@@ -533,6 +581,34 @@ async function skillExplore(bot, state = null, target = null) {
   console.log(
     `[EXPLORE] Pos=(${Math.round(startPos.x)},${Math.round(startPos.y)},${Math.round(startPos.z)}) enclosed=${isEnclosed} inWater=${Boolean(bot.entity.isInWater)} pickaxe=${hasToolType(bot, '_pickaxe')}`
   );
+
+  const cleanTarget = typeof target === 'string' ? target.toLowerCase().trim() : '';
+
+  // Recovery request: turn well away from the direction that led to the dead end and forget the trap history
+  if (cleanTarget === 'relocate') {
+    const turn = Math.PI * (0.6 + crypto.randomInt(0, 81) / 100);
+    currentExploreHeadingRad = ((currentExploreHeadingRad ?? 0) + turn) % (Math.PI * 2);
+    recentExplorePositions = [];
+    console.log("[EXPLORE] Relocation requested; heading turned away from the previous area.");
+  }
+
+  // Wanted ore not loaded nearby: dig down to the altitude where it generates instead of wandering on the surface
+  const inOverworld = String(bot.game?.dimension || 'overworld').includes('overworld');
+  const oreDepth = inOverworld ? getOreDepthHint(cleanTarget) : null;
+  if (oreDepth !== null && startPos.y > oreDepth + 6 && hasToolType(bot, '_pickaxe')) {
+    const descended = await descendTowardsDepth(bot, oreDepth, Math.min(26000, remainingMs() - 4000));
+    if (descended) {
+      return {
+        success: true,
+        message: `Dug down towards Y:${oreDepth} where '${cleanTarget}' is most common (now at Y:${Math.round(bot.entity.position.y)}).`
+      };
+    }
+  }
+
+  // Animals and most mobs are on the surface: climb out of caves before searching for them
+  if (inOverworld && SURFACE_TARGETS.has(cleanTarget) && isUnderground && remainingMs() >= 15000 && await trySurfaceAscent(bot, 14000)) {
+    return { success: true, message: `Climbed towards the surface to look for '${cleanTarget}'.` };
+  }
 
   let attemptedAscent = false;
   let climbedToSurface = false;

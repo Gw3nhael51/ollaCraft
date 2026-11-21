@@ -2,19 +2,35 @@ const mineflayer = require('mineflayer');
 const { pathfinder, Movements } = require('mineflayer-pathfinder');
 const config = require('./infrastructure/config');
 const state = require('./core/state');
-const { syncObjective, getBestToolForBlock } = require('./perception/inventory');
+const { syncObjective, getBestToolForBlock, getQuestRequirement } = require('./perception/inventory');
 const { autoEquipArmorAndShield } = require('./actions/behaviors/items/equip');
 const { handleSurvivalRequest } = require('./agent/loop');
 const { startManagerLoop } = require('./agent/manager');
 const { checkAdvancementMessage } = require('./perception/advancements');
 const { clearBadBlocks } = require('./perception/environment');
+const { parseGoalCommand, describeGoalPlan, setManualGoal, clearManualGoal } = require('./agent/goals');
+const { forceRecovery, describeDebugState } = require('./agent/recovery');
+const {
+  loadProgress, getDimension, getWaypoint, saveWaypoint, removeWaypoint, listWaypoints,
+  setMilestone, horizontalDistanceTo
+} = require('./core/progress');
 
 const bot = mineflayer.createBot(config.BOT_CONFIG);
 bot.loadPlugin(pathfinder);
 
+// Restore the milestone coordinates (portals, spawn beds, stronghold) saved by previous sessions
+const restoredWaypoints = loadProgress(state);
+if (restoredWaypoints > 0) {
+  console.log(`🧭 Restored ${restoredWaypoints} waypoint(s) from ${state.progressFile}.`);
+}
+
 const AUTH_SUCCESS_PATTERNS = ['successful login', 'successfully registered', 'already logged in', 'connexion réussie', 'logged in!'];
 const AUTH_IGNORE_PATTERNS = ['already have registered', 'please, login', '/login'];
+const DEBUG_COMMANDS = new Set(['debug', 'debloque', 'débloque', 'coince', 'coincé', 'unstuck']);
+const DEBUG_INFO_COMMANDS = new Set(['debug info', 'debug status', 'debug etat', 'debug état']);
+const CHAT_LINE_LIMIT = 240;
 let shouldResumeAfterDeath = false;
+let respawningAfterDeath = false;
 
 /**
  * Check whether a server message confirms successful authentication
@@ -23,6 +39,14 @@ let shouldResumeAfterDeath = false;
  */
 function isAuthConfirmed(text) {
   return !AUTH_IGNORE_PATTERNS.some(p => text.includes(p)) && AUTH_SUCCESS_PATTERNS.some(p => text.includes(p));
+}
+
+/**
+ * Send a chat line trimmed to the server's message length limit
+ * @param {string} text Message to send
+ */
+function say(text) {
+  bot.chat(String(text).slice(0, CHAT_LINE_LIMIT));
 }
 
 /**
@@ -75,6 +99,48 @@ function launchAutonomousLoop() {
   }, 800);
 }
 
+/**
+ * Record portal coordinates when the bot changes dimension by walking through a portal
+ * @param {string} previous Dimension the bot came from
+ * @param {string} dimension Dimension the bot arrived in
+ */
+function recordDimensionTransition(previous, dimension) {
+  console.log(`[DIMENSION] ${previous} -> ${dimension}`);
+  // Nothing from the previous dimension is reachable any more
+  state.deployedTable = null;
+  state.managerSubGoal = null;
+
+  const pos = bot.entity?.position;
+  if (!pos) return;
+  if (previous === 'overworld' && dimension === 'the_nether') {
+    saveWaypoint(state, 'nether_exit', pos, 'the_nether', 'Nether portal (Nether side)');
+  } else if (previous === 'the_nether' && dimension === 'overworld') {
+    saveWaypoint(state, 'nether_portal', pos, 'overworld', 'Nether portal (Overworld side)');
+  } else if (dimension === 'the_end') {
+    setMilestone(state, 'entered_end', true);
+  }
+}
+
+/**
+ * After a death, check that the bot really respawned at its bed; forget the bed if it was destroyed
+ */
+function verifySpawnBedAfterRespawn() {
+  const activeSpawn = state.milestones?.active_spawn;
+  const bedWaypoint = activeSpawn ? getWaypoint(state, activeSpawn) : null;
+  if (!bedWaypoint) return;
+
+  const sameDimension = bedWaypoint.dimension === getDimension(bot);
+  if (sameDimension && horizontalDistanceTo(bot, bedWaypoint) <= 16) {
+    say(`Réapparu à mon lit (${bedWaypoint.x}, ${bedWaypoint.y}, ${bedWaypoint.z}). Je reprends.`);
+    return;
+  }
+
+  console.log(`[BED] Respawned away from '${activeSpawn}': the bed is gone or obstructed, waypoint cleared.`);
+  removeWaypoint(state, activeSpawn);
+  setMilestone(state, 'active_spawn', null);
+  say("Mon lit n'existe plus : il me faudra en refaire un.");
+}
+
 // Configure movement rules and water physics once upon initial spawn
 bot.once('spawn', () => {
   const mcData = require("minecraft-data")(bot.version);
@@ -84,7 +150,7 @@ bot.once('spawn', () => {
   defaultMove.allow1by1towers = true;
   const scafolding = [
     'dirt', 'cobblestone', 'netherrack', 'stone', 'diorite', 'andesite',
-    'granite', 'cobbled_deepslate', 'deepslate', 'tuff', 'oak_planks'
+    'granite', 'cobbled_deepslate', 'deepslate', 'tuff', 'oak_planks', 'end_stone'
   ].map(name => bot.registry.itemsByName[name]?.id).filter(Boolean);
   defaultMove.scafoldingBlocks = scafolding;
 
@@ -107,7 +173,19 @@ bot.once('spawn', () => {
 // Handle bot spawn and respawn events on server
 bot.on('spawn', () => {
   console.log('✅ Bot spawned on server!');
-  console.log(`[DIMENSION] Spawned in dimension: ${bot.game?.dimension || 'unknown'}`);
+  const dimension = getDimension(bot);
+  console.log(`[DIMENSION] Spawned in dimension: ${dimension}`);
+
+  const previousDimension = state.lastDimension;
+  state.lastDimension = dimension;
+
+  if (respawningAfterDeath) {
+    // A respawn is not a portal trip: do not record portal coordinates here
+    respawningAfterDeath = false;
+    verifySpawnBedAfterRespawn();
+  } else if (previousDimension && previousDimension !== dimension) {
+    recordDimensionTransition(previousDimension, dimension);
+  }
 
   if (shouldResumeAfterDeath) {
     shouldResumeAfterDeath = false;
@@ -144,23 +222,66 @@ bot.on('messagestr', (message) => {
   }
 
   checkAdvancementMessage(bot, state, message);
+  if (state.unlockedAdvancements.includes('Free the End')) {
+    setMilestone(state, 'dragon_defeated', true);
+  }
 });
 
 /**
- * Update manual or automatic objective from player chat command
+ * Set an objective requested by a player and announce the prerequisite chain the bot will follow
  * @param {string} message Raw chat command
  */
 function handleGoalCommand(message) {
-  const newGoal = message.split(' ')[1]?.trim();
-  if (newGoal === 'auto') {
-    state.manualObjective = false;
-    syncObjective(bot, state);
-    bot.chat(`Automatic progression. Objective : ${state.currentObjective}`);
-  } else if (newGoal) {
-    state.manualObjective = true;
-    state.currentObjective = newGoal;
-    bot.chat(`New objective registered : ${state.currentObjective}`);
+  const command = parseGoalCommand(message, bot);
+
+  if (command.type === 'error') {
+    say(command.message);
+    return;
   }
+
+  if (command.type === 'auto') {
+    clearManualGoal(bot, state);
+    say(`Progression automatique. Objectif : ${state.currentObjective}`);
+    return;
+  }
+
+  const plan = setManualGoal(bot, state, command.objective, command.qty);
+  if (plan.satisfied) {
+    clearManualGoal(bot, state);
+    say(`${plan.chain} Objectif actuel : ${state.currentObjective}`);
+    return;
+  }
+
+  // When the objective is not directly reachable, the chain shows what will be built first (e.g. iron pickaxe before diamond)
+  say(`Nouvel objectif : ${command.qty}x ${command.objective} (${plan.stepCount} étapes)`);
+  say(`Plan : ${plan.chain}`);
+  console.log(`[GOAL] Manual objective '${command.objective}' x${command.qty} : ${plan.chain}`);
+}
+
+/**
+ * Report the situation and break the current failure loop by forcing a different action
+ * @param {boolean} infoOnly When true, only report without changing the bot's course
+ */
+function handleDebugCommand(infoOnly) {
+  const report = describeDebugState(bot, state);
+  report.forEach(line => console.log(line));
+  say(report[0]);
+  say(report[1]);
+
+  if (infoOnly) {
+    say(report[2]);
+    say(report[3]);
+    return;
+  }
+
+  if (!state.isSurviving) {
+    say("Mode autonome arrêté : rien à débloquer. Tape 'start' pour le relancer.");
+    return;
+  }
+
+  const { decision, blocked } = forceRecovery(bot, state, 'commande debug du joueur', { manual: true });
+  const blockedNote = blocked ? ` | '${blocked.replace(':', ' ')}' interdite 5 min` : '';
+  say(`Déblocage forcé -> ${decision.action} ${decision.target}${blockedNote}`);
 }
 
 /**
@@ -172,8 +293,24 @@ function reportInventoryInChat() {
     bot.chat("My pockets are completely empty!");
   } else {
     const list = items.map(item => `${item.count}x ${item.name}`).join(', ');
-    bot.chat(`Inventory : ${list}`);
+    say(`Inventory : ${list}`);
   }
+}
+
+/**
+ * Report the memorized milestone coordinates in chat
+ */
+function reportWaypointsInChat() {
+  const waypoints = listWaypoints(state);
+  if (waypoints.length === 0) {
+    say("Aucun point de repère mémorisé pour l'instant.");
+    return;
+  }
+  const here = getDimension(bot);
+  waypoints.forEach((wp) => {
+    const distance = wp.dimension === here ? `${Math.round(horizontalDistanceTo(bot, wp))} blocs` : wp.dimension;
+    say(`${wp.name} : ${wp.x}, ${wp.y}, ${wp.z} (${distance})`);
+  });
 }
 
 // Handle player control commands from chat
@@ -181,8 +318,9 @@ bot.on('chat', async (username, message) => {
   if (username === bot.username) return;
   // Log chat messages for debugging
   console.log(`[CHAT SERVER] ${username ? username + ': ' : ''}${message}`);
+  const command = message.trim().toLowerCase();
 
-  if (message === 'start' && !state.isSurviving) {
+  if (command === 'start' && !state.isSurviving) {
     await autoEquipArmorAndShield(bot);
     syncObjective(bot, state);
     state.isSurviving = true;
@@ -194,7 +332,7 @@ bot.on('chat', async (username, message) => {
     return;
   }
 
-  if (message === 'stop') {
+  if (command === 'stop') {
     state.isSurviving = false;
     state.survivalSessionId = (state.survivalSessionId || 0) + 1;
     state.activeActionId = (state.activeActionId || 0) + 1;
@@ -204,34 +342,62 @@ bot.on('chat', async (username, message) => {
     return;
   }
 
-  if (message.startsWith('objectif ') || message.startsWith('goal ')) {
+  if (command.startsWith('objectif ') || command.startsWith('goal ')) {
     handleGoalCommand(message);
     return;
   }
 
-  if (message === 'inventaire' || message === 'inv') {
+  if (DEBUG_INFO_COMMANDS.has(command)) {
+    handleDebugCommand(true);
+    return;
+  }
+
+  if (DEBUG_COMMANDS.has(command)) {
+    handleDebugCommand(false);
+    return;
+  }
+
+  if (command === 'plan') {
+    const required = getQuestRequirement(bot, state, state.currentObjective);
+    const plan = describeGoalPlan(bot, state, state.currentObjective, required);
+    say(`Objectif ${state.currentObjective} x${required} : ${plan.chain}`);
+    return;
+  }
+
+  if (command === 'waypoints' || command === 'reperes' || command === 'repères') {
+    reportWaypointsInChat();
+    return;
+  }
+
+  if (command === 'inventaire' || command === 'inv') {
     reportInventoryInChat();
     return;
   }
 
-  if (message === 'coords' || message === 'pos') {
+  if (command === 'coords' || command === 'pos') {
     const pos = bot.entity.position.floored();
     bot.chat(`Current coordinates : X:${pos.x}, Y:${pos.y}, Z:${pos.z}`);
     return;
   }
 
-  if (message === 'tokens' || message === 'token') {
+  if (command === 'tokens' || command === 'token') {
     const stats = state.tokenStats;
+    const metrics = state.metrics;
     bot.chat(`Tokens : Joueur [${stats.playerPromptTokens} in / ${stats.playerCompletionTokens} out] | Manager [${stats.managerPromptTokens} in / ${stats.managerCompletionTokens} out] | Total : ${stats.totalTokens}`);
+    say(`Décisions : ${metrics.deterministicDecisions} sans LLM / ${metrics.llmDecisions} via LLM | Manager LLM : ${metrics.managerLlmCalls} | Déblocages : ${metrics.recoveries}`);
   }
 });
 
 // Suspend autonomous survival on bot death and schedule respawn recovery
 bot.on('death', () => {
   shouldResumeAfterDeath = state.isSurviving;
+  respawningAfterDeath = true;
   state.isSurviving = false;
   state.activeActionId = (state.activeActionId || 0) + 1;
   state.lastDeathPosition = bot.entity?.position ? bot.entity.position.clone() : null;
+  if (state.lastDeathPosition) {
+    saveWaypoint(state, 'death', state.lastDeathPosition, getDimension(bot), 'last death (dropped items)');
+  }
   state.actionHistory = [];
   state.lastActionResult = {
     action: 'none',
@@ -242,7 +408,10 @@ bot.on('death', () => {
   state.managerSubGoal = null;
   state.managerDirective = "Récolter du bois pour fabriquer les premiers outils.";
   state.cyclesSinceLastManager = 0;
+  // Stations and the deployed table are lost with the death location; milestone waypoints are kept on purpose
   state.base = { crafting_table: null, furnace: null, chest: null };
+  state.deployedTable = null;
+  state.recovery = null;
   clearBadBlocks();
   bot.pathfinder.setGoal(null);
   bot.clearControlStates();
