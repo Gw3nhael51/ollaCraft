@@ -647,35 +647,8 @@ function tryAssignPickaxeRecovery(bot) {
   const cobbleCount = invUtils.countBestStoneStack(bot);
   if (ironCount < 3 && cobbleCount < 3) return false;
 
-  const items = bot.inventory.items();
-  const stickCount = invUtils.countItem(bot, 'stick');
-  if (stickCount < 2) {
-    const plankCount = items.filter(i => invUtils.isPlanks(i.name)).reduce((s, i) => s + i.count, 0);
-    if (plankCount >= 2) {
-      state.managerDirective = "Fabrique des bâtons ('stick') pour reconstituer une pioche.";
-      state.managerSubGoal = { action: 'craft', target: 'stick', isReliable: true };
-      console.log(`\n[MANAGER 🧠] Directive mise à jour : "${state.managerDirective}" (action suggérée: craft)`);
-      return true;
-    }
-    const logCount = items.filter(i => invUtils.isWoodLog(i.name)).reduce((s, i) => s + i.count, 0);
-    if (logCount >= 1) {
-      state.managerDirective = "Transforme tes bûches en planches ('planks') pour fabriquer une pioche.";
-      state.managerSubGoal = { action: 'craft', target: 'planks', isReliable: true };
-      console.log(`\n[MANAGER 🧠] Directive mise à jour : "${state.managerDirective}" (action suggérée: craft)`);
-      return true;
-    }
-    return false;
-  }
-
   const pickaxeTarget = ironCount >= 3 ? 'iron_pickaxe' : 'stone_pickaxe';
-  // A carried table is as good as a placed one: 'craft' deploys it and takes it back
-  if (invUtils.hasCraftingTableAccess(bot, state)) {
-    state.managerDirective = `Fabrique une '${pickaxeTarget}' pour creuser vers la lave et miner dans le Nether.`;
-    state.managerSubGoal = { action: 'craft', target: pickaxeTarget, isReliable: true };
-    console.log(`\n[MANAGER 🧠] Directive mise à jour : "${state.managerDirective}" (action suggérée: craft)`);
-    return true;
-  }
-  return false;
+  return tryAssignPickaxeCraftSteps(bot, pickaxeTarget, 'Récupération de pioche');
 }
 
 /**
@@ -723,6 +696,107 @@ function assignManagerSubGoal(action, target, directive, isReliable = true, qty 
 }
 
 /**
+ * Locate a visible non-bad tree log block within mining distance
+ * @param {object} bot Mineflayer bot instance
+ * @param {number} [maxDistance=24] Maximum search radius
+ * @returns {object|null} Visible log block or null
+ */
+function findVisibleLogBlock(bot, maxDistance = 24) {
+  if (typeof bot.findBlock !== 'function') return null;
+  const logBlockNames = new Set(getBlockNamesForTarget(bot, 'log'));
+  return bot.findBlock({
+    matching: (b) => Boolean(b?.name && logBlockNames.has(b.name) && (!b.position || !isBadBlock(b.position))),
+    maxDistance
+  });
+}
+
+/**
+ * Assign deterministic wood, crafting table, or pickaxe crafting sub-goals once metal ingots/gems are held
+ * @param {object} bot Mineflayer bot instance
+ * @param {string} pickaxeName Target pickaxe item name
+ * @param {string} reasonLabel Context label for player directive
+ * @returns {boolean} True after assigning the next required sub-goal
+ */
+function tryAssignPickaxeCraftSteps(bot, pickaxeName, reasonLabel) {
+  const stickCount = invUtils.countItem(bot, 'stick');
+  const plankCount = invUtils.countItem(bot, 'planks');
+  const logCount = invUtils.countItem(bot, 'log');
+
+  if (stickCount < 2) {
+    if (plankCount >= 2) {
+      return assignManagerSubGoal('craft', 'stick', `${reasonLabel} : fabrique des bâtons ('stick') pour assembler '${pickaxeName}'.`, true);
+    }
+    if (logCount >= 1) {
+      return assignManagerSubGoal('craft', 'planks', `${reasonLabel} : transforme tes bûches en planches ('planks') pour '${pickaxeName}'.`, true);
+    }
+    if (findVisibleLogBlock(bot, 24)) {
+      return assignManagerSubGoal('mine', 'log', `${reasonLabel} : mine 2 bûches ('log') pour fabriquer les bâtons de '${pickaxeName}'.`, true, 2);
+    }
+    return assignManagerSubGoal('explore', 'log', `${reasonLabel} : remonte vers la surface et explore pour trouver du bois ('log') afin de fabriquer '${pickaxeName}'.`, true);
+  }
+
+  if (invUtils.findNearbyCraftingTable(bot, state)) {
+    return assignManagerSubGoal('craft', pickaxeName, `${reasonLabel} : fabrique '${pickaxeName}' sur l'établi à proximité.`, true);
+  }
+  if (invUtils.countItem(bot, 'crafting_table') > 0) {
+    return assignManagerSubGoal('place', 'crafting_table', `${reasonLabel} : pose ta 'crafting_table' au sol pour fabriquer '${pickaxeName}'.`, true);
+  }
+  if (plankCount >= 4) {
+    return assignManagerSubGoal('craft', 'crafting_table', `${reasonLabel} : fabrique une 'crafting_table' pour assembler '${pickaxeName}'.`, true);
+  }
+  if (logCount >= 1) {
+    return assignManagerSubGoal('craft', 'planks', `${reasonLabel} : transforme tes bûches en planches ('planks') pour fabriquer une 'crafting_table'.`, true);
+  }
+  if (findVisibleLogBlock(bot, 24)) {
+    return assignManagerSubGoal('mine', 'log', `${reasonLabel} : mine 2 bûches ('log') pour fabriquer une 'crafting_table'.`, true, 2);
+  }
+  return assignManagerSubGoal('explore', 'log', `${reasonLabel} : remonte vers la surface et explore pour trouver du bois ('log') afin de fabriquer une 'crafting_table'.`, true);
+}
+
+/**
+ * Assign deterministic recovery steps to craft an iron_pickaxe before mining diamond_ore
+ * @param {object} bot Mineflayer bot instance
+ * @returns {boolean} True if an iron_pickaxe recovery sub-goal was assigned, false when infeasible
+ */
+function tryAssignIronPickaxeForDiamond(bot) {
+  const ironCount = invUtils.countItem(bot, 'iron_ingot');
+  if (ironCount >= 3) {
+    return tryAssignPickaxeCraftSteps(bot, 'iron_pickaxe', 'Fallback Diamant (pioche en fer requise)');
+  }
+
+  const rawIronCount = invUtils.countItem(bot, 'raw_iron') + invUtils.countItem(bot, 'iron_ore');
+  if (ironCount + rawIronCount >= 3 && rawIronCount > 0) {
+    const { findTargetFurnace } = require('../actions/behaviors/items/smelt');
+    const neededIngots = 3 - ironCount;
+    if (findTargetFurnace(bot, state)) {
+      const rawTarget = invUtils.countItem(bot, 'raw_iron') > 0 ? 'raw_iron' : 'iron_ore';
+      return assignManagerSubGoal('smelt', rawTarget, `Fallback Diamant : fais fondre ${neededIngots}x '${rawTarget}' pour fabriquer une 'iron_pickaxe'.`, true, neededIngots);
+    }
+    if (invUtils.countItem(bot, 'furnace') > 0) {
+      return assignManagerSubGoal('place', 'furnace', "Fallback Diamant : pose ton fourneau ('furnace') pour fondre du fer.", true);
+    }
+    if (invUtils.countItem(bot, 'cobblestone') >= 8 && invUtils.findNearbyCraftingTable(bot, state)) {
+      return assignManagerSubGoal('craft', 'furnace', "Fallback Diamant : fabrique un fourneau ('furnace') pour fondre ton minerai de fer.", true);
+    }
+  }
+
+  if (invUtils.countItem(bot, 'stone_pickaxe') > 0 && typeof bot.findBlock === 'function') {
+    const ironOreNames = new Set(getBlockNamesForTarget(bot, 'iron_ore'));
+    const nearbyIron = bot.findBlock({
+      matching: (b) => Boolean(b?.name && ironOreNames.has(b.name) && (!b.position || !isBadBlock(b.position))),
+      maxDistance: 30
+    });
+    if (nearbyIron) {
+      const neededOre = Math.max(1, 3 - ironCount - rawIronCount);
+      return assignManagerSubGoal('mine', 'iron_ore', `Fallback Diamant : mine ${neededOre}x 'iron_ore' pour reconstituer une 'iron_pickaxe'.`, true, neededOre);
+    }
+  }
+
+  state.useDiamondPortalFallback = false;
+  return false;
+}
+
+/**
  * Assign deterministic diamond-mining and diamond_pickaxe crafting steps when portal mold casting falls back to diamond route
  * @param {object} bot Mineflayer bot instance
  * @returns {boolean} True if a diamond fallback sub-goal was assigned
@@ -736,26 +810,16 @@ function tryAssignDiamondFallbackGoal(bot) {
 
   const diamondCount = invUtils.countItem(bot, 'diamond');
   if (diamondCount >= 3) {
-    const items = bot.inventory?.items?.() || [];
-    const stickCount = invUtils.countItem(bot, 'stick');
-    if (stickCount < 2) {
-      const plankCount = items.filter(i => invUtils.isPlanks(i.name)).reduce((s, i) => s + i.count, 0);
-      if (plankCount >= 2) {
-        return assignManagerSubGoal('craft', 'stick', "Fabrique des bâtons ('stick') pour assembler la 'diamond_pickaxe'.", true);
-      }
-      const logCount = items.filter(i => invUtils.isWoodLog(i.name)).reduce((s, i) => s + i.count, 0);
-      if (logCount >= 1) {
-        return assignManagerSubGoal('craft', 'planks', "Transforme tes bûches en planches ('planks') pour ta 'diamond_pickaxe'.", true);
-      }
-      return assignManagerSubGoal('mine', 'log', "Mine une bûche ('log') pour fabriquer les bâtons de ta 'diamond_pickaxe'.", true, 1);
-    }
-    if (invUtils.findNearbyCraftingTable(bot, state)) {
-      return assignManagerSubGoal('craft', 'diamond_pickaxe', "Fabrique une 'diamond_pickaxe' pour miner 10 blocs d'obsidienne.", true);
-    }
-    if (invUtils.countItem(bot, 'crafting_table') > 0) {
-      return assignManagerSubGoal('place', 'crafting_table', "Pose ta 'crafting_table' au sol pour fabriquer la 'diamond_pickaxe'.", true);
-    }
-    return assignManagerSubGoal('craft', 'crafting_table', "Fabrique une 'crafting_table' pour assembler ta 'diamond_pickaxe'.", true);
+    return tryAssignPickaxeCraftSteps(bot, 'diamond_pickaxe', 'Fallback Diamant');
+  }
+
+  const hasIronTierPick = (
+    invUtils.countItem(bot, 'iron_pickaxe') > 0 ||
+    invUtils.countItem(bot, 'diamond_pickaxe') > 0 ||
+    invUtils.countItem(bot, 'netherite_pickaxe') > 0
+  );
+  if (!hasIronTierPick) {
+    return tryAssignIronPickaxeForDiamond(bot);
   }
 
   const diamondBlockNames = new Set(getBlockNamesForTarget(bot, 'diamond_ore'));
@@ -838,8 +902,8 @@ function tryAssignPortalOrNetherGoal(bot) {
       'netherrack', 'quartz', 'blackstone', 'basalt', 'soul_sand',
       'soul_soil', 'crimson_stem', 'warped_stem', 'nether_wart_block', 'warped_wart_block'
     ];
-    const hasNetherBlocks = netherHarvestedItems.some(item => invUtils.countItem(bot, item) > 0);
-    if (!hasNetherBlocks && typeof bot.findBlock === 'function') {
+    const netherBlockTotal = netherHarvestedItems.reduce((sum, item) => sum + invUtils.countItem(bot, item), 0);
+    if (netherBlockTotal < 4 && typeof bot.findBlock === 'function') {
       const candidateBlocks = invUtils.hasToolType(bot, '_pickaxe')
         ? ['nether_quartz_ore', 'netherrack', 'blackstone', 'basalt']
         : ['crimson_stem', 'warped_stem', 'soul_sand', 'soul_soil', 'nether_wart_block', 'warped_wart_block', 'gravel'];

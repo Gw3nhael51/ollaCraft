@@ -19,7 +19,7 @@ const { scanEnvironment, clearBadBlocks } = require('../src/utils/environment');
 const { skillPlace } = require('../src/skills/place');
 const { getBlockNamesForTarget, getOreBlockNames } = require('../src/utils/wikiData');
 const { buildReactPrompt, filterRadarEnvironment } = require('../src/ai/prompt');
-const { isDiggableObstacle, skillUnstuck, moveExploreStep, hasSolidCeilingAbove, headingToMineflayerYaw, isBoxStuck, skillExplore } = require('../src/skills/navigate');
+const { isDiggableObstacle, skillUnstuck, moveExploreStep, hasSolidCeilingAbove, headingToMineflayerYaw, isBoxStuck, skillExplore, tryPillarUp } = require('../src/skills/navigate');
 const { getFormatSchema, PLAYER_JSON_SCHEMA, MANAGER_JSON_SCHEMA } = require('../src/ai/ollama');
 const { breakBlockAt } = require('../src/actions/primitives/blocks');
 
@@ -110,6 +110,7 @@ test('Storage frees full inventory slots by tossing flowers and surplus bulk whi
   assert.ok(stacks.some(s => s.name === 'raw_iron'));
   const remainingCobble = stacks.filter(s => s.name === 'cobblestone').reduce((sum, s) => sum + s.count, 0);
   assert.equal(remainingCobble, 64);
+  assert.equal(storage.isItemToStore({ name: 'tuff', count: 64 }), true);
 });
 
 test('Progression resumes at current stage when keeping advanced gear', () => {
@@ -1412,6 +1413,62 @@ test('Hybrid Nether portal: lava_bucket recovery, water explore isolation, and d
     };
     assert.equal(manager.tryAssignPortalOrNetherGoal(craftDiamondPickBot), true);
     assert.deepEqual(state.managerSubGoal, { action: 'craft', target: 'diamond_pickaxe', isReliable: true });
+
+    const stonePickDiamondBot = {
+      ...noWaterBot,
+      inventory: {
+        items: () => [
+          { name: 'stone_pickaxe', count: 1 },
+          { name: 'iron_ingot', count: 3 },
+          { name: 'stick', count: 12 },
+          { name: 'water_bucket', count: 1 },
+          { name: 'flint_and_steel', count: 1 }
+        ]
+      },
+      findBlock: ({ matching }) => (typeof matching === 'function' && matching(diamondBlock) ? diamondBlock : null)
+    };
+    assert.equal(manager.tryAssignPortalOrNetherGoal(stonePickDiamondBot), true);
+    assert.deepEqual(state.managerSubGoal, { action: 'explore', target: 'log', isReliable: true });
+
+    const stonePickWithTableBot = {
+      ...stonePickDiamondBot,
+      findBlock: ({ matching }) => {
+        if (matching === tableId) return tableBlock;
+        if (typeof matching === 'function' && matching(diamondBlock)) return diamondBlock;
+        if (typeof matching === 'function' && matching(tableBlock)) return tableBlock;
+        return null;
+      }
+    };
+    assert.equal(manager.tryAssignPortalOrNetherGoal(stonePickWithTableBot), true);
+    assert.deepEqual(state.managerSubGoal, { action: 'craft', target: 'iron_pickaxe', isReliable: true });
+
+    const noIronFallbackBot = {
+      ...stonePickDiamondBot,
+      inventory: {
+        items: () => [
+          { name: 'stone_pickaxe', count: 1 },
+          { name: 'water_bucket', count: 1 },
+          { name: 'flint_and_steel', count: 1 }
+        ]
+      }
+    };
+    manager.tryAssignPortalOrNetherGoal(noIronFallbackBot);
+    assert.notEqual(state.managerSubGoal?.target, 'diamond_ore');
+    assert.equal(state.useDiamondPortalFallback, false);
+
+    const noPickBot = {
+      ...noWaterBot,
+      inventory: {
+        items: () => [
+          { name: 'iron_ingot', count: 3 },
+          { name: 'stick', count: 12 },
+          { name: 'water_bucket', count: 1 },
+          { name: 'flint_and_steel', count: 1 }
+        ]
+      }
+    };
+    assert.equal(manager.tryAssignPortalOrNetherGoal(noPickBot), true);
+    assert.deepEqual(state.managerSubGoal, { action: 'explore', target: 'log', isReliable: true });
   } finally {
     env.clearKnownLava();
     env.clearBadBlocks();
@@ -1481,4 +1538,121 @@ test('3-turn /portal nether fallback enforces nether_portal milestone gate, sets
     state.netherPortalAttempts = prevState.netherPortalAttempts;
     state.registeredPortalCoords = prevState.registeredPortalCoords;
   }
+});
+
+test('tryPillarUp digs overhead stone, raises bot altitude with cobblestone, and aborts safely on overhead lava', async () => {
+  const { Vec3 } = require('vec3');
+  let cobbleCount = 1;
+  let stoneBroken = false;
+  const worldBlocks = new Map([
+    ['0,7,0', 'stone']
+  ]);
+
+  const pillarBot = {
+    registry: mcData,
+    entity: { position: new Vec3(0, 8, 0), isInWater: false },
+    inventory: {
+      items: () => (cobbleCount > 0 ? [{ name: 'cobblestone', type: mcData.itemsByName.cobblestone.id, count: cobbleCount }] : [])
+    },
+    blockAt: (pos) => {
+      const key = `${pos.x},${pos.y},${pos.z}`;
+      if (key === '0,10,0' && !stoneBroken) return { name: 'stone', position: new Vec3(0, 10, 0) };
+      const name = worldBlocks.get(key) || 'air';
+      return { name, position: pos.clone ? pos.clone() : new Vec3(pos.x, pos.y, pos.z) };
+    },
+    equip: async () => {},
+    lookAt: async () => {},
+    setControlState: () => {},
+    clearControlStates: () => {},
+    waitForTicks: async () => {},
+    dig: async (block) => {
+      if (block.position.x === 0 && block.position.y === 10 && block.position.z === 0) {
+        stoneBroken = true;
+      }
+    },
+    placeBlock: async (refBlock, face) => {
+      const placedPos = refBlock.position.plus(face);
+      worldBlocks.set(`${placedPos.x},${placedPos.y},${placedPos.z}`, 'cobblestone');
+      cobbleCount -= 1;
+      pillarBot.entity.position = new Vec3(0, 9, 0);
+    },
+    pathfinder: { setGoal: () => {} }
+  };
+
+  const climbed = await tryPillarUp(pillarBot, 10000);
+  assert.equal(climbed, true);
+  assert.equal(stoneBroken, true);
+  assert.equal(pillarBot.entity.position.y, 9);
+
+  let lavaDigCalled = false;
+  const lavaBot = {
+    registry: mcData,
+    entity: { position: new Vec3(0, 8, 0), isInWater: false },
+    inventory: {
+      items: () => [{ name: 'cobblestone', type: mcData.itemsByName.cobblestone.id, count: 4 }]
+    },
+    blockAt: (pos) => {
+      if (pos.x === 0 && pos.y === 10 && pos.z === 0) return { name: 'lava', position: new Vec3(0, 10, 0) };
+      if (pos.x === 0 && pos.y === 7 && pos.z === 0) return { name: 'stone', position: new Vec3(0, 7, 0) };
+      return { name: 'air', position: pos };
+    },
+    equip: async () => {},
+    lookAt: async () => {},
+    setControlState: () => {},
+    clearControlStates: () => {},
+    waitForTicks: async () => {},
+    dig: async () => { lavaDigCalled = true; },
+    placeBlock: async () => {},
+    pathfinder: { setGoal: () => {} }
+  };
+
+  const lavaOutcome = await tryPillarUp(lavaBot, 10000);
+  assert.equal(lavaOutcome, false);
+  assert.equal(lavaDigCalled, false);
+});
+
+test('buildObsidianFrame tolerates null block positions and builds on cobbled_deepslate under cave_air', async () => {
+  const { Vec3 } = require('vec3');
+  const placed = new Set();
+  const dug = new Set();
+  const baseKey = (p) => `${p.x},${p.y},${p.z}`;
+  const frameBot = {
+    registry: mcData,
+    entity: { position: new Vec3(0, -40, 2) },
+    inventory: {
+      items: () => [
+        { name: 'obsidian', count: 10 },
+        { name: 'cobblestone', count: 8 }
+      ]
+    },
+    blockAt: (pos) => {
+      const k = baseKey(pos);
+      if (placed.has(k)) return { name: 'obsidian', position: pos };
+      if (pos.y <= -41 && !dug.has(k)) return { name: 'cobbled_deepslate', position: pos };
+      return { name: 'cave_air', position: pos, boundingBox: 'empty' };
+    },
+    findBlock: ({ matching }) => {
+      assert.equal(matching({ name: 'cobbled_deepslate', position: null }), true);
+      assert.equal(matching({ name: 'air', position: null }), false);
+      const ground = { name: 'cobbled_deepslate', position: new Vec3(0, -41, 0) };
+      return matching(ground) ? ground : null;
+    },
+    equip: async () => {},
+    lookAt: async () => {},
+    dig: async (block) => {
+      dug.add(baseKey(block.position));
+    },
+    placeBlock: async (refBlock, face) => {
+      const targetPos = refBlock.position.plus(face);
+      const k = baseKey(targetPos);
+      dug.delete(k);
+      placed.add(k);
+    },
+    waitForTicks: async () => {},
+    pathfinder: { goto: async () => {}, setGoal: () => {} }
+  };
+
+  const frameRes = await buildObsidianFrame(frameBot);
+  assert.equal(frameRes.success, true);
+  assert.ok(frameRes.portalInnerPos);
 });
