@@ -691,6 +691,56 @@ test('Spawn bed is placed and used before leaving the Overworld, and its coordin
   assert.equal(netherResult.success, false);
 });
 
+test('A bed is crafted at the portable table: its 2x2 re-dye recipe does not keep it in the personal grid', async () => {
+  const Recipe = require('prismarine-recipe')('1.20.4').Recipe;
+  /**
+   * Give a mock bot mineflayer's real recipe rules: a 3x3 recipe needs a table, every ingredient must be carried
+   * @param {Array<[string, number]>} items Inventory content
+   * @returns {{ bot: object, world: object, craftedAt: string[] }} Bot, world handle and where each craft ran
+   */
+  const setupCrafter = (items) => {
+    const bot = createBot(items);
+    const world = attachFlatWorld(bot);
+    const craftedAt = [];
+    const carried = (id) => bot.inventory.items().filter(slot => slot.type === id).reduce((sum, slot) => sum + slot.count, 0);
+    bot.recipesFor = (id, metadata, minResultCount, table) => Recipe.find(id, metadata).filter(recipe => (
+      (!recipe.requiresTable || table) &&
+      recipe.delta.every(d => carried(d.id) + d.count * Math.ceil((minResultCount ?? 1) / recipe.result.count) >= 0)
+    ));
+    bot.craft = async (recipe, count, table) => {
+      craftedAt.push(table?.name || 'personal grid');
+      for (const d of recipe.delta) {
+        const name = mcData.items[d.id].name;
+        if (d.count < 0) bot.take(name, -d.count * count);
+        else bot.give(name, d.count * count);
+      }
+    };
+    return { bot, world, craftedAt };
+  };
+
+  // Beds also have a shapeless 'bed + dye' recipe that fits the 2x2 grid: it must not hide the real 3x2 recipe
+  assert.ok(Recipe.find(mcData.itemsByName.white_bed.id, null).some(recipe => !recipe.requiresTable));
+
+  const fromWool = setupCrafter([['white_wool', 3], ['oak_planks', 3], ['crafting_table', 1]]);
+  const state = createState({ currentObjective: 'bed' });
+  const result = await skillCraft(fromWool.bot, state, 'bed', 1);
+  assert.equal(result.success, true, result.message);
+  assert.deepEqual(fromWool.craftedAt, ['crafting_table']);
+  assert.equal(invUtils.countItem(fromWool.bot, 'white_bed'), 1);
+  assert.equal(invUtils.countItem(fromWool.bot, 'white_wool'), 0);
+  assert.deepEqual(fromWool.world.placed, ['crafting_table']);
+  assert.equal(invUtils.countItem(fromWool.bot, 'crafting_table'), 1, 'the portable table is collected back');
+  assert.equal(invUtils.isQuestDone(fromWool.bot, 'bed', state), true);
+
+  // When the 2x2 recipe can be made right now, the table stays in the inventory
+  const reDye = setupCrafter([['black_bed', 1], ['white_dye', 1], ['crafting_table', 1]]);
+  const dyed = await skillCraft(reDye.bot, createState(), 'white_bed', 1);
+  assert.equal(dyed.success, true, dyed.message);
+  assert.deepEqual(reDye.craftedAt, ['personal grid']);
+  assert.deepEqual(reDye.world.placed, []);
+  assert.equal(invUtils.countItem(reDye.bot, 'white_bed'), 1);
+});
+
 test('Nether portal entry requires and sets the spawn bed, memorizes both sides, and the return trip uses them', async () => {
   /**
    * Build a bot standing next to an active Nether portal in the Overworld

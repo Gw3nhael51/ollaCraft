@@ -255,7 +255,7 @@ The ReAct loop provides the LLM with structured actions formatted in JSON:
 | Skill | Parameters | Description |
 |---|---|---|
 | `mine` | `target: string, qty?: number` | Finds the closest target block, equips the optimal tool dynamically via `minecraft-data` (`harvestTools` and `digTime`), and mines it (with BFS vein mining for ores). |
-| `craft` | `target: string, qty?: number` | Crafts an item using the 2x2 player inventory. For 3x3 recipes it deploys the carried crafting table on the spot, crafts, then breaks the table and collects it (it stays deployed only when the very next plan step is another table recipe). |
+| `craft` | `target: string, qty?: number` | Crafts an item using the 2x2 player inventory. For 3x3 recipes (including items that also have a 2x2 recipe the inventory cannot make, like a bed's re-dye recipe) it deploys the carried crafting table on the spot, crafts, then breaks the table and collects it (it stays deployed only when the very next plan step is another table recipe). |
 | `place` | `target: string` | Places a block from inventory on safe, valid adjacent ground (`furnace`, `chest`). A manually placed `crafting_table` is tracked and collected as soon as the bot moves on. |
 | `smelt` | `target: string, qty?: number` | Approaches a furnace, loads fuel (coal/charcoal/wood), and smelts raw ores or food. |
 | `chest` | *None* | Navigates to a nearby chest and deposits bulky materials (excess dirt, cobblestone, mob drops). |

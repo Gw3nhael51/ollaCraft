@@ -240,6 +240,23 @@ async function collectDroppedCraftItem(bot, normalizedTarget) {
 }
 
 /**
+ * Tell whether crafting an item now needs a crafting table.
+ * Having a 2x2 recipe is not enough: a bed also has a 2x2 re-dye recipe (another bed + a dye), useless
+ * without a bed, while the real recipe (3 wool + 3 planks) is 3x2. The personal grid is used only when
+ * one of its recipes can be made with the inventory right now.
+ * @param {object} bot Mineflayer bot instance
+ * @param {object} item Item registry entry
+ * @returns {boolean} True if the craft must happen at a crafting table
+ */
+function needsCraftingTable(bot, item) {
+  const Recipe = require('prismarine-recipe')(bot.version || config.BOT_CONFIG.version || '1.20.4').Recipe;
+  const recipes = Recipe.find(item.id, null);
+  if (!recipes.some(recipe => recipe.requiresTable)) return false;
+  if (!recipes.some(recipe => !recipe.requiresTable)) return true;
+  return bot.recipesFor(item.id, null, 1, null).length === 0;
+}
+
+/**
  * Check whether a crafting table is required and make one available: reuse a table within reach,
  * otherwise deploy the carried portable table right where the bot stands
  * @param {object} bot Mineflayer bot instance
@@ -249,9 +266,7 @@ async function collectDroppedCraftItem(bot, normalizedTarget) {
  * @returns {Promise<{ ok: boolean, tableToUse?: object|null, errorResult?: { success: boolean, message: string } }>} Station preparation result
  */
 async function prepareCraftingStation(bot, state, item, targetName) {
-  const Recipe = require('prismarine-recipe')(bot.version || config.BOT_CONFIG.version || '1.20.4').Recipe;
-  const fitsInPersonalGrid = Recipe.find(item.id, null).some(r => !r.requiresTable);
-  if (fitsInPersonalGrid) return { ok: true, tableToUse: null };
+  if (!needsCraftingTable(bot, item)) return { ok: true, tableToUse: null };
 
   let tableToUse = findNearbyCraftingTable(bot, state);
   if (!tableToUse) {
