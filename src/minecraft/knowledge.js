@@ -339,11 +339,28 @@ function getItemKnowledge(bot, targetName) {
  * @returns {boolean} Vrai si la station est posée à portée
  */
 function hasPlacedStation(bot, state, stationName) {
+  if (stationName === 'furnace') {
+    // Same test as the smelt skill: a furnace that is too far or marked unreachable does not count,
+    // otherwise the plan keeps asking to smelt in a furnace the skill refuses to use
+    const { findTargetFurnace } = require('../actions/behaviors/items/smelt');
+    return Boolean(findTargetFurnace(bot, state));
+  }
   const blockId = bot.registry?.blocksByName?.[stationName]?.id;
   const nearby = blockId && typeof bot.findBlock === 'function'
     ? bot.findBlock({ matching: blockId, maxDistance: config.CRAFTING_TABLE_RANGE })
     : null;
   return Boolean(nearby || state?.base?.[stationName]);
+}
+
+/**
+ * Compter ce que le bot possède réellement pour satisfaire un ingrédient
+ * @param {object} bot Instance du bot Mineflayer
+ * @param {string} name Nom de l'ingrédient
+ * @returns {number} Quantité utilisable
+ */
+function countUsable(bot, name) {
+  // Une recette prend toutes ses planches dans une seule essence : des restes mélangés ne s'additionnent pas
+  return invUtils.GENERIC_PLANK_NAMES.has(name) ? invUtils.countBestPlankStack(bot) : invUtils.countItem(bot, name);
 }
 
 /**
@@ -360,7 +377,7 @@ function collectDependencySteps(bot, targetName, neededCount, state, virtualInve
   const clean = typeof targetName === 'string' ? targetName.toLowerCase().trim() : '';
   if (!clean || visited.has(clean)) return;
 
-  const owned = virtualInventory.get(clean) ?? invUtils.countItem(bot, clean);
+  const owned = virtualInventory.get(clean) ?? countUsable(bot, clean);
   if (owned >= neededCount) {
     return;
   }
@@ -413,7 +430,7 @@ function collectDependencySteps(bot, targetName, neededCount, state, virtualInve
   if (knowledge.method === 'craft' || knowledge.method === 'smelt') {
     for (const prereq of knowledge.prerequisites) {
       if (prereq.name === knowledge.requiredTool) continue;
-      const currentQty = virtualInventory.get(prereq.name) ?? invUtils.countItem(bot, prereq.name);
+      const currentQty = virtualInventory.get(prereq.name) ?? countUsable(bot, prereq.name);
       virtualInventory.set(prereq.name, Math.max(0, currentQty - prereq.count * actionQty));
     }
   }

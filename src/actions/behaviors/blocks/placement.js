@@ -3,6 +3,29 @@ const { goals } = require('mineflayer-pathfinder');
 const config = require('../../../infrastructure/config');
 
 const AIR_NAMES = new Set(['air', 'cave_air', 'void_air']);
+// Blocks a placed block simply replaces, exactly as when a player clicks through tall grass
+const REPLACEABLE_NAMES = new Set([
+  ...AIR_NAMES, 'short_grass', 'grass', 'tall_grass', 'fern', 'large_fern', 'dead_bush', 'snow', 'vine',
+  'glow_lichen', 'crimson_roots', 'warped_roots', 'nether_sprouts', 'hanging_roots', 'seagrass', 'tall_seagrass'
+]);
+// Clicking these opens or toggles them instead of placing a block against them
+const INTERACTIVE_KEYWORDS = [
+  'crafting_table', 'furnace', 'chest', 'barrel', 'shulker', 'hopper', 'dispenser', 'dropper', 'smoker',
+  'anvil', 'loom', 'grindstone', 'stonecutter', 'lectern', 'beacon', 'brewing_stand',
+  '_bed', 'door', 'trapdoor', 'fence_gate', 'button', 'lever', '_sign', 'note_block', 'jukebox'
+];
+// Entity categories that do not block a placement (drops, arrows, experience orbs...)
+const NON_BLOCKING_ENTITY_TYPES = new Set(['object', 'orb', 'projectile', 'other', 'global']);
+// Half of the bot's width plus a safety margin: the server refuses any block overlapping a living entity
+const BODY_HALF_WIDTH = 0.36;
+const BODY_HEIGHT = 1.8;
+const REACH_DISTANCE = 4.5;
+const SEARCH_RADIUS = 3;
+const NEIGHBOR_FACES = [
+  new Vec3(0, -1, 0),
+  new Vec3(1, 0, 0), new Vec3(-1, 0, 0), new Vec3(0, 0, 1), new Vec3(0, 0, -1),
+  new Vec3(0, 1, 0)
+];
 
 /**
  * Check whether a block is empty air that another block can replace
@@ -11,6 +34,15 @@ const AIR_NAMES = new Set(['air', 'cave_air', 'void_air']);
  */
 function isAirBlock(block) {
   return !block || AIR_NAMES.has(block.name);
+}
+
+/**
+ * Check whether a block can be overwritten by a placed block (air, grass, ferns, snow layer...)
+ * @param {object|null} block Candidate block
+ * @returns {boolean} True if a block can be placed there
+ */
+function isReplaceableBlock(block) {
+  return Boolean(block?.name && REPLACEABLE_NAMES.has(block.name));
 }
 
 /**
@@ -24,26 +56,111 @@ function isSolidGround(block) {
 }
 
 /**
- * Find a nearby solid ground block with free air above that the bot is not standing in
+ * Check whether a block can be clicked to place something against it
+ * @param {object|null} block Candidate reference block
+ * @returns {boolean} True for a solid block that does not open or toggle when clicked
+ */
+function isPlacementReference(block) {
+  if (!isSolidGround(block)) return false;
+  return !INTERACTIVE_KEYWORDS.some(keyword => block.name.includes(keyword));
+}
+
+/**
+ * Check whether a block cell overlaps the bounding box of a standing entity
+ * @param {{ x: number, y: number, z: number }} entityPos Feet position of the entity
+ * @param {{ x: number, y: number, z: number }} cell Block cell (integer coordinates)
+ * @param {number} [height=BODY_HEIGHT] Entity height
+ * @returns {boolean} True if a block placed in the cell would collide with the entity
+ */
+function cellOverlapsBody(entityPos, cell, height = BODY_HEIGHT) {
+  return (
+    entityPos.x + BODY_HALF_WIDTH > cell.x && entityPos.x - BODY_HALF_WIDTH < cell.x + 1 &&
+    entityPos.z + BODY_HALF_WIDTH > cell.z && entityPos.z - BODY_HALF_WIDTH < cell.z + 1 &&
+    entityPos.y + height > cell.y && entityPos.y < cell.y + 1
+  );
+}
+
+/**
+ * Check whether the bot or any nearby creature stands in a block cell
+ * @param {object} bot Mineflayer bot instance
+ * @param {{ x: number, y: number, z: number }} cell Block cell (integer coordinates)
+ * @returns {boolean} True if the server would refuse a block there
+ */
+function isCellObstructed(bot, cell) {
+  if (cellOverlapsBody(bot.entity.position, cell)) return true;
+  for (const entity of Object.values(bot.entities || {})) {
+    if (!entity || entity === bot.entity || !entity.position || NON_BLOCKING_ENTITY_TYPES.has(entity.type)) continue;
+    if (cellOverlapsBody(entity.position, cell, entity.height || BODY_HEIGHT)) return true;
+  }
+  return false;
+}
+
+/**
+ * List the free cells around the bot where a block can be placed against a solid neighbor, best first.
+ * Unlike a nearest-block search it never proposes a cell the bot overlaps, which the server refuses.
  * @param {object} bot Mineflayer bot instance
  * @param {object} [options={}] Search options
- * @param {number} [options.maxDistance=4] Maximum search distance
- * @param {(groundBlock: object) => boolean} [options.accept] Extra predicate on the candidate ground block
+ * @param {boolean} [options.floorOnly=false] Only accept cells resting on solid ground
+ * @returns {Array<{ position: Vec3, reference: object, face: Vec3 }>} Placement candidates
+ */
+function findPlacementSpots(bot, options = {}) {
+  if (typeof bot.blockAt !== 'function' || !bot.entity?.position) return [];
+  const feet = bot.entity.position.floored ? bot.entity.position.floored() : bot.entity.position;
+  const eyeY = bot.entity.position.y + 1.62;
+  const spots = [];
+
+  for (let dx = -SEARCH_RADIUS; dx <= SEARCH_RADIUS; dx++) {
+    for (let dz = -SEARCH_RADIUS; dz <= SEARCH_RADIUS; dz++) {
+      for (const dy of [0, -1, 1, 2]) {
+        const cell = new Vec3(feet.x + dx, feet.y + dy, feet.z + dz);
+        const reachDistance = Math.hypot(cell.x + 0.5 - bot.entity.position.x, cell.y + 0.5 - eyeY, cell.z + 0.5 - bot.entity.position.z);
+        if (reachDistance > REACH_DISTANCE || isCellObstructed(bot, cell)) continue;
+        if (!isReplaceableBlock(bot.blockAt(cell))) continue;
+
+        const faces = options.floorOnly ? NEIGHBOR_FACES.slice(0, 1) : NEIGHBOR_FACES;
+        const supportFace = faces.find(face => isPlacementReference(bot.blockAt(cell.plus(face))));
+        if (!supportFace) continue;
+
+        const referencePos = cell.plus(supportFace);
+        const referenceBlock = bot.blockAt(referencePos);
+        const horizontal = Math.hypot(dx, dz);
+        // Prefer a spot on the floor, at the bot's level, about two blocks away
+        const score = Math.abs(dy) * 2 + Math.abs(horizontal - 2) + (supportFace.y === -1 ? 0 : 1.5);
+        spots.push({
+          position: cell,
+          reference: referenceBlock.position ? referenceBlock : { ...referenceBlock, position: referencePos },
+          face: new Vec3(-supportFace.x, -supportFace.y, -supportFace.z),
+          score
+        });
+      }
+    }
+  }
+
+  return spots.sort((a, b) => a.score - b.score);
+}
+
+/**
+ * Find a nearby solid ground block with free space above that the bot is not standing in
+ * @param {object} bot Mineflayer bot instance
+ * @param {object} [options={}] Search options
+ * @param {number} [options.maxDistance=4] Maximum search distance for the fallback block search
  * @returns {object|null} Ground block to place onto or null
  */
 function findGroundPlacement(bot, options = {}) {
-  const maxDistance = options.maxDistance || 4;
+  const best = findPlacementSpots(bot, { floorOnly: true })[0];
+  if (best) return best.reference;
+  if (typeof bot.findBlock !== 'function') return null;
+
+  // Fallback for partially loaded surroundings: nearest solid block with a free, unobstructed top
   return bot.findBlock({
     matching: (block) => {
       if (!isSolidGround(block)) return false;
       if (!block?.position) return true;
       const placePos = block.position.offset(0, 1, 0);
-      const botPos = bot.entity.position.floored();
-      const collides = botPos.equals(placePos) || botPos.offset(0, 1, 0).equals(placePos);
-      if (collides || !isAirBlock(bot.blockAt(placePos))) return false;
-      return typeof options.accept === 'function' ? options.accept(block) : true;
+      const above = bot.blockAt(placePos);
+      return (isAirBlock(above) || isReplaceableBlock(above)) && !isCellObstructed(bot, placePos);
     },
-    maxDistance
+    maxDistance: options.maxDistance || 4
   });
 }
 
@@ -60,6 +177,56 @@ async function placeOnGround(bot, item, groundBlock) {
   await bot.placeBlock(groundBlock, new Vec3(0, 1, 0));
   const placedPos = groundBlock.position.offset(0, 1, 0);
   return placedPos.clone ? placedPos.clone() : placedPos;
+}
+
+/**
+ * Tell whether a placement error means the server answered "no" (protected area, something in the way)
+ * @param {Error} error Placement error
+ * @returns {boolean} True if the server refused rather than the bot failing to act
+ */
+function isServerRefusal(error) {
+  return /refused|still |did not answer|No block has been placed/i.test(String(error?.message || ''));
+}
+
+/**
+ * Place an item next to the bot, trying the next best spot when the server refuses one
+ * @param {object} bot Mineflayer bot instance
+ * @param {object} item Inventory item to place
+ * @param {object} [options={}] Placement options
+ * @param {boolean} [options.floorOnly=false] Only place on solid ground
+ * @param {number} [options.maxAttempts=3] Number of different spots to try
+ * @returns {Promise<{ success: boolean, position: Vec3|null, refused: boolean, error: string|null }>} Outcome
+ */
+async function placeItemNearby(bot, item, options = {}) {
+  const maxAttempts = options.maxAttempts || 3;
+  let candidates = findPlacementSpots(bot, { floorOnly: Boolean(options.floorOnly) });
+
+  if (candidates.length === 0) {
+    // Fallback for partially loaded surroundings
+    const ground = findGroundPlacement(bot, { maxDistance: 4 });
+    if (ground?.position) {
+      candidates = [{ position: ground.position.offset(0, 1, 0), reference: ground, face: new Vec3(0, 1, 0) }];
+    }
+  }
+  if (candidates.length === 0) {
+    return { success: false, position: null, refused: false, error: 'no free spot next to a solid block within reach' };
+  }
+
+  let lastError = null;
+  let refused = false;
+  for (const spot of candidates.slice(0, maxAttempts)) {
+    try {
+      const heldItem = bot.inventory.items().find(i => i.name === item.name) || item;
+      await bot.equip(heldItem, 'hand');
+      await bot.lookAt(spot.reference.position.offset(0.5 + spot.face.x * 0.5, 0.5 + spot.face.y * 0.5, 0.5 + spot.face.z * 0.5), true);
+      await bot.placeBlock(spot.reference, spot.face);
+      return { success: true, position: spot.position.clone ? spot.position.clone() : spot.position, refused: false, error: null };
+    } catch (error) {
+      lastError = error;
+      refused = refused || isServerRefusal(error);
+    }
+  }
+  return { success: false, position: null, refused, error: lastError?.message || 'placement failed' };
 }
 
 /**
@@ -154,9 +321,15 @@ async function pickUpDroppedItem(bot, isCollected, itemName, dropPos, attemptsLe
 
 module.exports = {
   isAirBlock,
+  isReplaceableBlock,
   isSolidGround,
+  isPlacementReference,
+  isCellObstructed,
+  findPlacementSpots,
   findGroundPlacement,
   placeOnGround,
+  placeItemNearby,
+  isServerRefusal,
   approachPosition,
   digWithTimeout,
   pickUpDroppedItem

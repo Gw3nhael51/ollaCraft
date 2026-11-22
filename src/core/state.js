@@ -63,7 +63,8 @@ module.exports = {
     deterministicDecisions: 0,
     llmDecisions: 0,
     managerLlmCalls: 0,
-    recoveries: 0
+    recoveries: 0,
+    refusals: 0
   },
   tokenStats: {
     playerPromptTokens: 0,

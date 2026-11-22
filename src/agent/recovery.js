@@ -2,10 +2,14 @@ const invUtils = require('../perception/inventory');
 const { checkTerrainSituation } = require('../perception/environment');
 const { getDimension, listWaypoints, horizontalDistanceTo } = require('../core/progress');
 
-// A failed (action, target) pair stays in memory this long before the bot may try it again
-const FAILURE_TTL_MS = 5 * 60 * 1000;
-// Number of failures after which a pair is refused until it expires
+// A failed (action, target) pair stays in memory this long at most
+const FAILURE_TTL_MS = 3 * 60 * 1000;
+// Number of failures in the same situation after which a pair is refused
 const BLOCK_THRESHOLD = 2;
+// A refusal only holds where it happened: moving this far (or any inventory change) makes the pair available again
+const RELEASE_DISTANCE = 6;
+// How many times a step may be refused, relocated and retried before the model is asked for another approach
+const MAX_REMEDY_ROUNDS = 3;
 // Cycles without any change of inventory, position cell or objective before the loop is broken automatically
 const STAGNATION_CYCLE_LIMIT = 6;
 const CONSECUTIVE_FAILURE_LIMIT = 4;
@@ -81,6 +85,42 @@ function measureObjectiveProgress(bot, state) {
 }
 
 /**
+ * Snapshot the situation in which an action failed: where the bot stood and what it carried
+ * @param {object|null} bot Mineflayer bot instance
+ * @returns {{ x: number, y: number, z: number, dimension: string, inventory: string }|null} Failure context
+ */
+function captureContext(bot) {
+  const pos = bot?.entity?.position;
+  if (!pos) return null;
+  return { x: pos.x, y: pos.y, z: pos.z, dimension: getDimension(bot), inventory: invUtils.getInventorySummary(bot) };
+}
+
+/**
+ * Tell whether the bot's situation differs enough from a failure context for a retry to make sense
+ * @param {object} bot Mineflayer bot instance
+ * @param {object|null} context Context captured when the action failed
+ * @returns {boolean} True if the bot moved away, changed dimension or changed inventory
+ */
+function hasContextChanged(bot, context) {
+  const pos = bot?.entity?.position;
+  if (!context || !pos) return false;
+  if (context.dimension !== getDimension(bot)) return true;
+  if (Math.hypot(pos.x - context.x, pos.y - context.y, pos.z - context.z) >= RELEASE_DISTANCE) return true;
+  return context.inventory !== invUtils.getInventorySummary(bot);
+}
+
+/**
+ * Return the failure record of an (action, target) pair
+ * @param {object} state Global bot state
+ * @param {string} action Action name
+ * @param {string} target Action target
+ * @returns {object|null} Failure record or null
+ */
+function getFailureEntry(state, action, target) {
+  return state?.recovery?.failures?.get(actionKey(action, target)) || null;
+}
+
+/**
  * Update failure memory and stagnation counters after an executed action
  * @param {object} bot Mineflayer bot instance
  * @param {object} state Global bot state
@@ -96,10 +136,12 @@ function recordOutcome(bot, state, decision, result, now = Date.now()) {
     recovery.failures.delete(key);
     recovery.consecutiveFailures = 0;
   } else {
-    const entry = recovery.failures.get(key) || { action: decision.action, target: decision.target || 'none', count: 0 };
+    const entry = recovery.failures.get(key) || { action: decision.action, target: decision.target || 'none', count: 0, rounds: 0 };
     entry.count += 1;
+    if (entry.count === BLOCK_THRESHOLD) entry.rounds = (entry.rounds || 0) + 1;
     entry.lastMessage = String(result.message || '').slice(0, 140);
     entry.expiresAt = now + FAILURE_TTL_MS;
+    entry.context = captureContext(bot);
     recovery.failures.set(key, entry);
     recovery.consecutiveFailures += 1;
   }
@@ -131,14 +173,17 @@ function recordOutcome(bot, state, decision, result, now = Date.now()) {
 }
 
 /**
- * Check whether an (action, target) pair failed too often recently and must not be retried yet
+ * Check whether an (action, target) pair failed too often in the current situation and must not be retried yet.
+ * A refusal is tied to where and with what it failed: once the bot has moved away or its inventory changed,
+ * the pair is available again (a craft that failed for lack of room works a few blocks further).
  * @param {object} state Global bot state
  * @param {string} action Action name
  * @param {string} target Action target
  * @param {number} [now=Date.now()] Reference timestamp
+ * @param {object|null} [bot=null] Mineflayer bot instance; when given, a changed situation lifts the refusal
  * @returns {boolean} True if the pair is currently refused
  */
-function isActionBlocked(state, action, target, now = Date.now()) {
+function isActionBlocked(state, action, target, now = Date.now(), bot = null) {
   const failures = state?.recovery?.failures;
   if (!failures) return false;
   const key = actionKey(action, target);
@@ -148,7 +193,13 @@ function isActionBlocked(state, action, target, now = Date.now()) {
     failures.delete(key);
     return false;
   }
-  return entry.count >= BLOCK_THRESHOLD;
+  if (entry.count < BLOCK_THRESHOLD) return false;
+  if (bot && hasContextChanged(bot, entry.context)) {
+    // Keep the record (and its round counter) so a step failing everywhere is eventually escalated
+    entry.count = 0;
+    return false;
+  }
+  return true;
 }
 
 /**
@@ -184,16 +235,56 @@ function formatBlockedActions(state) {
  * @param {string} target Action target
  * @param {string} reason Why it is refused
  * @param {number} [now=Date.now()] Reference timestamp
+ * @param {object|null} [bot=null] Mineflayer bot instance, to tie the refusal to the current situation
  */
-function blockAction(state, action, target, reason, now = Date.now()) {
+function blockAction(state, action, target, reason, now = Date.now(), bot = null) {
   if (!action || IGNORED_ACTIONS.has(action)) return;
   const recovery = getRecoveryState(state);
   const key = actionKey(action, target);
-  const entry = recovery.failures.get(key) || { action, target: target || 'none', count: 0 };
+  const entry = recovery.failures.get(key) || { action, target: target || 'none', count: 0, rounds: 0 };
+  if (entry.count < BLOCK_THRESHOLD) entry.rounds = (entry.rounds || 0) + 1;
   entry.count = Math.max(entry.count, BLOCK_THRESHOLD);
   entry.lastMessage = String(reason || entry.lastMessage || 'blocked').slice(0, 140);
   entry.expiresAt = now + FAILURE_TTL_MS;
+  if (bot) entry.context = captureContext(bot);
   recovery.failures.set(key, entry);
+}
+
+/**
+ * Choose what to do instead of a refused action: move away so the same step can be retried elsewhere.
+ * This is the cheap, model-free answer to "this failed twice here".
+ * @param {object} bot Mineflayer bot instance
+ * @param {object} state Global bot state
+ * @param {{ action: string, target: string }} refused Refused decision
+ * @returns {object|null} Remedy decision, or null when no safe remedy exists
+ */
+function buildRemedyDecision(bot, state, refused) {
+  // Wandering next to the void is deadly: no relocation inside the End
+  if (getDimension(bot) === 'the_end') return null;
+
+  const entry = getFailureEntry(state, refused.action, refused.target);
+  const reason = entry?.lastMessage ? ` (${entry.lastMessage})` : '';
+  const now = Date.now();
+  const candidates = [
+    // A resource that cannot be reached here is searched for elsewhere; anything else just needs another spot
+    { action: 'explore', target: refused.action === 'mine' ? refused.target : 'relocate' },
+    { action: 'explore', target: 'relocate' },
+    { action: 'unstuck', target: 'none' }
+  ];
+  const chosen = candidates.find(candidate => (
+    !(candidate.action === refused.action && candidate.target === refused.target) &&
+    !isActionBlocked(state, candidate.action, candidate.target, now, bot)
+  ));
+  if (!chosen) return null;
+
+  const label = `'${refused.action} ${refused.target}'`;
+  return {
+    ...chosen,
+    qty: 1,
+    source: 'remedy',
+    thought: `${label} a échoué ${entry?.count || BLOCK_THRESHOLD} fois à cet endroit${reason}. Je me déplace, puis je réessaierai.`,
+    note: `[${label} refusée : déjà ${entry?.count || BLOCK_THRESHOLD} échecs à cet endroit${reason}. Tu as été déplacé, elle est de nouveau possible.]`
+  };
 }
 
 /**
@@ -321,7 +412,7 @@ function forceRecovery(bot, state, reason, options = {}) {
   const repeats = countTrailingRepeats(state.actionHistory);
   const repeatingInPlace = repeats >= 3 && recovery.stagnantCycles >= 3;
   if (last && !IGNORED_ACTIONS.has(last.action) && (options.manual || !last.success || repeatingInPlace)) {
-    blockAction(state, last.action, last.target, `boucle interrompue (${reason})`);
+    blockAction(state, last.action, last.target, `boucle interrompue (${reason})`, Date.now(), bot);
     blocked = actionKey(last.action, last.target);
   }
 
@@ -405,7 +496,12 @@ function describeDebugState(bot, state) {
 module.exports = {
   FAILURE_TTL_MS,
   BLOCK_THRESHOLD,
+  RELEASE_DISTANCE,
+  MAX_REMEDY_ROUNDS,
   STAGNATION_CYCLE_LIMIT,
+  getFailureEntry,
+  hasContextChanged,
+  buildRemedyDecision,
   getRecoveryState,
   actionKey,
   computeProgressSignature,

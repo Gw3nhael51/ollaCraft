@@ -19,7 +19,9 @@ function isWoodLog(name) {
   if (!name || typeof name !== 'string') return false;
   const clean = name.toLowerCase().trim();
   if (GENERIC_LOG_NAMES.has(clean)) return true;
-  return clean.endsWith('_log') || clean.endsWith('_wood') || clean.endsWith('_stem') || clean.endsWith('_hyphae');
+  if (clean.endsWith('_log') || clean.endsWith('_wood') || clean.endsWith('_hyphae')) return true;
+  // Only the Nether fungi have wooden stems: 'big_dripleaf_stem', 'mushroom_stem' or 'pumpkin_stem' give no wood
+  return /(^|_)(crimson|warped)_stem$/.test(clean);
 }
 
 /**
@@ -160,6 +162,22 @@ function countItem(bot, name) {
   }
 
   return allSlots.filter(item => item.name === clean).reduce((sum, item) => sum + item.count, 0);
+}
+
+/**
+ * Count the planks of the wood type carried in the largest quantity.
+ * A recipe takes all its planks from one wood type: 2 oak + 2 birch planks cannot make a crafting table.
+ * @param {object} bot Mineflayer bot instance
+ * @returns {number} Size of the largest single-type plank stock
+ */
+function countBestPlankStack(bot) {
+  const totals = new Map();
+  for (const item of getCarriedItems(bot)) {
+    if (item.name.endsWith('_planks')) {
+      totals.set(item.name, (totals.get(item.name) || 0) + item.count);
+    }
+  }
+  return totals.size > 0 ? Math.max(...totals.values()) : 0;
 }
 
 /**
@@ -744,6 +762,7 @@ module.exports = {
   hasCraftingTableAccess,
   getAvailableCrafts,
   getCarriedItems,
+  countBestPlankStack,
   getBestWoolStack,
   resolveBedTarget,
   findBedItem,

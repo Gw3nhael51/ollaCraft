@@ -1,6 +1,6 @@
 const { Vec3 } = require('vec3');
 const config = require('../../../infrastructure/config');
-const { countItem, findBedItem, getBestWoolStack, isBed } = require('../../../perception/inventory');
+const { countItem, countBestPlankStack, findBedItem, getBestWoolStack, isBed } = require('../../../perception/inventory');
 const {
   getDimension, getWaypoint, saveWaypoint, removeWaypoint, setMilestone, hasMilestone, horizontalDistanceTo
 } = require('../../../core/progress');
@@ -142,7 +142,8 @@ async function ensureSpawnBed(bot, state, waypointName = 'spawn_bed', options = 
 
   let bedItem = findBedItem(bot);
   const wool = getBestWoolStack(bot);
-  const plankCount = countItem(bot, 'planks');
+  // Like the wool, the three planks must be of a single wood type
+  const plankCount = countBestPlankStack(bot);
   if (!bedItem && (wool?.count || 0) >= 3 && plankCount >= 3) {
     const craftRes = await skillCraft(bot, state, 'bed', 1);
     if (!craftRes.success) {

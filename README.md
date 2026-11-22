@@ -30,8 +30,10 @@ flowchart LR
 ```
 
 - **Deterministic Dependency Planner (LLM bypass):** `src/agent/planner.js` executes the next feasible step of the recursive dependency plan (`craft`, `mine`, `smelt`, `hunt`...) and the stage logistics (portal return, stronghold, End) **without any model call**. The LLM is only consulted when no deterministic step exists or when a step keeps failing.
-- **Failure Memory & Loop Breaker:** `src/agent/recovery.js` remembers every failed `(action, target)` pair for 5 minutes, refuses it after 2 failures (for the planner, the Manager and the Player model alike), detects stagnation (no change of inventory, position or objective) and forces a *different* action. The same mechanism is exposed to players through the `debug` chat command.
-- **Portable Crafting Table:** the bot carries a single crafting table. `craft` deploys it where the bot stands, crafts, then **breaks it and picks it back up**. No table position is ever memorized or walked back to.
+- **Contextual Failure Memory & Loop Breaker:** `src/agent/recovery.js` remembers where and with what inventory an `(action, target)` pair failed. After 2 failures in the same situation the pair is refused **at that spot** and the bot relocates without any model call; the refusal lifts as soon as it has moved 6 blocks or its inventory changed, so the step is simply retried elsewhere. Only a step that failed in several different places is handed to the model. Stagnation (no change of inventory, position or objective) forces a *different* action, and the same mechanism is exposed to players through the `debug` chat command.
+- **Portable Crafting Table:** the bot carries a single crafting table. `craft` deploys it where the bot stands, crafts, then **breaks it and picks it back up**. No table position is ever memorized or walked back to. Deployment scans the cells around the bot, never picks one its own body overlaps (the server refuses those), places through grass, and tries up to three spots.
+- **Spawn Protection Awareness:** when the server refuses a placement next to the world spawn, the bot remembers it and, after every respawn, walks straight out of the protected radius before trying to place or break anything.
+- **Survival Watchdog:** `src/agent/watchdog.js` aborts the running action and surfaces when the air supply runs low, since a skill can hold the bot under water longer than its air lasts.
 - **Milestone Waypoints:** portals (both sides), spawn beds, fortress, stronghold, End portal and the last death position are saved to `data/progress-*.json` and survive deaths and restarts (`goto` skill).
 - **Spawn Beds:** a bed is placed and used to set the respawn point before entering the Nether, and again in the stronghold before entering the End.
 - **Stronghold Triangulation:** exactly two Eyes of Ender thrown from two positions give two bearings whose intersection is the stronghold (`src/minecraft/triangulation.js`).
@@ -95,7 +97,7 @@ flowchart TD
 │   └── minecraft/             # Offline WikiCraft lookups (wiki.js, wikiData.js), dependency resolver (knowledge.js), eye triangulation (triangulation.js)
 ├── data/procedures/           # Persisted JSON procedures (mounted via Docker volume ./data:/app/data)
 ├── data/progress-*.json       # Persisted waypoints, milestones and stronghold estimate (one file per server/account)
-├── test/                      # 205 automated unit and E2E integration tests across 20 test files
+├── test/                      # 211 automated unit and E2E integration tests across 20 test files
 ├── Dockerfile                 # Node 20 Alpine image build for ollacraft-bot
 ├── Makefile                   # Shortcuts (run, bot, bot-logs, bot-stop, test)
 ├── docker-compose.yml         # Paper server + ollacraft-bot service (--profile bot) with /app/data persistence
@@ -203,7 +205,7 @@ Players can interact with and command the bot directly using in-game chat:
 | `stop` | Immediately suspends the autonomous loop, clears current pathfinding, and resets controls. |
 | `objectif <item> [qty]` or `goal <item> [qty]` | Gives the bot a direct objective (e.g., `objectif diamond 3`, `objectif pioche en fer`, `objectif dragon`). If it is not directly reachable, the bot builds and announces the prerequisite chain and follows it (e.g. `mine iron_ore x3 -> smelt raw_iron x3 -> craft iron_pickaxe -> mine diamond_ore x3`). Once obtained, the automatic chain resumes. |
 | `objectif auto` or `goal auto` | Restores the default automatic survival quest progression chain. |
-| `debug` (aliases `debloque`, `coince`, `unstuck`) | Loop breaker: prints a diagnostic, cancels the running action, refuses the action the bot was repeating for 5 minutes and forces a **different** action (unstuck, relocation, return to a waypoint). |
+| `debug` (aliases `debloque`, `coince`, `unstuck`) | Loop breaker: prints a diagnostic, cancels the running action, refuses the action the bot was repeating at that spot and forces a **different** action (unstuck, relocation, return to a waypoint). |
 | `debug info` | Diagnostic only (objective, last action, history, stagnation counters, refused actions, LLM vs planned decision counts). |
 | `plan` | Prints the dependency chain of the current objective from the current inventory. |
 | `waypoints` or `reperes` | Lists the memorized milestone coordinates (portals, spawn beds, fortress, stronghold, End portal, last death). |
@@ -232,7 +234,8 @@ Players can interact with and command the bot directly using in-game chat:
 | `REQUIRE_SPAWN_BED` | `true` | Require a spawn bed before the Nether portal and before the End portal (`false` to skip both bed quests). |
 | `EYE_TRIANGULATION_BASELINE` | `250` | Sideways distance (blocks) walked between the two Eye of Ender throws. A longer baseline gives a more accurate intersection. |
 | `OLLAMA_NUM_CTX` | `8192` | Context window sent to Ollama. The ReAct prompt does not fit in Ollama's small default and would be silently truncated. |
-| `OLLAMA_NUM_PREDICT` | `320` | Maximum generated tokens per decision. |
+| `OLLAMA_NUM_PREDICT` | `512` | Safety cap on generated tokens per decision. The answer schema already bounds the reasoning text; a cap set too low cuts the JSON before its end. |
+| `SPAWN_PROTECTION_RADIUS` | `16` | Radius of the server's `spawn-protection`. Once a placement has been refused near the world spawn, the bot leaves this radius before building. |
 | `OLLAMA_KEEP_ALIVE` | `30m` | How long Ollama keeps the model loaded between cycles. |
 | `PORT` | `127.0.0.1:25565:25565` | Optional Docker port mapping for `mc-server`. |
 
@@ -274,7 +277,7 @@ The ReAct loop provides the LLM with structured actions formatted in JSON:
 
 ## 🧪 Automated Tests & Benchmark
 
-Run the full test suite (**205 unit & integration tests across 20 suites**):
+Run the full test suite (**211 unit & integration tests across 20 suites**):
 ```bash
 npm test
 ```
@@ -300,7 +303,12 @@ The planner, failure memory, portable crafting table, spawn bed, waypoints, goal
 - **Error:** `Server closed connection` or `Invalid credentials`
 - **Solution:** If the server is in online mode (`online-mode=true`), the bot must use official Microsoft credentials. For local testing, set `online-mode=false` in `server.properties`.
 
-### 3. Navigation Timeouts
+### 3. Blocks Refused Near the World Spawn
+- **Symptom:** `Server refused to place ... the block is still air`, or blocks reappearing right after being mined, always close to where the bot respawns.
+- **Cause:** as soon as one player is an operator, the server's `spawn-protection` (16 blocks by default) forbids non-operators from placing or breaking blocks around the world spawn.
+- **Solution:** the provided `docker-compose.yml` sets `SPAWN_PROTECTION: "0"`; on an existing server set `spawn-protection=0` in `server.properties` and restart it. Without that, the bot detects the refusal and walks out of the radius by itself after each respawn.
+
+### 4. Navigation Timeouts
 - **Symptom:** Bot attempts to reach a block but logs `Navigation timeout`.
 - **Solution:** This is normal behavior when a block is unreachable (e.g., suspended high in the air or sealed behind bedrock). The bot's built-in blacklist automatically ignores failed coordinates for subsequent steps.
 

@@ -9,7 +9,7 @@ const { skillUnstuck } = require('../actions/behaviors/movement/navigate');
 const { runManagerCycle, shouldRunManager, cleanTargetIdentifier } = require('./manager');
 const { getPriorityDecision, getPlannedDecision } = require('./planner');
 const {
-  recordOutcome, isActionBlocked, detectStuck, forceRecovery, takeForcedDecision, getSuggestedTemperature
+  recordOutcome, isActionBlocked, detectStuck, forceRecovery, takeForcedDecision, getSuggestedTemperature, buildRemedyDecision
 } = require('./recovery');
 const { hasMilestone } = require('../core/progress');
 
@@ -197,7 +197,7 @@ function selectAutomaticDecision(bot) {
   if (priority.decision) return { decision: priority.decision, source: 'plan' };
 
   const reliable = getReliableProcedureDecision(state);
-  if (reliable && !isActionBlocked(state, reliable.action, reliable.target)) {
+  if (reliable && !isActionBlocked(state, reliable.action, reliable.target, Date.now(), bot)) {
     return { decision: reliable, source: reliable.action === 'procedure' ? 'procedure' : 'manager' };
   }
 
@@ -222,11 +222,20 @@ async function requestModelDecision(bot, askOllamaFn) {
   // The temperature rises while the bot stagnates so the model stops answering the same thing
   const rawDecision = await askOllamaFn(prompt, undefined, undefined, { temperature: getSuggestedTemperature(state) });
   const decision = resolvePlayerDecision(rawDecision);
-  if (!decision || !isActionBlocked(state, decision.action, decision.target)) {
+  if (!decision || !isActionBlocked(state, decision.action, decision.target, Date.now(), bot)) {
     return { decision, source: 'llm' };
   }
 
-  console.log(`[ANTI-LOOP] Model asked again for '${decision.action} ${decision.target}', which keeps failing: replaced by a recovery step.`);
+  // The model asks for something that just failed twice right here. Move a few blocks instead: the refusal is
+  // tied to this spot, so the same request works afterwards, and the result message tells the model why.
+  const remedy = buildRemedyDecision(bot, state, decision);
+  if (remedy) {
+    console.log(`[ANTI-LOOP] '${decision.action} ${decision.target}' keeps failing here: relocating before it is retried.`);
+    if (state.metrics) state.metrics.refusals = (state.metrics.refusals || 0) + 1;
+    return { decision: remedy, source: 'remedy' };
+  }
+
+  console.log(`[ANTI-LOOP] '${decision.action} ${decision.target}' keeps failing and no relocation is possible: forcing a recovery.`);
   forceRecovery(bot, state, `le modèle redemande '${decision.action} ${decision.target}' déjà en échec répété`);
   return { decision: takeForcedDecision(state), source: 'recovery' };
 }
@@ -422,8 +431,12 @@ async function handleSurvivalRequest(bot, sessionId = state.survivalSessionId, d
     }
     announceDecision(bot, decision);
 
-    const executionResult = await executeDecisionWithTimeout(bot, decision, deps);
+    const rawResult = await executeDecisionWithTimeout(bot, decision, deps);
     if (!isSessionActive(sessionId)) return;
+    // A remedy carries the reason the original request was refused, so the model reads it in its feedback
+    const executionResult = decision.note
+      ? { ...rawResult, message: `${decision.note} ${rawResult.message}` }
+      : rawResult;
     console.log(`[RESULT] ${executionResult.success ? '✅' : '❌'} ${executionResult.message}`);
 
     recordActionResult(bot, decision, executionResult, source);

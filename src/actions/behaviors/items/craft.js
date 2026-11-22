@@ -1,7 +1,8 @@
 const { goals } = require('mineflayer-pathfinder');
 const config = require('../../../infrastructure/config');
 const {
-  countItem, isWoodLog, isPlanks, isBed, resolvePlankTarget, resolveBedTarget, findNearbyCraftingTable, getQuestRequirement
+  countItem, countBestPlankStack, isWoodLog, isPlanks, isBed, resolvePlankTarget, resolveBedTarget,
+  findNearbyCraftingTable, getQuestRequirement
 } = require('../../../perception/inventory');
 const { autoEquipArmorAndShield } = require('./equip');
 const { freeInventorySlotIfFull } = require('./storage');
@@ -32,19 +33,34 @@ function checkCraftPreconditions(bot, targetName, item) {
   }
 
   if (targetName === 'crafting_table') {
-    const totalPlanks = bot.inventory.items().filter(i => isPlanks(i.name)).reduce((s, i) => s + i.count, 0);
-    if (totalPlanks < 4) {
+    // The four planks must come from the same wood type
+    if (countBestPlankStack(bot) < 4) {
       const hasLogs = bot.inventory.items().some(i => isWoodLog(i.name));
       return {
         success: false,
         message: hasLogs
-          ? "Missing planks to craft 'crafting_table' (4 planks needed). Convert your logs into planks first ('craft' with 'planks')."
+          ? "Missing planks to craft 'crafting_table' (4 planks of the same wood type needed). Convert your logs into planks first ('craft' with 'planks')."
           : "Missing wood to craft 'crafting_table'. Harvest tree logs first ('mine' with 'log')."
       };
     }
   }
 
   return null;
+}
+
+/**
+ * Explain why no recipe matches, pointing out planks of mixed wood types when that is the cause
+ * @param {object} bot Mineflayer bot instance
+ * @param {string} targetName Requested item name
+ * @returns {string} Failure message for the decision loop
+ */
+function describeMissingComponents(bot, targetName) {
+  const totalPlanks = countItem(bot, 'planks');
+  const bestStack = countBestPlankStack(bot);
+  if (totalPlanks > bestStack) {
+    return `Missing required components to craft '${targetName}'. Your ${totalPlanks} planks are of mixed wood types (at most ${bestStack} of one type) and a recipe needs planks of a single type: craft more 'planks' from one kind of log.`;
+  }
+  return `Missing required components in inventory to craft '${targetName}'.`;
 }
 
 /**
@@ -255,7 +271,7 @@ async function prepareCraftingStation(bot, state, item, targetName) {
         ok: false,
         errorResult: {
           success: false,
-          message: `'${targetName}' requires a crafting table but it could not be deployed here (${deployment.message}). Move to open ground ('explore') and retry.`
+          message: `'${targetName}' needs your crafting table, which could not be set down here: ${deployment.message} You still carry it: move a few blocks away ('explore') and call 'craft' again. Do NOT craft another table and do NOT use 'place'.`
         }
       };
     }
@@ -391,7 +407,7 @@ async function skillCraft(bot, state, targetName, qty = 1, options = {}) {
 async function craftAtStation(bot, item, initialTarget, targetName, tableToUse, qty) {
   const { recipes, normalizedTarget } = resolveCraftRecipes(bot, item, initialTarget, tableToUse, qty);
   if (recipes.length === 0) {
-    return { success: false, message: `Missing required components in inventory to craft '${targetName}'.` };
+    return { success: false, message: describeMissingComponents(bot, targetName) };
   }
 
   const craftCount = computeCraftOperations(bot, recipes[0], normalizedTarget, qty);

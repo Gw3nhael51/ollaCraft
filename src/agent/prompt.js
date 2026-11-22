@@ -268,6 +268,8 @@ function buildStaticRules(botName) {
     - BOIS : n'importe quel bois convient. Utilise "log" pour miner et "planks" pour fabriquer : le système s'adapte.
     - ÉTABLI PORTABLE : tu ne possèdes qu'un établi et tu le gardes sur toi. "craft" le pose, fabrique, puis le casse et le récupère.
       Ne retourne JAMAIS à un ancien établi et n'utilise JAMAIS "place" pour 'crafting_table'. Sans établi, fabrique-le avec 4 planches.
+      Si "craft" échoue parce que l'établi n'a pas pu être posé, tu l'as TOUJOURS sur toi : déplace-toi de quelques blocs ("explore") puis relance "craft". N'en fabrique pas un autre.
+    - PLANCHES : une recette prend toutes ses planches dans UNE seule essence de bois. Des planches mélangées ne s'additionnent pas : refais des "planks" depuis un seul type de bûche.
     - PIERRE : la 'cobblestone' NE SE CRAFTE JAMAIS, elle s'obtient en minant 'stone'.
     - FER : mine 'iron_ore' (pioche en pierre minimum) pour avoir 'raw_iron', puis "smelt" sur 'raw_iron' dans un four ('furnace') avec du bois ou du charbon.
       Sans four posé : "craft" 'furnace' (8 cobblestone), "place" 'furnace', puis "smelt".
@@ -277,14 +279,14 @@ function buildStaticRules(botName) {
     - NETHER : explore pour trouver une forteresse et combats les blazes ('fight' cible 'blaze').
     - SURVIE : coincé ("bloqué dans un trou", "sous l'eau") -> "unstuck". Faim sous 15 -> "eat" ou "hunt". Ne mine pas sous tes pieds.
     - Si le Manager suggère "procedure", exécute-la avec le target exact (sauf urgence vitale "unstuck" ou "eat").
-    - Ne retente JAMAIS une action listée dans "ACTIONS REFUSÉES" : choisis une autre approche.
+    - Une action listée dans "ACTIONS REFUSÉES" a échoué plusieurs fois À CET ENDROIT : ne la redemande pas sur place. Elle redevient possible dès que tu t'es déplacé ("explore") ou que ton inventaire a changé.
 
     FORMAT DE RÉPONSE :
     - "target" doit être UNIQUEMENT l'identifiant technique Minecraft (ex: "oak_log", "stone", "planks", "crafting_table", "chest") ou "none".
     - Strictement AUCUN texte explicatif, AUCUNE phrase, AUCUN espace dans "target". Toute ton analyse va dans "thought".
     Réponds UNIQUEMENT en JSON :
     {
-      "thought": "Explication courte de ton raisonnement",
+      "thought": "1 ou 2 phrases courtes, 300 caractères maximum",
       "action": "mine" | "craft" | "place" | "explore" | "unstuck" | "wiki" | "smelt" | "eat" | "hunt" | "fight" | "chest" | "equip" | "portal" | "procedure" | "goto" | "bed" | "stronghold" | "endportal" | "dragon",
       "target": "identifiant_strict_sans_espace",
       "qty": 1
@@ -378,7 +380,7 @@ function buildReactPrompt(bot, state, environment, craftingTable) {
     RÉSULTAT DE TA DERNIÈRE ACTION (MÉMOIRE / FEEDBACK) :
     - Action tentée : ${state.lastActionResult.action} (${state.lastActionResult.target})
     - Résultat : ${state.lastActionResult.success ? "SUCCÈS" : "ÉCHEC"} -> ${state.lastActionResult.message}
-    - ACTIONS REFUSÉES (échecs répétés, NE les retente PAS) : ${formatBlockedActions(state)}
+    - ACTIONS REFUSÉES ICI (échecs répétés à cet endroit, déplace-toi avant de les retenter) : ${formatBlockedActions(state)}
 
     CONSIGNE : Analyse le résultat précédent, tes ressources et tes recettes. Déduis la prochaine action logique et réponds UNIQUEMENT avec le JSON demandé.
   `;

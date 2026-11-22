@@ -10,6 +10,7 @@ const { checkAdvancementMessage } = require('./perception/advancements');
 const { clearBadBlocks } = require('./perception/environment');
 const { parseGoalCommand, describeGoalPlan, setManualGoal, clearManualGoal } = require('./agent/goals');
 const { forceRecovery, describeDebugState } = require('./agent/recovery');
+const { installSurvivalWatchdog } = require('./agent/watchdog');
 const {
   loadProgress, getDimension, getWaypoint, saveWaypoint, removeWaypoint, listWaypoints,
   setMilestone, horizontalDistanceTo
@@ -17,6 +18,8 @@ const {
 
 const bot = mineflayer.createBot(config.BOT_CONFIG);
 bot.loadPlugin(pathfinder);
+// Skills can keep the bot under water longer than its air lasts: this aborts them in time
+installSurvivalWatchdog(bot, state);
 
 // Restore the milestone coordinates (portals, spawn beds, stronghold) saved by previous sessions
 const restoredWaypoints = loadProgress(state);
@@ -280,7 +283,7 @@ function handleDebugCommand(infoOnly) {
   }
 
   const { decision, blocked } = forceRecovery(bot, state, 'commande debug du joueur', { manual: true });
-  const blockedNote = blocked ? ` | '${blocked.replace(':', ' ')}' interdite 5 min` : '';
+  const blockedNote = blocked ? ` | '${blocked.replace(':', ' ')}' refusée à cet endroit` : '';
   say(`Déblocage forcé -> ${decision.action} ${decision.target}${blockedNote}`);
 }
 
@@ -384,7 +387,7 @@ bot.on('chat', async (username, message) => {
     const stats = state.tokenStats;
     const metrics = state.metrics;
     bot.chat(`Tokens : Joueur [${stats.playerPromptTokens} in / ${stats.playerCompletionTokens} out] | Manager [${stats.managerPromptTokens} in / ${stats.managerCompletionTokens} out] | Total : ${stats.totalTokens}`);
-    say(`Décisions : ${metrics.deterministicDecisions} sans LLM / ${metrics.llmDecisions} via LLM | Manager LLM : ${metrics.managerLlmCalls} | Déblocages : ${metrics.recoveries}`);
+    say(`Décisions : ${metrics.deterministicDecisions} sans LLM / ${metrics.llmDecisions} via LLM | Manager LLM : ${metrics.managerLlmCalls} | Déblocages : ${metrics.recoveries} | Demandes refusées : ${metrics.refusals || 0}`);
   }
 });
 
@@ -412,6 +415,7 @@ bot.on('death', () => {
   state.base = { crafting_table: null, furnace: null, chest: null };
   state.deployedTable = null;
   state.recovery = null;
+  state.drowningAlert = false;
   clearBadBlocks();
   bot.pathfinder.setGoal(null);
   bot.clearControlStates();

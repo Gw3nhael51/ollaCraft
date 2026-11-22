@@ -11,7 +11,7 @@ const { evaluateObjectiveCoverage, ObjectiveGenerationTracker } = require('../pr
 const { generateProcedure } = require('../procedures/generator');
 const { registerExperimentalProcedure } = require('../procedures/memory');
 const { getDeterministicDecision } = require('./planner');
-const { formatBlockedActions } = require('./recovery');
+const { formatBlockedActions, isActionBlocked, buildRemedyDecision } = require('./recovery');
 const { getWaypoint, formatWaypoints } = require('../core/progress');
 
 /**
@@ -463,7 +463,7 @@ function buildSupervisorPrompt(bot) {
       - État du terrain : ${terrainStatus}
       - Historique des actions récentes : ${recentHistory}
       - Blocage ou boucle détectée : ${loopNotice}
-      - ACTIONS REFUSÉES (échecs répétés, ne les suggère PAS) : ${formatBlockedActions(state)}
+      - ACTIONS REFUSÉES ICI (échecs répétés à cet endroit : ne les suggère PAS, demande d'abord un déplacement avec "explore") : ${formatBlockedActions(state)}
       - Points de repère mémorisés (action "goto") : ${formatWaypoints(bot, state)}
       - Décomposition déterministe des prérequis : ${goalPlan.summary}
 
@@ -843,6 +843,19 @@ async function runManagerCycle(bot, deps = {}) {
 
     if (result) {
       const validated = sanitizeManagerOutput(bot, result);
+
+      // Never push the player towards an action the failure memory refuses here: it would be intercepted
+      // and the player would not understand why. Give the relocation as the directive instead.
+      if (isActionBlocked(state, validated.suggestedAction, validated.suggestedTarget, Date.now(), bot)) {
+        const remedy = buildRemedyDecision(bot, state, { action: validated.suggestedAction, target: validated.suggestedTarget });
+        if (remedy) {
+          validated.directive = remedy.thought;
+          validated.suggestedAction = remedy.action;
+          validated.suggestedTarget = remedy.target;
+          validated.isReliable = false;
+        }
+      }
+
       state.managerDirective = validated.directive;
       state.managerSubGoal = {
         action: validated.suggestedAction,

@@ -21,8 +21,9 @@ module.exports = {
   OLLAMA_MODEL_MANAGER: process.env.OLLAMA_MODEL_MANAGER || process.env.OLLAMA_MODEL || 'qwen3.5:9B',
   // Explicit context window: the ReAct prompt exceeds Ollama's small default and would be silently truncated
   OLLAMA_NUM_CTX: parsePositiveInt(process.env.OLLAMA_NUM_CTX, 8192),
-  // Hard cap on generated tokens so a rambling "thought" cannot stall a cycle
-  OLLAMA_NUM_PREDICT: parsePositiveInt(process.env.OLLAMA_NUM_PREDICT, 320),
+  // Hard cap on generated tokens. The schema bounds the "thought" length, so this is only a safety net:
+  // it must stay comfortably above a complete answer or the JSON gets cut before its closing brace
+  OLLAMA_NUM_PREDICT: parsePositiveInt(process.env.OLLAMA_NUM_PREDICT, 512),
   // Keep the model loaded between cycles to avoid reload latency
   OLLAMA_KEEP_ALIVE: process.env.OLLAMA_KEEP_ALIVE || '30m',
   AUTH_PASSWORD: process.env.MC_PASSWORD || '',
@@ -102,5 +103,8 @@ module.exports = {
   // Skip the LLM whenever the dependency planner already knows the next feasible step
   DETERMINISTIC_PLANNER: process.env.DETERMINISTIC_PLANNER !== 'false',
   // A spawn bed must be set before entering the Nether and before entering the End
-  REQUIRE_SPAWN_BED: process.env.REQUIRE_SPAWN_BED !== 'false'
+  REQUIRE_SPAWN_BED: process.env.REQUIRE_SPAWN_BED !== 'false',
+  // Radius around the world spawn where a server with operators refuses block placement and breaking
+  // (server.properties "spawn-protection"). Once a refusal is seen there, the bot leaves the area before building
+  SPAWN_PROTECTION_RADIUS: parsePositiveInt(process.env.SPAWN_PROTECTION_RADIUS, 16)
 };

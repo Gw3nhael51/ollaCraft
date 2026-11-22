@@ -3,8 +3,8 @@ const invUtils = require('../perception/inventory');
 const { checkTerrainSituation, isBadBlock } = require('../perception/environment');
 const { resolveGoalPlan } = require('../minecraft/knowledge');
 const { getBlockNamesForTarget, canHarvestBlock } = require('../minecraft/wikiData');
-const { getDimension, getWaypoint, saveWaypoint, horizontalDistanceTo } = require('../core/progress');
-const { isActionBlocked } = require('./recovery');
+const { getDimension, getWaypoint, saveWaypoint, horizontalDistanceTo, isInsideProtectedSpawn } = require('../core/progress');
+const { isActionBlocked, getFailureEntry, buildRemedyDecision, MAX_REMEDY_ROUNDS } = require('./recovery');
 
 // Returned by a stage rule to hand the decision over to the Manager rules or the LLM
 const DEFER = Symbol('defer');
@@ -117,13 +117,16 @@ function hasFuel(bot) {
  */
 function getSurvivalReflex(bot, state) {
   const dimension = getDimension(bot);
+  const now = Date.now();
   if (dimension !== 'the_end') {
     const terrain = readTerrain(bot);
-    if (terrain !== CLEAR_TERRAIN && !isActionBlocked(state, 'unstuck', 'none')) {
-      return makeDecision('unstuck', 'none', 1, `Réflexe de survie : ${terrain}`);
+    // Running out of air is an emergency even when the surroundings do not look like a trap
+    const lowOnAir = (bot.oxygenLevel ?? 20) <= 12 && Boolean(bot.entity?.isInWater);
+    if ((terrain !== CLEAR_TERRAIN || lowOnAir) && !isActionBlocked(state, 'unstuck', 'none', now, bot)) {
+      return makeDecision('unstuck', 'none', 1, `Réflexe de survie : ${lowOnAir ? "je manque d'air, je remonte à la surface" : terrain}`);
     }
   }
-  if ((bot.food ?? 20) <= 8 && hasEdibleFood(bot) && !isActionBlocked(state, 'eat', 'none')) {
+  if ((bot.food ?? 20) <= 8 && hasEdibleFood(bot) && !isActionBlocked(state, 'eat', 'none', now, bot)) {
     return makeDecision('eat', 'none', 1, `Réflexe de survie : faim à ${Math.round(bot.food)}/20, je mange.`);
   }
   return null;
@@ -333,6 +336,24 @@ function getPlanDecision(bot, state) {
 }
 
 /**
+ * Handle a step that keeps failing where the bot stands: relocate and retry it, without any model call.
+ * Only a step that failed in several different places is handed over to the model.
+ * @param {object} bot Mineflayer bot instance
+ * @param {object} state Global bot state
+ * @param {object} decision Step the planner wants to run
+ * @returns {object|null} The step itself, a relocation remedy, or null when the model must find another approach
+ */
+function resolveRefusedStep(bot, state, decision) {
+  // The dragon fight has no alternative and must never be replaced by wandering in the End
+  if (decision.action === 'dragon') return decision;
+  if (!isActionBlocked(state, decision.action, decision.target, Date.now(), bot)) return decision;
+
+  const entry = getFailureEntry(state, decision.action, decision.target);
+  if ((entry?.rounds || 0) > MAX_REMEDY_ROUNDS) return null;
+  return buildRemedyDecision(bot, state, decision);
+}
+
+/**
  * Return a decision that must run before anything else: survival reflexes and stage logistics
  * @param {object} bot Mineflayer bot instance
  * @param {object} state Global bot state
@@ -345,13 +366,20 @@ function getPriorityDecision(bot, state) {
     const reflex = getSurvivalReflex(bot, state);
     if (reflex) return { decision: reflex, deferred: false };
 
+    // Inside the protected spawn area nothing can be placed or broken: get out before trying to build anything
+    if (isInsideProtectedSpawn(bot, state) && !isActionBlocked(state, 'explore', 'leave_spawn', Date.now(), bot)) {
+      return {
+        decision: makeDecision('explore', 'leave_spawn', 1, "Zone de spawn protégée (le serveur y refuse la pose et la casse de blocs) : je m'en éloigne avant de construire."),
+        deferred: false
+      };
+    }
+
     const stage = getStageDecision(bot, state);
     if (stage === DEFER) return { decision: null, deferred: true };
-    if (stage && !isActionBlocked(state, stage.action, stage.target)) {
-      return { decision: stage, deferred: false };
-    }
-    // A blocked stage step is handed to the model, which sees the blocked list
-    return { decision: null, deferred: Boolean(stage) };
+    if (!stage) return { decision: null, deferred: false };
+
+    const resolved = resolveRefusedStep(bot, state, stage);
+    return { decision: resolved, deferred: !resolved };
   } catch (error) {
     console.warn('[PLANNER] Stage evaluation failed:', error.message);
     return { decision: null, deferred: true };
@@ -359,7 +387,7 @@ function getPriorityDecision(bot, state) {
 }
 
 /**
- * Return the next step of the dependency plan when it is feasible and not recently failing
+ * Return the next step of the dependency plan, or a relocation when that step keeps failing here
  * @param {object} bot Mineflayer bot instance
  * @param {object} state Global bot state
  * @returns {object|null} Plan decision or null when the model should decide
@@ -370,7 +398,7 @@ function getPlannedDecision(bot, state) {
   try {
     const planned = getPlanDecision(bot, state);
     if (!planned || planned === DEFER) return null;
-    return isActionBlocked(state, planned.action, planned.target) ? null : planned;
+    return resolveRefusedStep(bot, state, planned);
   } catch (error) {
     console.warn('[PLANNER] Plan evaluation failed:', error.message);
     return null;

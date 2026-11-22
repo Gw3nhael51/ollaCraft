@@ -26,6 +26,12 @@ const { isFrameFilled, scanPortalFrames } = require('../src/actions/behaviors/wo
 const { computeBowAim, simulateArrowHeight } = require('../src/actions/behaviors/combat/dragon');
 const { skillGoto } = require('../src/actions/behaviors/movement/waypoint');
 const { ProcedureMemory } = require('../src/procedures/memory');
+const { findPlacementSpots, placeItemNearby, isCellObstructed } = require('../src/actions/behaviors/blocks/placement');
+const { deployCraftingTable } = require('../src/actions/behaviors/items/table');
+const { hasDropAhead, getHeadingAwayFromSpawn } = require('../src/actions/behaviors/movement/navigate');
+const { parseModelJson, PLAYER_JSON_SCHEMA, MANAGER_JSON_SCHEMA } = require('../src/agent/ollama');
+const { handleBreath, LOW_OXYGEN_LEVEL } = require('../src/agent/watchdog');
+const { getBlockNamesForTarget } = require('../src/minecraft/wikiData');
 
 const IRON_GEAR = [
   ['iron_pickaxe', 1], ['iron_sword', 1], ['shield', 1],
@@ -141,7 +147,7 @@ function attachFlatWorld(bot) {
   const set = (pos, name) => {
     const position = new Vec3(Math.floor(pos.x), Math.floor(pos.y), Math.floor(pos.z));
     if (name === 'air') blocks.delete(key(position));
-    else blocks.set(key(position), { name, type: mcData.blocksByName[name].id, boundingBox: 'block', position });
+    else blocks.set(key(position), { name, type: mcData.blocksByName[name].id, boundingBox: mcData.blocksByName[name].boundingBox, position });
   };
   const get = (pos) => blocks.get(key(pos)) || {
     name: 'air',
@@ -324,8 +330,19 @@ test('Deterministic planner decides without the model: plan steps, reflexes and 
   };
   assert.equal(planner.getDeterministicDecision(minerBot, minerState).action, 'mine');
 
-  // A step that keeps failing is handed over to the model instead of being retried forever
-  recovery.blockAction(minerState, 'mine', 'diamond_ore', 'unreachable');
+  // A step that keeps failing here is not retried on the spot, and not sent to the model either:
+  // the bot relocates, and the step becomes available again once it has moved
+  recovery.blockAction(minerState, 'mine', 'diamond_ore', 'unreachable', Date.now(), minerBot);
+  const remedy = planner.getDeterministicDecision(minerBot, minerState);
+  assert.deepEqual([remedy.action, remedy.target, remedy.source], ['explore', 'diamond_ore', 'remedy']);
+  assert.match(remedy.note, /mine diamond_ore/);
+
+  minerBot.entity.position = minerBot.entity.position.offset(recovery.RELEASE_DISTANCE + 1, 0, 0);
+  assert.equal(planner.getDeterministicDecision(minerBot, minerState).action, 'mine');
+
+  // Only a step that failed in several different places is handed over to the model
+  recovery.blockAction(minerState, 'mine', 'diamond_ore', 'unreachable again', Date.now(), minerBot);
+  recovery.getFailureEntry(minerState, 'mine', 'diamond_ore').rounds = recovery.MAX_REMEDY_ROUNDS + 1;
   assert.equal(planner.getDeterministicDecision(minerBot, minerState), null);
 
   // Survival reflex
@@ -477,8 +494,12 @@ test('ReAct loop executes planned steps without calling the model and replaces a
     await handleSurvivalRequest(createBot(), 77, deps);
     assert.equal(modelCalls, 1);
     assert.equal(dispatched.length, 2);
-    assert.notEqual(dispatched[1], 'mine:oak_log');
-    assert.equal(globalState.metrics.recoveries, 1);
+    // The refused request becomes a relocation, and the feedback tells the model why
+    assert.equal(dispatched[1], 'explore:oak_log');
+    assert.equal(globalState.metrics.refusals, 1);
+    assert.equal(globalState.metrics.recoveries, 0);
+    assert.match(globalState.lastActionResult.message, /'mine oak_log' refusée/);
+    assert.equal(globalState.lastDecisionSource, 'remedy');
   } finally {
     Object.assign(globalState, saved);
     if (previousGeneration === undefined) delete process.env.ENABLE_PROCEDURE_GENERATION;
@@ -953,6 +974,252 @@ test('Player prompt starts with an invariant prefix and exposes refused actions 
   assert.ok(prefix.length > 2000);
   assert.ok(promptB.includes('mine(iron_ore) x2'));
   assert.ok(promptB.includes('nether_portal (50, 64, 0'));
-  assert.ok(promptA.includes('ACTIONS REFUSÉES (échecs répétés, NE les retente PAS) : aucune'));
+  assert.ok(promptA.includes('ACTIONS REFUSÉES ICI (échecs répétés à cet endroit, déplace-toi avant de les retenter) : aucune'));
   assert.ok(prefix.includes('ÉTABLI PORTABLE'));
+});
+
+// ---------------------------------------------------------------------------------------------------------
+// Regressions from the first overnight run: hundreds of [ANTI-LOOP] interceptions on plain crafts, 5 deaths
+// (3 drownings), truncated JSON answers and a dripleaf stem mistaken for a log.
+// ---------------------------------------------------------------------------------------------------------
+
+test('Placement never picks a cell the bot overlaps, places through grass and retries after a server refusal', async () => {
+  // Standing near a block edge, the bot's body spills over the neighbouring column: the server refuses a block there
+  const bot = createBot([['crafting_table', 1]], { position: new Vec3(0.9, 64, 0.5) });
+  const world = attachFlatWorld(bot);
+
+  const spots = findPlacementSpots(bot);
+  assert.ok(spots.length > 0);
+  assert.ok(spots.every(spot => !isCellObstructed(bot, spot.position)));
+  assert.equal(spots.some(spot => spot.position.x === 1 && spot.position.z === 0 && spot.position.y === 64), false);
+  assert.equal(spots[0].position.y, 64, 'the preferred spot is on the floor at the bot level');
+
+  // A creature standing on a cell makes it unusable too
+  const occupied = spots[0].position;
+  bot.entities = { 9: { type: 'animal', name: 'sheep', height: 1.3, position: new Vec3(occupied.x + 0.5, occupied.y, occupied.z + 0.5) } };
+  assert.equal(findPlacementSpots(bot).some(spot => spot.position.equals(occupied)), false);
+  bot.entities = {};
+
+  // Ground covered with grass is still valid: the placed block replaces the plant
+  for (let x = -6; x <= 6; x++) {
+    for (let z = -6; z <= 6; z++) world.set(new Vec3(x, 64, z), 'short_grass');
+  }
+  assert.ok(findPlacementSpots(bot).length > 0);
+
+  // One refusal is not a failure: the next best spot is tried
+  let attempts = 0;
+  const realPlace = bot.placeBlock;
+  bot.placeBlock = async (reference, face) => {
+    attempts += 1;
+    if (attempts === 1) throw new Error('Server refused to place crafting_table at (2, 64, 0): the block is still air');
+    return realPlace(reference, face);
+  };
+  const placed = await placeItemNearby(bot, bot.inventory.items()[0], { maxAttempts: 3 });
+  assert.equal(placed.success, true);
+  assert.equal(attempts, 2);
+
+  // When every spot is refused, the outcome says so instead of looking like "no room"
+  const blockedBot = createBot([['crafting_table', 1]]);
+  attachFlatWorld(blockedBot);
+  blockedBot.placeBlock = async () => {
+    throw new Error('Server refused to place crafting_table at (2, 64, 0): the block is still air');
+  };
+  const refused = await placeItemNearby(blockedBot, blockedBot.inventory.items()[0], { maxAttempts: 3 });
+  assert.equal(refused.success, false);
+  assert.equal(refused.refused, true);
+});
+
+test('A table refused next to the world spawn reveals spawn protection and the bot walks out before building', async () => {
+  const bot = createBot([['oak_planks', 3], ['stick', 2], ['crafting_table', 1]]);
+  attachFlatWorld(bot);
+  bot.spawnPoint = new Vec3(2, 64, 1);
+  bot.placeBlock = async () => {
+    throw new Error('Server refused to place crafting_table at (2, 64, 0): the block is still air');
+  };
+  const state = createState({ currentObjective: 'wooden_pickaxe' });
+
+  const deployment = await deployCraftingTable(bot, state);
+  assert.equal(deployment.success, false);
+  assert.equal(deployment.refused, true);
+  assert.equal(state.milestones.spawn_protection, true);
+
+  // The craft explains that the table is still carried, so the model does not craft or "place" another one
+  const craft = await skillCraft(bot, state, 'wooden_pickaxe', 1);
+  assert.equal(craft.success, false);
+  assert.match(craft.message, /You still carry it/);
+  assert.equal(invUtils.countItem(bot, 'crafting_table'), 1);
+
+  // Inside the protected radius the planner leaves first, straight away from the spawn
+  const leaving = planner.getDeterministicDecision(bot, state);
+  assert.deepEqual([leaving.action, leaving.target], ['explore', 'leave_spawn']);
+  bot.entity.position = new Vec3(12, 64, 1);
+  assert.ok(Math.abs(getHeadingAwayFromSpawn(bot, 64)) < 1e-9);
+
+  // Outside it, the normal plan resumes
+  bot.entity.position = new Vec3(60, 64, 1);
+  assert.equal(getHeadingAwayFromSpawn(bot, 24), null);
+  assert.equal(planner.getDeterministicDecision(bot, state).action, 'craft');
+
+  // A refusal far from the spawn (a mob in the way) does not flag the area
+  const farState = createState();
+  await deployCraftingTable(bot, farState);
+  assert.equal(farState.milestones.spawn_protection, undefined);
+});
+
+test('A refusal is tied to where and with what the action failed: moving or a new inventory lifts it', () => {
+  const bot = createBot([['oak_planks', 3], ['stick', 2], ['crafting_table', 1]]);
+  const state = createState();
+  const craft = { action: 'craft', target: 'wooden_pickaxe' };
+  const failure = { success: false, message: 'crafting table could not be set down here' };
+  const now = Date.now();
+
+  recovery.recordOutcome(bot, state, craft, failure, now);
+  recovery.recordOutcome(bot, state, craft, failure, now);
+  assert.equal(recovery.isActionBlocked(state, 'craft', 'wooden_pickaxe', now, bot), true);
+  assert.equal(recovery.getFailureEntry(state, 'craft', 'wooden_pickaxe').rounds, 1);
+
+  // A few blocks further the same craft is allowed again, without waiting for a timer
+  bot.entity.position = bot.entity.position.offset(recovery.RELEASE_DISTANCE, 0, 0);
+  assert.equal(recovery.isActionBlocked(state, 'craft', 'wooden_pickaxe', now, bot), false);
+
+  // Failing again at the new place refuses it again and counts one more round
+  recovery.recordOutcome(bot, state, craft, failure, now);
+  recovery.recordOutcome(bot, state, craft, failure, now);
+  assert.equal(recovery.isActionBlocked(state, 'craft', 'wooden_pickaxe', now, bot), true);
+  assert.equal(recovery.getFailureEntry(state, 'craft', 'wooden_pickaxe').rounds, 2);
+
+  // Getting the missing ingredient changes the inventory, which also lifts the refusal
+  bot.give('oak_planks', 1);
+  assert.equal(recovery.isActionBlocked(state, 'craft', 'wooden_pickaxe', now, bot), false);
+
+  // The remedy is a relocation carrying the reason; none is offered inside the End
+  recovery.blockAction(state, 'craft', 'wooden_pickaxe', 'no room', now, bot);
+  const remedy = recovery.buildRemedyDecision(bot, state, craft);
+  assert.deepEqual([remedy.action, remedy.target], ['explore', 'relocate']);
+  assert.match(remedy.note, /craft wooden_pickaxe' refusée/);
+  assert.equal(recovery.buildRemedyDecision(createBot([], { dimension: 'the_end' }), state, craft), null);
+});
+
+test('Planner and skills agree: mixed plank types, an out-of-reach furnace and fake logs', async () => {
+  // 2 oak + 2 birch planks cannot make a table: the plan first crafts planks of a single type
+  const mixedBot = createBot([['oak_planks', 2], ['birch_planks', 2], ['spruce_log', 1]]);
+  assert.equal(invUtils.countItem(mixedBot, 'planks'), 4);
+  assert.equal(invUtils.countBestPlankStack(mixedBot), 2);
+  assert.deepEqual(
+    resolveGoalPlan(mixedBot, 'crafting_table', 1, createState()).steps.map(step => `${step.action}:${step.target}`),
+    ['craft:planks', 'craft:crafting_table']
+  );
+  assert.deepEqual(
+    resolveGoalPlan(createBot([['oak_planks', 4]]), 'crafting_table', 1, createState()).steps.map(step => `${step.action}:${step.target}`),
+    ['craft:crafting_table']
+  );
+
+  const tableRefusal = await skillCraft(mixedBot, createState(), 'crafting_table', 1);
+  assert.equal(tableRefusal.success, false);
+  assert.match(tableRefusal.message, /same wood type/);
+
+  // The craft skill names the real cause instead of a bare "missing components"
+  const pickaxeBot = createBot([['oak_planks', 2], ['birch_planks', 1], ['stick', 2], ['crafting_table', 1]]);
+  attachFlatWorld(pickaxeBot);
+  const mixedCraft = await skillCraft(pickaxeBot, createState({ currentObjective: 'wooden_pickaxe' }), 'wooden_pickaxe', 1);
+  assert.equal(mixedCraft.success, false);
+  assert.match(mixedCraft.message, /mixed wood types/);
+  assert.equal(invUtils.countItem(pickaxeBot, 'crafting_table'), 1, 'the table is collected even when the craft fails');
+
+  // A remembered furnace 400 blocks away is unusable for the smelt skill, so the plan builds a new one
+  const smelterItems = [['stone_pickaxe', 1], ['raw_iron', 3], ['oak_planks', 4], ['cobblestone', 8], ['crafting_table', 1]];
+  const smelterBot = createBot(smelterItems);
+  const farFurnace = new Vec3(400, 64, 0);
+  smelterBot.blockAt = (pos) => (pos.x === 400 ? { name: 'furnace', position: farFurnace } : { name: 'air', boundingBox: 'empty', position: pos });
+  const farState = createState({ base: { crafting_table: null, furnace: farFurnace, chest: null } });
+  const farSteps = resolveGoalPlan(smelterBot, 'iron_ingot', 3, farState).steps.map(step => `${step.action}:${step.target}`);
+  assert.deepEqual(farSteps, ['craft:furnace', 'place:furnace', 'smelt:raw_iron']);
+
+  // With a furnace in range the plan smelts directly
+  const furnaceId = mcData.blocksByName.furnace.id;
+  smelterBot.findBlock = ({ matching }) => {
+    const candidate = { name: 'furnace', type: furnaceId, position: new Vec3(3, 64, 0) };
+    const matches = typeof matching === 'function' ? matching(candidate) : matching === furnaceId;
+    return matches ? candidate : null;
+  };
+  assert.deepEqual(
+    resolveGoalPlan(smelterBot, 'iron_ingot', 3, createState()).steps.map(step => `${step.action}:${step.target}`),
+    ['smelt:raw_iron']
+  );
+
+  // Only the Nether fungi have wooden stems
+  assert.equal(invUtils.isWoodLog('big_dripleaf_stem'), false);
+  assert.equal(invUtils.isWoodLog('mushroom_stem'), false);
+  assert.equal(invUtils.isWoodLog('pumpkin_stem'), false);
+  assert.equal(invUtils.isWoodLog('crimson_stem'), true);
+  assert.equal(invUtils.isWoodLog('stripped_warped_stem'), true);
+  assert.equal(invUtils.isWoodLog('oak_log'), true);
+  const logBlocks = getBlockNamesForTarget(createBot(), 'log');
+  assert.equal(logBlocks.includes('big_dripleaf_stem'), false);
+  assert.ok(logBlocks.includes('oak_log') && logBlocks.includes('crimson_stem'));
+});
+
+test('Model answers are length-bounded by the schema and a truncated JSON is salvaged when it holds an action', () => {
+  assert.ok(PLAYER_JSON_SCHEMA.properties.thought.maxLength <= 400);
+  assert.ok(MANAGER_JSON_SCHEMA.properties.thought.maxLength <= 400);
+  assert.ok(MANAGER_JSON_SCHEMA.properties.directive.maxLength <= 400);
+  assert.ok(config.OLLAMA_NUM_PREDICT >= 512);
+
+  assert.deepEqual(
+    parseModelJson('{"thought": "ok", "action": "mine", "target": "oak_log", "qty": 2}'),
+    { thought: 'ok', action: 'mine', target: 'oak_log', qty: 2 }
+  );
+
+  // Cut after the decision fields: still usable
+  const cutAfterAction = parseModelJson('{"thought": "Je dois couper du bois", "action": "mine", "target": "oak_log", "qt');
+  assert.deepEqual(cutAfterAction, { thought: 'Je dois couper du bois', action: 'mine', target: 'oak_log' });
+  const cutManager = parseModelJson('{"thought": "x", "directive": "Mine du fer", "suggestedAction": "mine", "suggestedTarget": "iron_or');
+  assert.equal(cutManager.suggestedAction, 'mine');
+  assert.equal(cutManager.suggestedTarget, 'none');
+
+  // Cut inside the reasoning, before any action: nothing can be recovered
+  assert.equal(parseModelJson('{"thought": "Je réfléchis longuement à la meilleure façon de'), null);
+  assert.equal(parseModelJson(''), null);
+});
+
+test('Survival watchdog aborts the running action when air runs low, and bursts stop at cliffs', () => {
+  const bot = createBot();
+  let goalCleared = false;
+  let jumping = false;
+  bot.pathfinder.setGoal = () => { goalCleared = true; };
+  bot.setControlState = (control, value) => { if (control === 'jump') jumping = value; };
+  const state = createState({ activeActionId: 4 });
+
+  bot.oxygenLevel = 18;
+  assert.equal(handleBreath(bot, state), false);
+
+  // Low air: the action is invalidated, the controls are taken back and a surfacing step is queued first
+  bot.oxygenLevel = LOW_OXYGEN_LEVEL;
+  assert.equal(handleBreath(bot, state), true);
+  assert.equal(state.activeActionId, 5);
+  assert.equal(goalCleared, true);
+  assert.equal(jumping, true);
+  assert.deepEqual(recovery.takeForcedDecision(state).action, 'unstuck');
+
+  // It does not fire again until the bot has breathed
+  bot.oxygenLevel = 4;
+  assert.equal(handleBreath(bot, state), false);
+  bot.oxygenLevel = 20;
+  handleBreath(bot, state);
+  bot.oxygenLevel = 6;
+  assert.equal(handleBreath(bot, state), true);
+
+  // The planner reflex covers the case where the alert is seen between two actions
+  const divingBot = createBot();
+  divingBot.oxygenLevel = 9;
+  divingBot.entity.isInWater = true;
+  assert.equal(planner.getDeterministicDecision(divingBot, createState()).action, 'unstuck');
+
+  // A plateau ending at x=0: walking east runs off the edge, walking west stays on solid ground
+  const cliffBot = createBot([], { position: new Vec3(0.5, 64, 0.5) });
+  cliffBot.blockAt = (pos) => (pos.y === 63 && pos.x <= 0
+    ? { name: 'stone', boundingBox: 'block', position: pos }
+    : { name: 'air', boundingBox: 'empty', position: pos });
+  assert.equal(hasDropAhead(cliffBot, 0), true);
+  assert.equal(hasDropAhead(cliffBot, Math.PI), false);
 });

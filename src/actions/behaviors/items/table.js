@@ -1,43 +1,49 @@
 const { countItem, getBestToolForBlock, findNearbyCraftingTable } = require('../../../perception/inventory');
-const { findGroundPlacement, placeOnGround, approachPosition, digWithTimeout, pickUpDroppedItem } = require('../blocks/placement');
+const { placeItemNearby, approachPosition, digWithTimeout, pickUpDroppedItem } = require('../blocks/placement');
 const { freeInventorySlotIfFull } = require('./storage');
+const { noteRefusedPlacement } = require('../../../core/progress');
 
 /**
- * Deploy the carried crafting table on the ground next to the bot
+ * Deploy the carried crafting table next to the bot, trying several spots before giving up
  * @param {object} bot Mineflayer bot instance
  * @param {object} state Global bot state
- * @returns {Promise<{ success: boolean, block: object|null, message: string }>} Deployment result with the placed block
+ * @returns {Promise<{ success: boolean, block: object|null, refused: boolean, message: string }>} Deployment result with the placed block
  */
 async function deployCraftingTable(bot, state) {
   const tableItem = bot.inventory.items().find(i => i.name === 'crafting_table');
   if (!tableItem) {
-    return { success: false, block: null, message: "No 'crafting_table' in inventory." };
+    return { success: false, block: null, refused: false, message: "No 'crafting_table' in inventory." };
   }
 
-  const groundBlock = findGroundPlacement(bot, { maxDistance: 4 });
-  if (!groundBlock) {
-    return { success: false, block: null, message: 'No clear ground with air above to deploy the crafting table.' };
-  }
-
-  try {
-    const placedPos = await placeOnGround(bot, tableItem, groundBlock);
-    if (typeof bot.waitForTicks === 'function') await bot.waitForTicks(2);
-
-    const placedBlock = bot.blockAt(placedPos);
-    if (placedBlock?.name !== 'crafting_table') {
-      return { success: false, block: null, message: 'Crafting table placement was not confirmed by the server.' };
+  const placement = await placeItemNearby(bot, tableItem, { maxAttempts: 3 });
+  if (!placement.success) {
+    if (placement.refused) {
+      // Typically the protected area around the world spawn: remember it so the bot leaves before building
+      noteRefusedPlacement(bot, state);
+      return {
+        success: false,
+        block: null,
+        refused: true,
+        message: `The server refused to place the crafting table here (protected area near spawn, or something standing in the way): ${placement.error}`
+      };
     }
-
-    if (state) state.deployedTable = placedPos;
-    console.log(`[TABLE] Portable crafting table deployed at (${placedPos.x}, ${placedPos.y}, ${placedPos.z}).`);
-    return {
-      success: true,
-      block: placedBlock.position ? placedBlock : { ...placedBlock, position: placedPos },
-      message: 'Crafting table deployed.'
-    };
-  } catch (error) {
-    return { success: false, block: null, message: `Failed to deploy crafting table : ${error.message}` };
+    return { success: false, block: null, refused: false, message: `No spot to deploy the crafting table here (${placement.error}).` };
   }
+
+  if (typeof bot.waitForTicks === 'function') await bot.waitForTicks(2);
+  const placedBlock = bot.blockAt(placement.position);
+  if (placedBlock?.name !== 'crafting_table') {
+    return { success: false, block: null, refused: true, message: 'Crafting table placement was not confirmed by the server.' };
+  }
+
+  if (state) state.deployedTable = placement.position;
+  console.log(`[TABLE] Portable crafting table deployed at (${placement.position.x}, ${placement.position.y}, ${placement.position.z}).`);
+  return {
+    success: true,
+    block: placedBlock.position ? placedBlock : { ...placedBlock, position: placement.position },
+    refused: false,
+    message: 'Crafting table deployed.'
+  };
 }
 
 /**

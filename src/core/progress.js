@@ -201,6 +201,46 @@ function hasMilestone(state, name) {
   return Boolean(state?.milestones?.[name]);
 }
 
+// Extra distance walked beyond the protected radius so the whole work area lies outside it
+const SPAWN_PROTECTION_MARGIN = 6;
+
+/**
+ * Measure the horizontal distance between the bot and the world spawn point
+ * @param {object} bot Mineflayer bot instance
+ * @returns {number} Distance in blocks (Infinity when unknown)
+ */
+function getSpawnDistance(bot) {
+  const spawn = bot?.spawnPoint;
+  const pos = bot?.entity?.position;
+  if (!spawn || !pos) return Infinity;
+  return Math.hypot(pos.x - spawn.x, pos.z - spawn.z);
+}
+
+/**
+ * Remember that the server refused a block placement next to the world spawn (spawn protection)
+ * @param {object} bot Mineflayer bot instance
+ * @param {object} state Global bot state
+ * @returns {boolean} True if the refusal happened inside the protected radius and was recorded
+ */
+function noteRefusedPlacement(bot, state) {
+  if (!state || getDimension(bot) !== 'overworld') return false;
+  if (getSpawnDistance(bot) > config.SPAWN_PROTECTION_RADIUS + SPAWN_PROTECTION_MARGIN) return false;
+  setMilestone(state, 'spawn_protection', true);
+  return true;
+}
+
+/**
+ * Tell whether the bot stands in the spawn area where the server is known to refuse building
+ * @param {object} bot Mineflayer bot instance
+ * @param {object} state Global bot state
+ * @returns {boolean} True if the bot should walk away before placing or breaking blocks
+ */
+function isInsideProtectedSpawn(bot, state) {
+  return hasMilestone(state, 'spawn_protection') &&
+    getDimension(bot) === 'overworld' &&
+    getSpawnDistance(bot) <= config.SPAWN_PROTECTION_RADIUS + SPAWN_PROTECTION_MARGIN;
+}
+
 /**
  * Format the known waypoints into compact text for chat or prompts
  * @param {object} bot Mineflayer bot instance
@@ -234,5 +274,8 @@ module.exports = {
   horizontalDistanceTo,
   setMilestone,
   hasMilestone,
+  getSpawnDistance,
+  noteRefusedPlacement,
+  isInsideProtectedSpawn,
   formatWaypoints
 };

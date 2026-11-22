@@ -361,14 +361,54 @@ function hasLavaAhead(bot, headingRad) {
 }
 
 /**
- * Walk forward in short safe slices while avoiding lava hazards ahead
+ * Check whether the ground falls away just ahead along the given heading (cliff, ravine, pit)
+ * @param {object} bot Mineflayer bot instance
+ * @param {number} headingRad Heading angle in radians
+ * @param {number} [maxDrop=4] Deepest drop the bot may walk off without damage worth worrying about
+ * @returns {boolean} True if no solid block or water lies within maxDrop blocks below the next two blocks ahead
+ */
+function hasDropAhead(bot, headingRad, maxDrop = 4) {
+  if (!bot.entity?.position || typeof bot.blockAt !== 'function') return false;
+  const pos = bot.entity.position;
+  for (const step of [1, 2]) {
+    const checkX = Math.floor(pos.x + Math.cos(headingRad) * step);
+    const checkZ = Math.floor(pos.z + Math.sin(headingRad) * step);
+    let supported = false;
+    for (let depth = 1; depth <= maxDrop + 1 && !supported; depth++) {
+      const block = bot.blockAt(new Vec3(checkX, Math.floor(pos.y) - depth, checkZ));
+      supported = Boolean(block && (block.boundingBox === 'block' || block.name === 'water'));
+    }
+    if (!supported) return true;
+  }
+  return false;
+}
+
+/**
+ * Compute the heading pointing straight away from the world spawn when the bot is still close to it
+ * @param {object} bot Mineflayer bot instance
+ * @param {number} withinDistance Only applies within this horizontal distance of the spawn
+ * @returns {number|null} Heading in radians or null when the spawn is unknown or far away
+ */
+function getHeadingAwayFromSpawn(bot, withinDistance) {
+  const spawn = bot.spawnPoint;
+  const pos = bot.entity?.position;
+  if (!spawn || !pos) return null;
+  const dx = pos.x - spawn.x;
+  const dz = pos.z - spawn.z;
+  const distance = Math.hypot(dx, dz);
+  if (distance > withinDistance) return null;
+  return distance < 1 ? (crypto.randomInt(0, 360) * Math.PI) / 180 : Math.atan2(dz, dx);
+}
+
+/**
+ * Walk forward in short safe slices while avoiding lava and cliffs ahead
  * @param {object} bot Mineflayer bot instance
  * @param {number} headingRad Heading angle in radians
  * @param {number} [remainingTicks=35] Remaining movement ticks
  * @returns {Promise<void>}
  */
 async function walkForwardSlices(bot, headingRad, remainingTicks) {
-  if (remainingTicks <= 0 || hasLavaAhead(bot, headingRad)) return;
+  if (remainingTicks <= 0 || hasLavaAhead(bot, headingRad) || hasDropAhead(bot, headingRad)) return;
   const slice = Math.min(5, remainingTicks);
   if (typeof bot.waitForTicks === 'function') {
     await bot.waitForTicks(slice);
@@ -584,12 +624,19 @@ async function skillExplore(bot, state = null, target = null) {
 
   const cleanTarget = typeof target === 'string' ? target.toLowerCase().trim() : '';
 
-  // Recovery request: turn well away from the direction that led to the dead end and forget the trap history
-  if (cleanTarget === 'relocate') {
-    const turn = Math.PI * (0.6 + crypto.randomInt(0, 81) / 100);
-    currentExploreHeadingRad = ((currentExploreHeadingRad ?? 0) + turn) % (Math.PI * 2);
+  // Relocation request: leave the spawn area in a straight line when still inside it (the server may refuse
+  // any building there), otherwise turn well away from the direction that led to the dead end
+  const leavingSpawn = cleanTarget === 'leave_spawn';
+  if (cleanTarget === 'relocate' || leavingSpawn) {
+    const awayFromSpawn = getHeadingAwayFromSpawn(bot, leavingSpawn ? 64 : 24);
+    if (awayFromSpawn === null) {
+      const turn = Math.PI * (0.6 + crypto.randomInt(0, 81) / 100);
+      currentExploreHeadingRad = ((currentExploreHeadingRad ?? 0) + turn) % (Math.PI * 2);
+    } else {
+      currentExploreHeadingRad = (awayFromSpawn + Math.PI * 2) % (Math.PI * 2);
+    }
     recentExplorePositions = [];
-    console.log("[EXPLORE] Relocation requested; heading turned away from the previous area.");
+    console.log(`[EXPLORE] Relocation requested; ${awayFromSpawn === null ? 'heading turned away from the previous area' : 'walking straight away from the world spawn'}.`);
   }
 
   // Wanted ore not loaded nearby: dig down to the altitude where it generates instead of wandering on the surface
@@ -654,13 +701,15 @@ async function skillExplore(bot, state = null, target = null) {
     currentExploreHeadingRad = (currentExploreHeadingRad + Math.PI * 0.5) % (Math.PI * 2);
     recentExplorePositions = [{ x: curPos.x, z: curPos.z }];
     console.log("[EXPLORE] Box trap detected (<32x32 over 4+ cycles); rotating +90 deg & enabling dig breakout.");
-  } else {
+  } else if (!leavingSpawn) {
     const deltaRad = (crypto.randomInt(-20, 21) * Math.PI) / 180;
     currentExploreHeadingRad = ((currentExploreHeadingRad + deltaRad) % (Math.PI * 2) + Math.PI * 2) % (Math.PI * 2);
   }
 
   const allowDig = isEnclosed || trappedInBox;
-  const distance = allowDig ? crypto.randomInt(12, 18) : crypto.randomInt(16, 24);
+  let distance = allowDig ? crypto.randomInt(12, 18) : crypto.randomInt(16, 24);
+  // One stride long enough to clear the protected radius instead of several short ones
+  if (leavingSpawn) distance = 28;
   const targetX = Math.round(curPos.x + Math.cos(currentExploreHeadingRad) * distance);
   const targetZ = Math.round(curPos.z + Math.sin(currentExploreHeadingRad) * distance);
   const stepOrigin = { x: curPos.x, z: curPos.z };
@@ -725,6 +774,8 @@ module.exports = {
   findNearestDryLand,
   moveExploreStep,
   hasSolidCeilingAbove,
+  hasDropAhead,
+  getHeadingAwayFromSpawn,
   headingToMineflayerYaw,
   isBoxStuck
 };
