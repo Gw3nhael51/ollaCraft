@@ -40,6 +40,72 @@ function clearBadBlocks() {
   badBlocksRegistry.clear();
 }
 
+const WATER_BLOCK_NAMES = new Set(['water', 'flowing_water', 'bubble_column', 'kelp', 'kelp_plant', 'seagrass', 'tall_seagrass']);
+const FLOODED_ZONE_TTL_MS = 15 * 60 * 1000;
+const FLOODED_ZONE_RADIUS = 14;
+const HORIZONTAL_OFFSETS = [new Vec3(1, 0, 0), new Vec3(-1, 0, 0), new Vec3(0, 0, 1), new Vec3(0, 0, -1)];
+const floodedZones = [];
+
+/**
+ * Check whether a block is water (or a plant that only exists under water)
+ * @param {object|null} block Candidate block
+ * @returns {boolean} True if the bot cannot breathe in this block
+ */
+function isWaterBlock(block) {
+  return Boolean(block?.name && WATER_BLOCK_NAMES.has(block.name));
+}
+
+/**
+ * Check whether reaching a block means working under water: water right above it or on several sides
+ * @param {object} bot Mineflayer bot instance
+ * @param {object} block Candidate target block (with position)
+ * @returns {boolean} True if the block sits in or under water
+ */
+function isBlockSubmerged(bot, block) {
+  if (!block?.position || typeof bot.blockAt !== 'function') return false;
+  if (isWaterBlock(bot.blockAt(block.position.offset(0, 1, 0)))) return true;
+  const wetSides = HORIZONTAL_OFFSETS.filter(offset => isWaterBlock(bot.blockAt(block.position.plus(offset)))).length;
+  return wetSides >= 2;
+}
+
+/**
+ * Remember a flooded cave or mine the bot had to escape from, so it works somewhere else for a while
+ * @param {object} pos Position where the bot was trapped under water
+ * @param {number} [radius=FLOODED_ZONE_RADIUS] Radius of the area to avoid
+ * @param {number} [ttlMs=FLOODED_ZONE_TTL_MS] How long the area is avoided
+ */
+function markFloodedZone(pos, radius = FLOODED_ZONE_RADIUS, ttlMs = FLOODED_ZONE_TTL_MS) {
+  if (!pos) return;
+  floodedZones.push({ x: pos.x, y: pos.y, z: pos.z, radius, expiresAt: Date.now() + ttlMs });
+  if (floodedZones.length > 12) floodedZones.shift();
+}
+
+/**
+ * Check whether a position lies inside an area recently recorded as flooded
+ * @param {object} pos Position to test
+ * @param {number} [now=Date.now()] Reference timestamp
+ * @returns {boolean} True if the position should be avoided
+ */
+function isInFloodedZone(pos, now = Date.now()) {
+  if (!pos) return false;
+  for (let i = floodedZones.length - 1; i >= 0; i--) {
+    const zone = floodedZones[i];
+    if (now >= zone.expiresAt) {
+      floodedZones.splice(i, 1);
+      continue;
+    }
+    if (Math.hypot(pos.x - zone.x, pos.y - zone.y, pos.z - zone.z) <= zone.radius) return true;
+  }
+  return false;
+}
+
+/**
+ * Forget every recorded flooded area
+ */
+function clearFloodedZones() {
+  floodedZones.length = 0;
+}
+
 /**
  * Record a single scanned block and check whether it is an exposed ore within oreRadius
  * @param {object} bot Mineflayer bot instance
@@ -107,6 +173,14 @@ function checkTerrainSituation(bot) {
   const eyeBlock = bot.blockAt(pos.offset(0, 1, 0));
   if (eyeBlock && (eyeBlock.name === 'water' || eyeBlock.name === 'flowing_water')) {
     return "Sous l'eau ! Risque de noyade imminent. Action recommandée : unstuck.";
+  }
+
+  // Floating or wading: digging is five times slower and most skills misbehave, so get out first
+  if (bot.entity.isInLava) {
+    return "Dans la lave ! Danger de mort. Action recommandée : unstuck.";
+  }
+  if (bot.entity.isInWater) {
+    return "Dans l'eau (tête hors de l'eau) : rejoins la terre ferme avant d'agir. Action recommandée : unstuck.";
   }
 
   // Verify whether overhead clearance is obstructed
@@ -229,5 +303,10 @@ module.exports = {
   markBadBlock,
   isBadBlock,
   clearBadBlocks,
+  isWaterBlock,
+  isBlockSubmerged,
+  markFloodedZone,
+  isInFloodedZone,
+  clearFloodedZones,
   VALUABLE_ORES
 };

@@ -6,38 +6,34 @@ const { getBestToolForBlock, isWoodLog, hasToolType } = require('../../../percep
 const { isBadBlock } = require('../../../perception/environment');
 const { markLavaClusterBad } = require('../world/portal');
 const { getOreDepthHint } = require('../../../minecraft/knowledge');
+const { escapeWater, isInLiquid } = require('./water');
 
 // Exploration hints naming creatures that only live on the surface
 const SURFACE_TARGETS = new Set(['sheep', 'chicken', 'cow', 'pig', 'spider', 'enderman', 'wool', 'feather', 'string']);
 
+// Longest time worth spending on one block while digging a way out of a hole
+const UNSTUCK_DIG_LIMIT_MS = 7000;
+
 /**
  * Check whether an adjacent block can be dug quickly during an unstuck maneuver
  * @param {object|null} block Candidate block
+ * @param {object|null} [bot=null] Mineflayer bot instance; when given, the real dig time with the carried tools decides
  * @returns {boolean} True if block can be broken to escape
  */
-function isDiggableObstacle(block) {
+function isDiggableObstacle(block, bot = null) {
   if (!block?.name) return false;
   if (config.SOFT_BLOCKS.has(block.name)) return true;
-  return block.name.endsWith('_leaves') || isWoodLog(block.name);
-}
+  if (block.name.endsWith('_leaves') || isWoodLog(block.name)) return true;
 
-/**
- * Swim upwards recursively to reach water surface
- * @param {object} bot Mineflayer bot instance
- * @param {number} startTime Swimming start timestamp
- * @param {number} maxDurationMs Maximum swimming duration in milliseconds
- * @returns {Promise<void>}
- */
-async function swimUpwardsStep(bot, startTime, maxDurationMs) {
-  if (Date.now() - startTime >= maxDurationMs) return;
-
-  await bot.waitForTicks(5);
-  const currentEye = bot.blockAt(bot.entity.position.offset(0, 1, 0));
-  if (!currentEye || (currentEye.name !== 'water' && currentEye.name !== 'flowing_water')) {
-    return;
+  // With a pickaxe in the pocket, deepslate, andesite or ore walls are no obstacle either
+  if (bot && typeof bot.digTime === 'function' && block.boundingBox === 'block' && block.diggable !== false) {
+    try {
+      return bot.digTime(block) <= UNSTUCK_DIG_LIMIT_MS;
+    } catch {
+      return false;
+    }
   }
-
-  await swimUpwardsStep(bot, startTime, maxDurationMs);
+  return false;
 }
 
 /**
@@ -76,14 +72,14 @@ async function findAndDigEscapeRoute(bot, cardinals, index) {
   const sideEyeBlock = bot.blockAt(bot.entity.position.plus(dir).offset(0, 1, 0));
   const sideFeetBlock = bot.blockAt(bot.entity.position.plus(dir));
 
-  if (isDiggableObstacle(sideEyeBlock)) {
+  if (isDiggableObstacle(sideEyeBlock, bot)) {
     console.log(`[UNSTUCK] Passable wall found in direction (${dir.x}, ${dir.y}, ${dir.z}) : ${sideEyeBlock.name}. Digging escape path...`);
     try {
       const eyeTool = getBestToolForBlock(bot, sideEyeBlock);
       if (eyeTool) await bot.equip(eyeTool, 'hand').catch(() => {});
       await digWithTimeout(bot, sideEyeBlock, 8000);
 
-      if (isDiggableObstacle(sideFeetBlock)) {
+      if (isDiggableObstacle(sideFeetBlock, bot)) {
         const feetTool = getBestToolForBlock(bot, sideFeetBlock);
         if (feetTool) await bot.equip(feetTool, 'hand').catch(() => {});
         await digWithTimeout(bot, sideFeetBlock, 8000);
@@ -173,24 +169,22 @@ async function skillUnstuck(bot) {
   console.log("[UNSTUCK] Launching unstuck procedure.");
   bot.clearControlStates();
 
-  const eyeBlock = bot.blockAt(bot.entity.position.offset(0, 1, 0));
-  const isUnderwater = eyeBlock && (eyeBlock.name === 'water' || eyeBlock.name === 'flowing_water');
-
-  // Swim urgently towards surface if submerged
-  if (isUnderwater || bot.entity.isInWater) {
-    console.log("[UNSTUCK] Bot is in water! Swimming urgently to surface...");
-    bot.setControlState('jump', true);
-
-    await swimUpwardsStep(bot, Date.now(), 8000);
-    bot.setControlState('jump', false);
-    const reachedLand = await swimToDryLand(bot, 36);
-    return {
-      success: true,
-      message: reachedLand
-        ? "Emergency surfacing completed and reached dry land."
-        : "Emergency surfacing completed; swam towards shore."
-    };
+  // In water the only goal is air, then dry ground. Floating up is not enough in a flooded cave: the escape
+  // searches a real route (diving or digging when needed) and reports honestly when the bot is still in water
+  if (isInLiquid(bot)) {
+    console.log("[UNSTUCK] Bot is in water: looking for a way out...");
+    if (currentExploreHeadingRad === null) {
+      currentExploreHeadingRad = (crypto.randomInt(0, 360) * Math.PI) / 180;
+    }
+    const outcome = await escapeWater(bot, { headingRad: currentExploreHeadingRad });
+    if (outcome.enclosed && outcome.success) {
+      // Leave the flooded gallery behind: the next exploration starts in a fresh direction
+      recentExplorePositions = [];
+    }
+    return { success: outcome.success, message: outcome.message };
   }
+
+  const startY = bot.entity.position.y;
 
   // Check and break ceiling if solid block obstructs above
   const headBlock = bot.blockAt(bot.entity.position.offset(0, 2, 0));
@@ -199,7 +193,7 @@ async function skillUnstuck(bot) {
     try {
       const tool = getBestToolForBlock(bot, headBlock);
       if (tool) await bot.equip(tool, 'hand').catch(() => {});
-      await bot.dig(headBlock);
+      await digWithTimeout(bot, headBlock, 10000);
       console.log("[UNSTUCK] Ceiling block broken successfully.");
     } catch (error) {
       console.warn("[UNSTUCK] Failed to break ceiling block :", error.message);
@@ -224,7 +218,40 @@ async function skillUnstuck(bot) {
     return { success: true, message: "Dug exit route through wall to escape hole." };
   }
 
+  // Last resort: let the pathfinder climb out, digging steps or stacking blocks under the bot as it sees fit
+  if (await climbOutOfHole(bot, startY)) {
+    return { success: true, message: `Climbed out of the hole (now at Y:${Math.round(bot.entity.position.y)}).` };
+  }
+
   return { success: false, message: "Unable to dig an exit through immediate surrounding walls." };
+}
+
+/**
+ * Climb a few blocks with the pathfinder, which digs steps or pillars up as needed
+ * @param {object} bot Mineflayer bot instance
+ * @param {number} startY Altitude the bot was stuck at
+ * @param {number} [timeoutMs=12000] Maximum climb duration
+ * @returns {Promise<boolean>} True if the bot ended at least two blocks higher
+ */
+async function climbOutOfHole(bot, startY, timeoutMs = 12000) {
+  if (!goals.GoalY || typeof bot.pathfinder?.goto !== 'function') return false;
+  let navTimer = null;
+  let gotoPromise = null;
+  try {
+    gotoPromise = bot.pathfinder.goto(new goals.GoalY(Math.floor(startY) + 3));
+    const timeoutPromise = new Promise((_, reject) => {
+      navTimer = setTimeout(() => reject(new Error("Climb timeout")), timeoutMs);
+    });
+    await Promise.race([gotoPromise, timeoutPromise]);
+  } catch (err) {
+    console.warn('[UNSTUCK] Climbing out failed:', err.message);
+  } finally {
+    if (navTimer) clearTimeout(navTimer);
+    gotoPromise?.catch(() => {});
+    bot.pathfinder.setGoal?.(null);
+    bot.clearControlStates?.();
+  }
+  return bot.entity.position.y >= startY + 2;
 }
 
 const EXPLORE_WINDOW_SIZE = 6;

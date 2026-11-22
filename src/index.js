@@ -160,9 +160,11 @@ bot.once('spawn', () => {
   bot.pathfinder.setMovements(defaultMove);
   bot.pathfinder.bestHarvestTool = (block) => getBestToolForBlock(bot, block);
 
-  // Keep bot at surface if falling into water
+  // Keep bot at surface if falling into water. Suspended while the water escape swims a route of its own:
+  // holding jump there would pin the bot against the ceiling of a flooded cave instead of letting it dive out
   let wasInWater = false;
   bot.on('physicsTick', () => {
+    if (bot.autoFloatSuspended) return;
     if (bot.entity.isInWater) {
       wasInWater = true;
       bot.setControlState('jump', true);

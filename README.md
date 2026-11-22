@@ -33,7 +33,8 @@ flowchart LR
 - **Contextual Failure Memory & Loop Breaker:** `src/agent/recovery.js` remembers where and with what inventory an `(action, target)` pair failed. After 2 failures in the same situation the pair is refused **at that spot** and the bot relocates without any model call; the refusal lifts as soon as it has moved 6 blocks or its inventory changed, so the step is simply retried elsewhere. Only a step that failed in several different places is handed to the model. Stagnation (no change of inventory, position or objective) forces a *different* action, and the same mechanism is exposed to players through the `debug` chat command.
 - **Portable Crafting Table:** the bot carries a single crafting table. `craft` deploys it where the bot stands, crafts, then **breaks it and picks it back up**. No table position is ever memorized or walked back to. Deployment scans the cells around the bot, never picks one its own body overlaps (the server refuses those), places through grass, and tries up to three spots.
 - **Spawn Protection Awareness:** when the server refuses a placement next to the world spawn, the bot remembers it and, after every respawn, walks straight out of the protected radius before trying to place or break anything.
-- **Survival Watchdog:** `src/agent/watchdog.js` aborts the running action and surfaces when the air supply runs low, since a skill can hold the bot under water longer than its air lasts.
+- **Survival Watchdog:** `src/agent/watchdog.js` aborts the running action and heads for air when the air supply runs low, since a skill can hold the bot under water longer than its air lasts.
+- **Water Escape:** `mineflayer-pathfinder` always holds jump in water and therefore cannot dive: in a flooded gallery it pins the bot against the ceiling. `src/actions/behaviors/movement/water.js` searches the water for the quickest route to air (swimming down or sideways, or breaking a thin wall or ceiling when that is faster), swims it with direct controls, then reaches dry ground. A flooded cave the bot had to escape from is remembered for 15 minutes: the bot leaves it, and blocks under water are no longer mining targets.
 - **Milestone Waypoints:** portals (both sides), spawn beds, fortress, stronghold, End portal and the last death position are saved to `data/progress-*.json` and survive deaths and restarts (`goto` skill).
 - **Spawn Beds:** a bed is placed and used to set the respawn point before entering the Nether, and again in the stronghold before entering the End.
 - **Stronghold Triangulation:** exactly two Eyes of Ender thrown from two positions give two bearings whose intersection is the stronghold (`src/minecraft/triangulation.js`).
@@ -97,7 +98,7 @@ flowchart TD
 │   └── minecraft/             # Offline WikiCraft lookups (wiki.js, wikiData.js), dependency resolver (knowledge.js), eye triangulation (triangulation.js)
 ├── data/procedures/           # Persisted JSON procedures (mounted via Docker volume ./data:/app/data)
 ├── data/progress-*.json       # Persisted waypoints, milestones and stronghold estimate (one file per server/account)
-├── test/                      # 211 automated unit and E2E integration tests across 20 test files
+├── test/                      # 214 automated unit and E2E integration tests across 20 test files
 ├── Dockerfile                 # Node 20 Alpine image build for ollacraft-bot
 ├── Makefile                   # Shortcuts (run, bot, bot-logs, bot-stop, test)
 ├── docker-compose.yml         # Paper server + ollacraft-bot service (--profile bot) with /app/data persistence
@@ -264,7 +265,7 @@ The ReAct loop provides the LLM with structured actions formatted in JSON:
 | `portal` | *None* | Detects active `nether_portal` blocks as well as complete unlit or partial obsidian frames on X/Z axes, fills `water_bucket`, casts or completes frames via water-cascade lava mold or carried obsidian, clears doorway obstructions, ignites with `flint_and_steel`, sets the spawn bed next to the portal, memorizes both portal sides and enters `the_nether`. From the Nether, target `overworld` walks back to the memorized portal and returns. |
 | `eat` | `target?: string` | Scans inventory for an edible food item and consumes it. |
 | `explore` | `target?: string` | Advances along a persistent outward heading (with optional target hint like `'lava'`), detects solid ceilings (`hasSolidCeilingAbove`), breaks out of 32×32 box traps (+90° with dig breakout), and runs within a bounded 34s budget. An ore target (`diamond`, `iron_ore`...) digs a staircase down to the altitude where that ore generates; an animal target climbs back to the surface first; `relocate` (used by the loop breaker) turns away from the current area. |
-| `unstuck` | *None* | Performs emergency ceiling breaking, wall digging with bounded dig timeouts, or nearest dry-land water escape (`findNearestDryLand`). |
+| `unstuck` | *None* | In water: finds a route to air (straight up when the surface is open, otherwise diving through the flooded gallery or breaking a thin wall or ceiling), then reaches dry ground; reports failure when the bot is still in the water. On land: breaks the ceiling, digs through any wall its tools break quickly, or climbs out with the pathfinder. |
 | `goto` | `target: string` | Travels back to a memorized waypoint (`nether_portal`, `nether_exit`, `spawn_bed`, `end_spawn_bed`, `fortress`, `stronghold`, `end_portal`, `death`), one bounded leg per call. |
 | `bed` | `target?: string` | Places the carried bed (crafting it from 3 same-colored wool + 3 planks if possible) and uses it to set the respawn point. `pickup` breaks and recovers the spawn bed. |
 | `stronghold` | *None* | Throws an Eye of Ender and measures its bearing from the entity's flight, walks `EYE_TRIANGULATION_BASELINE` blocks sideways, throws a second eye, intersects both bearings, then travels to the estimate. |
@@ -277,7 +278,7 @@ The ReAct loop provides the LLM with structured actions formatted in JSON:
 
 ## 🧪 Automated Tests & Benchmark
 
-Run the full test suite (**211 unit & integration tests across 20 suites**):
+Run the full test suite (**214 unit & integration tests across 20 suites**):
 ```bash
 npm test
 ```

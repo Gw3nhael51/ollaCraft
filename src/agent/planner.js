@@ -1,6 +1,6 @@
 const config = require('../infrastructure/config');
 const invUtils = require('../perception/inventory');
-const { checkTerrainSituation, isBadBlock } = require('../perception/environment');
+const { checkTerrainSituation, isBadBlock, isBlockSubmerged, isInFloodedZone } = require('../perception/environment');
 const { resolveGoalPlan } = require('../minecraft/knowledge');
 const { getBlockNamesForTarget, canHarvestBlock } = require('../minecraft/wikiData');
 const { getDimension, getWaypoint, saveWaypoint, horizontalDistanceTo, isInsideProtectedSpawn } = require('../core/progress');
@@ -76,13 +76,20 @@ function findNearestEntity(bot, name, maxDistance = 28) {
  * @param {object} bot Mineflayer bot instance
  * @param {string} targetName Resource or block name
  * @param {number} [maxDistance=30] Search radius
+ * @param {boolean} [allowSubmerged=false] Accept blocks under water or in a flooded area (liquids themselves)
  * @returns {boolean} True if such a block exists nearby
  */
-function isBlockNearby(bot, targetName, maxDistance = 30) {
+function isBlockNearby(bot, targetName, maxDistance = 30, allowSubmerged = false) {
   if (typeof bot.findBlock !== 'function') return false;
   const names = new Set(getBlockNamesForTarget(bot, targetName));
   return Boolean(bot.findBlock({
-    matching: (block) => Boolean(block?.name && names.has(block.name) && (!block.position || !isBadBlock(block.position))),
+    matching: (block) => {
+      if (!block?.name || !names.has(block.name)) return false;
+      if (!block.position) return true;
+      if (isBadBlock(block.position)) return false;
+      // A block the bot would have to dive for does not count: it looks for a dry one elsewhere
+      return allowSubmerged || !(isBlockSubmerged(bot, block) || isInFloodedZone(block.position));
+    },
     maxDistance
   }));
 }
@@ -290,7 +297,7 @@ function adaptPlanStep(bot, step) {
 
     case 'mine': {
       if (LIQUID_TARGETS.has(step.target)) {
-        return isBlockNearby(bot, step.target, 36)
+        return isBlockNearby(bot, step.target, 36, true)
           ? makeDecision('mine', step.target, 1, step.reason)
           : makeDecision('explore', step.target, 1, `Aucune source de '${step.target}' à portée : exploration.`);
       }
@@ -365,6 +372,15 @@ function getPriorityDecision(bot, state) {
   try {
     const reflex = getSurvivalReflex(bot, state);
     if (reflex) return { decision: reflex, deferred: false };
+
+    // Just out of a flooded cave or mine: do not go back in, look for another area
+    if (getDimension(bot) === 'overworld' && isInFloodedZone(bot.entity?.position) &&
+      !isActionBlocked(state, 'explore', 'relocate', Date.now(), bot)) {
+      return {
+        decision: makeDecision('explore', 'relocate', 1, "Cette zone est inondée : je m'en éloigne pour chercher ailleurs."),
+        deferred: false
+      };
+    }
 
     // Inside the protected spawn area nothing can be placed or broken: get out before trying to build anything
     if (isInsideProtectedSpawn(bot, state) && !isActionBlocked(state, 'explore', 'leave_spawn', Date.now(), bot)) {

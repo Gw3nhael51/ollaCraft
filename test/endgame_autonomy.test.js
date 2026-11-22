@@ -32,6 +32,103 @@ const { hasDropAhead, getHeadingAwayFromSpawn } = require('../src/actions/behavi
 const { parseModelJson, PLAYER_JSON_SCHEMA, MANAGER_JSON_SCHEMA } = require('../src/agent/ollama');
 const { handleBreath, LOW_OXYGEN_LEVEL } = require('../src/agent/watchdog');
 const { getBlockNamesForTarget } = require('../src/minecraft/wikiData');
+const water = require('../src/actions/behaviors/movement/water');
+const environment = require('../src/perception/environment');
+const { skillUnstuck, isDiggableObstacle } = require('../src/actions/behaviors/movement/navigate');
+
+/**
+ * Give a bot a rule-based voxel world and a minimal swimming simulation driven by its control states,
+ * so water escapes can be played out: forward moves along the look direction, jump rises in water,
+ * releasing it sinks, solid blocks stop the body, and gravity applies out of the water.
+ * @param {object} bot Mock bot
+ * @param {(x: number, y: number, z: number) => string} blockNameAt Rule returning the block name of a cell
+ * @returns {{ setBlock: Function, dug: string[] }} World handle
+ */
+function attachSwimWorld(bot, blockNameAt) {
+  const overrides = new Map();
+  const dug = [];
+  const keyOf = (x, y, z) => `${x},${y},${z}`;
+  const nameAt = (x, y, z) => overrides.get(keyOf(x, y, z)) ?? blockNameAt(x, y, z);
+  const makeBlock = (x, y, z) => {
+    const name = nameAt(x, y, z);
+    const passable = name === 'air' || name === 'water';
+    return { name, boundingBox: passable ? 'empty' : 'block', position: new Vec3(x, y, z), diggable: name !== 'bedrock' };
+  };
+  const isSolid = (x, y, z) => {
+    const name = nameAt(Math.floor(x), Math.floor(y), Math.floor(z));
+    return name !== 'air' && name !== 'water';
+  };
+  const bodyFits = (x, y, z) => !isSolid(x, y, z) && !isSolid(x, y + 1.6, z);
+
+  bot.blockAt = (pos) => makeBlock(Math.floor(pos.x), Math.floor(pos.y), Math.floor(pos.z));
+  bot.findBlock = () => null;
+  bot.findBlocks = () => [];
+  bot.dig = async (block) => {
+    dug.push(`${block.name}@${block.position.x},${block.position.y},${block.position.z}`);
+    // Water pours into the opening when any neighbour is water, otherwise it becomes air
+    const { x, y, z } = block.position;
+    const wet = [[0, -1, 0], [1, 0, 0], [-1, 0, 0], [0, 0, 1], [0, 0, -1]].some(([dx, dy, dz]) => nameAt(x + dx, y + dy, z + dz) === 'water');
+    overrides.set(keyOf(x, y, z), wet ? 'water' : 'air');
+  };
+
+  let yaw = 0;
+  const controls = {};
+  bot.look = async (newYaw) => { yaw = newYaw; };
+  bot.setControlState = (name, value) => { controls[name] = value; };
+  bot.clearControlStates = () => { Object.keys(controls).forEach((name) => { controls[name] = false; }); };
+
+  const refreshLiquidFlag = () => {
+    const pos = bot.entity.position;
+    bot.entity.isInWater = nameAt(Math.floor(pos.x), Math.floor(pos.y), Math.floor(pos.z)) === 'water';
+  };
+  const stepOnce = () => {
+    const pos = bot.entity.position;
+    let { x, y, z } = pos;
+    const inWater = nameAt(Math.floor(x), Math.floor(y), Math.floor(z)) === 'water';
+
+    let nextY = y;
+    if (inWater) nextY += controls.jump ? 0.1 : -0.1;
+    else if (!isSolid(x, y - 0.05, z)) nextY -= 0.3;
+    else if (controls.jump) nextY += 0.5;
+    if (bodyFits(x, nextY, z)) y = nextY;
+    else if (nextY < y) y = Math.floor(y);
+
+    if (controls.forward) {
+      // Mineflayer yaw: looking with yaw = atan2(-dx, -dz) faces the direction (dx, dz)
+      const nextX = x - Math.sin(yaw) * 0.2;
+      const nextZ = z - Math.cos(yaw) * 0.2;
+      if (bodyFits(nextX, y, nextZ)) {
+        x = nextX;
+        z = nextZ;
+      }
+    }
+    bot.entity.position = new Vec3(x, y, z);
+    refreshLiquidFlag();
+  };
+  bot.waitForTicks = async (ticks = 1) => {
+    for (let i = 0; i < ticks; i++) stepOnce();
+  };
+
+  refreshLiquidFlag();
+  return { setBlock: (x, y, z, name) => overrides.set(keyOf(x, y, z), name), dug };
+}
+
+/**
+ * Flooded chamber with a solid ceiling whose only way out dives through a lower tunnel, then rises into a
+ * dry cave. Everything lies in the z=0 plane inside solid stone.
+ * @param {number} x Cell X
+ * @param {number} y Cell Y
+ * @param {number} z Cell Z
+ * @returns {string} Block name
+ */
+function floodedMineLayout(x, y, z) {
+  if (z !== 0) return 'stone';
+  if (x >= 0 && x <= 2 && y >= 10 && y <= 12) return 'water'; // flooded chamber, ceiling at y=13
+  if (x >= 2 && x <= 6 && y >= 8 && y <= 9) return 'water'; // tunnel below the chamber
+  if (x === 6 && y >= 10 && y <= 13) return 'water'; // shaft rising to the surface of the water
+  if (x >= 6 && x <= 9 && y >= 14 && y <= 15) return 'air'; // dry cave above, floor at x=7..9
+  return 'stone';
+}
 
 const IRON_GEAR = [
   ['iron_pickaxe', 1], ['iron_sword', 1], ['shield', 1],
@@ -1222,4 +1319,132 @@ test('Survival watchdog aborts the running action when air runs low, and bursts 
     : { name: 'air', boundingBox: 'empty', position: pos });
   assert.equal(hasDropAhead(cliffBot, 0), true);
   assert.equal(hasDropAhead(cliffBot, Math.PI), false);
+});
+
+// ---------------------------------------------------------------------------------------------------------
+// Getting stuck in water: the regular pathfinder always holds jump in water, so in a flooded gallery it pins
+// the bot against the ceiling. The escape must find a real route to air, dive or dig, and leave the area.
+// ---------------------------------------------------------------------------------------------------------
+
+test('Water escape dives through a flooded gallery when floating up leads nowhere, then avoids the area', async () => {
+  environment.clearFloodedZones();
+  const bot = createBot([['iron_pickaxe', 1]], { position: new Vec3(0.5, 11, 0.5) });
+  const world = attachSwimWorld(bot, floodedMineLayout);
+  const origin = bot.entity.position.clone();
+
+  // Under water with a ceiling right above: swimming up, the old behavior, cannot reach air
+  assert.equal(water.isHeadSubmerged(bot), true);
+  assert.equal(water.scanWaterColumn(bot).opensToAir, false);
+
+  // The route goes down through the lower tunnel, back up the shaft, and ends on the dry floor of the cave
+  const route = water.findEscapeRoute(bot);
+  assert.ok(route);
+  assert.equal(route.digs, 0);
+  assert.equal(route.dry, true);
+  assert.ok(route.path.some(step => step.cell.y === 8), 'the route dives below the chamber');
+  const end = route.path.at(-1).cell;
+  assert.deepEqual([end.x, end.y, end.z], [7, 14, 0]);
+
+  const result = await skillUnstuck(bot);
+  assert.equal(result.success, true);
+  assert.match(result.message, /flooded area/);
+  assert.equal(bot.entity.isInWater, false);
+  assert.equal(water.isHeadSubmerged(bot), false);
+  assert.ok(bot.entity.position.x >= 7 && bot.entity.position.y >= 14);
+  assert.deepEqual(world.dug, []);
+  assert.equal(bot.autoFloatSuspended, false, 'the automatic floating is handed back after the dive');
+
+  // The flooded gallery is remembered, and the next decision is to go and work somewhere else
+  assert.equal(environment.isInFloodedZone(origin), true);
+  const next = planner.getDeterministicDecision(bot, createState({ currentObjective: 'raw_iron', manualObjective: true }));
+  assert.deepEqual([next.action, next.target], ['explore', 'relocate']);
+  assert.match(next.thought, /inondée/);
+
+  environment.clearFloodedZones();
+  assert.equal(environment.isInFloodedZone(origin), false);
+});
+
+test('Water escape breaks a thin ceiling, swims to the shore of open water, and reports failure when sealed in', async () => {
+  environment.clearFloodedZones();
+
+  // A flooded pocket closed by a single block, with a dry gallery above: digging up is the quickest way out
+  const digger = createBot([['iron_pickaxe', 1]], { position: new Vec3(0.5, 10, 0.5) });
+  const pocket = attachSwimWorld(digger, (x, y, z) => {
+    if (z !== 0) return 'stone';
+    if (x >= 0 && x <= 1 && y >= 10 && y <= 11) return 'water';
+    if (x >= 0 && x <= 3 && y >= 13 && y <= 14) return 'air';
+    return 'stone';
+  });
+  const dugOut = await water.escapeWater(digger);
+  assert.equal(dugOut.success, true);
+  assert.equal(dugOut.enclosed, true);
+  assert.deepEqual(pocket.dug, ['stone@0,12,0']);
+  assert.match(dugOut.message, /broke 1 block/);
+  assert.equal(digger.entity.isInWater, false);
+  assert.ok(digger.entity.position.y >= 13);
+
+  // Open water: straight up to the surface, then onto the shore, and nothing is recorded as flooded
+  const swimmer = createBot([], { position: new Vec3(0.5, 61, 0.5) });
+  attachSwimWorld(swimmer, (x, y, z) => {
+    if (y >= 64) return 'air';
+    if (y >= 60 && Math.abs(x) <= 6 && Math.abs(z) <= 6) return 'water';
+    return 'stone';
+  });
+  const lakeStart = swimmer.entity.position.clone();
+  assert.equal(water.scanWaterColumn(swimmer).opensToAir, true);
+  const ashore = await water.escapeWater(swimmer);
+  assert.equal(ashore.success, true);
+  assert.equal(ashore.enclosed, false);
+  assert.equal(swimmer.entity.isInWater, false);
+  assert.ok(Math.abs(swimmer.entity.position.x) >= 7 || Math.abs(swimmer.entity.position.z) >= 7);
+  assert.equal(environment.isInFloodedZone(lakeStart), false);
+
+  // Sealed in unbreakable rock: no pretend success, so the decision loop knows the bot is still in danger
+  const trapped = createBot([], { position: new Vec3(0.5, 10, 0.5) });
+  attachSwimWorld(trapped, (x, y, z) => (z === 0 && x >= 0 && x <= 1 && y >= 10 && y <= 11 ? 'water' : 'bedrock'));
+  assert.equal(water.findEscapeRoute(trapped), null);
+  const failed = await skillUnstuck(trapped);
+  assert.equal(failed.success, false);
+  assert.match(failed.message, /Still under water/);
+
+  environment.clearFloodedZones();
+});
+
+test('Submerged blocks are not mining targets, and standing in water is a reason to get out before acting', () => {
+  const bot = createBot([['stone_pickaxe', 1]]);
+  const ore = { name: 'iron_ore', position: new Vec3(5, 60, 5) };
+  const airAt = (pos) => ({ name: 'air', boundingBox: 'empty', position: pos });
+  bot.findBlock = ({ matching }) => (typeof matching === 'function' && matching(ore) ? ore : null);
+  const state = createState({ currentObjective: 'raw_iron', manualObjective: true });
+
+  // Water right above the ore: the bot looks for another one instead of diving for it
+  bot.blockAt = (pos) => (pos.x === 5 && pos.y === 61 && pos.z === 5 ? { name: 'water', position: pos } : airAt(pos));
+  assert.equal(environment.isBlockSubmerged(bot, ore), true);
+  const search = planner.getDeterministicDecision(bot, state);
+  assert.deepEqual([search.action, search.target], ['explore', 'iron_ore']);
+
+  // The same ore in a dry wall is mined
+  bot.blockAt = airAt;
+  assert.equal(environment.isBlockSubmerged(bot, ore), false);
+  assert.equal(planner.getDeterministicDecision(bot, state).action, 'mine');
+
+  // An ore inside a recorded flooded area is skipped too
+  environment.markFloodedZone(new Vec3(4, 60, 4));
+  assert.equal(planner.getDeterministicDecision(bot, state).action, 'explore');
+  environment.clearFloodedZones();
+
+  // Wading or floating (head out of the water) is reported and handled before any other step
+  const wader = createBot([['oak_log', 3]]);
+  wader.entity.isInWater = true;
+  assert.match(environment.checkTerrainSituation(wader), /Dans l'eau/);
+  const reflex = planner.getDeterministicDecision(wader, createState());
+  assert.equal(reflex.action, 'unstuck');
+
+  // On dry land, unstuck digs through any rock the carried tool breaks quickly, not only soft blocks
+  const miner = createBot();
+  miner.digTime = (block) => (block.name === 'deepslate' ? 2500 : 30000);
+  assert.equal(isDiggableObstacle({ name: 'deepslate', boundingBox: 'block' }, miner), true);
+  assert.equal(isDiggableObstacle({ name: 'obsidian', boundingBox: 'block' }, miner), false);
+  assert.equal(isDiggableObstacle({ name: 'deepslate', boundingBox: 'block' }), false);
+  assert.equal(isDiggableObstacle({ name: 'dirt', boundingBox: 'block' }), true);
 });

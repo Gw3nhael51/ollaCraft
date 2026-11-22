@@ -1,8 +1,9 @@
 const { getRecoveryState } = require('./recovery');
 
-// Oxygen goes from 20 (full) to 0; below this the bot stops whatever it is doing and swims up.
-// At 10 it still has about 7 seconds of air, then roughly 10 seconds of drowning damage before dying.
-const LOW_OXYGEN_LEVEL = 10;
+// Oxygen goes from 20 (full) to 0; below this the bot stops whatever it is doing and heads for air.
+// At 12 it still has about 9 seconds of air, then roughly 10 seconds of drowning damage before dying:
+// enough to swim a route of about twenty blocks out of a flooded gallery.
+const LOW_OXYGEN_LEVEL = 12;
 const SAFE_OXYGEN_LEVEL = 16;
 
 /**

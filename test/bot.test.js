@@ -772,6 +772,8 @@ test('Radar keeps nether_portal, findCastOriginNearLava locates flat site, and w
   waterBot.findBlock = () => ({ name: 'grass_block', position: new Vec3(6, 64, 0) });
   waterBot.pathfinder.goto = async (goal) => {
     goalReached = { x: goal.x, y: goal.y, z: goal.z };
+    // Reaching the shore takes the bot out of the water: unstuck only reports success when that is true
+    waterBot.entity.isInWater = false;
   };
 
   const unstuckRes = await skillUnstuck(waterBot);

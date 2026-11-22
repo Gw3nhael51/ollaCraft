@@ -18,6 +18,8 @@ const PROCEDURE_TIMEOUT_MS = 60000;
 const PROCEDURE_ENVELOPE_TIMEOUT_MS = 75000;
 // Long multi-phase skills need more than the default action budget
 const ACTION_TIMEOUTS_MS = {
+  // Leaving a flooded gallery can mean swimming a long route and breaking blocks under water
+  unstuck: 60000,
   portal: 150000,
   goto: 50000,
   bed: 60000,
