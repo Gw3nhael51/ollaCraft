@@ -214,6 +214,69 @@ function checkTerrainSituation(bot) {
   return "Terrain libre.";
 }
 
+// Natural terrain forming a cave or mine ceiling. Leaves, logs and buildings stand on the surface and never count
+const TERRAIN_CEILING_BLOCKS = new Set([
+  'stone', 'dirt', 'grass_block', 'deepslate', 'granite', 'diorite', 'andesite',
+  'gravel', 'sand', 'sandstone', 'tuff', 'cobblestone', 'cobbled_deepslate', 'netherrack',
+  'calcite', 'dripstone_block', 'clay', 'terracotta', 'red_sand', 'red_sandstone', 'coarse_dirt', 'rooted_dirt'
+]);
+// Below this altitude no tree grows in the Overworld, even under open sky (sea level is 63): pits and ravines count as underground
+const SURFACE_MIN_Y = 58;
+// Highest block of the Overworld
+const WORLD_TOP_Y = 320;
+
+/**
+ * Find the highest natural terrain block in the column above the bot
+ * @param {object} bot Mineflayer bot instance
+ * @param {number} [maxRise] How far above the feet to look (defaults to the top of the world)
+ * @returns {number|null} Altitude of the topmost terrain block above, or null under open sky
+ */
+function findTerrainTopAbove(bot, maxRise = null) {
+  const pos = bot?.entity?.position;
+  if (!pos || typeof bot.blockAt !== 'function') return null;
+  const base = pos.floored();
+  const rise = maxRise ?? WORLD_TOP_Y - base.y;
+  let top = null;
+  for (let dy = 2; dy <= rise; dy++) {
+    const block = bot.blockAt(base.offset(0, dy, 0));
+    if (block && TERRAIN_CEILING_BLOCKS.has(block.name)) top = base.y + dy;
+  }
+  return top;
+}
+
+/**
+ * Check whether solid terrain blocks sit above the bot, indicating an enclosed cave or overhang
+ * @param {object} bot Mineflayer bot instance
+ * @param {number} [maxRise=20] How far above the feet to look
+ * @returns {boolean} True when a terrain ceiling block is found within that height
+ */
+function hasTerrainAbove(bot, maxRise = 20) {
+  return findTerrainTopAbove(bot, maxRise) !== null;
+}
+
+/**
+ * Tell whether the bot is cut off from the surface of the Overworld: under a rock ceiling (cave, mine)
+ * or deep in a pit or ravine where no tree or animal can be found
+ * @param {object} bot Mineflayer bot instance
+ * @returns {boolean} True when surface resources require climbing back up first
+ */
+function isBelowSurface(bot) {
+  const pos = bot?.entity?.position;
+  if (!pos) return false;
+  if (pos.y < SURFACE_MIN_Y) return true;
+  return findTerrainTopAbove(bot) !== null;
+}
+
+/**
+ * Estimate the altitude where the bot will stand once out of its cave or mine
+ * @param {object} bot Mineflayer bot instance
+ * @returns {number} Surface altitude estimate
+ */
+function estimateSurfaceY(bot) {
+  const top = findTerrainTopAbove(bot);
+  return top === null ? SURFACE_MIN_Y + 4 : top + 1;
+}
+
 /**
  * Count living entities (passive and hostile mobs) close to the bot
  * @param {object} bot Mineflayer bot instance
@@ -308,5 +371,10 @@ module.exports = {
   markFloodedZone,
   isInFloodedZone,
   clearFloodedZones,
+  findTerrainTopAbove,
+  hasTerrainAbove,
+  isBelowSurface,
+  estimateSurfaceY,
+  SURFACE_MIN_Y,
   VALUABLE_ORES
 };

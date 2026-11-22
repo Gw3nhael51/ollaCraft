@@ -2,14 +2,19 @@ const crypto = require('node:crypto');
 const { Vec3 } = require('vec3');
 const { goals } = require('mineflayer-pathfinder');
 const config = require('../../../infrastructure/config');
-const { getBestToolForBlock, isWoodLog, hasToolType } = require('../../../perception/inventory');
-const { isBadBlock } = require('../../../perception/environment');
+const { getBestToolForBlock, isWoodLog, isPlanks, hasToolType } = require('../../../perception/inventory');
+const { isBadBlock, hasTerrainAbove, isBelowSurface, estimateSurfaceY } = require('../../../perception/environment');
 const { markLavaClusterBad } = require('../world/portal');
 const { getOreDepthHint } = require('../../../minecraft/knowledge');
 const { escapeWater, isInLiquid } = require('./water');
 
-// Exploration hints naming creatures that only live on the surface
-const SURFACE_TARGETS = new Set(['sheep', 'chicken', 'cow', 'pig', 'spider', 'enderman', 'wool', 'feather', 'string']);
+// Exploration hints naming creatures that only live on the surface (trees are recognized separately)
+const SURFACE_TARGETS = new Set(['sheep', 'chicken', 'cow', 'pig', 'spider', 'enderman', 'wool', 'feather', 'string', 'sapling', 'apple']);
+// Height gained per pathfinder leg while climbing out of a mine
+const SURFACE_CLIMB_LEG = 12;
+const SURFACE_CLIMB_LEG_MAX_MS = 16000;
+// Shortest time worth starting a climbing leg with: digging a single stair step already takes a few seconds
+const MIN_CLIMB_LEG_MS = 5000;
 
 // Longest time worth spending on one block while digging a way out of a hole
 const UNSTUCK_DIG_LIMIT_MS = 7000;
@@ -469,43 +474,31 @@ async function walkForwardBurst(bot, headingRad, ticks = 35) {
   return Math.hypot(endPos.x - startPos.x, endPos.z - startPos.z) >= 1;
 }
 
-const TERRAIN_CEILING_BLOCKS = new Set([
-  'stone', 'dirt', 'grass_block', 'deepslate', 'granite', 'diorite', 'andesite',
-  'gravel', 'sand', 'sandstone', 'tuff', 'cobblestone', 'cobbled_deepslate', 'netherrack'
-]);
-
 /**
  * Check whether solid terrain blocks sit above the bot, indicating an enclosed cave or overhang
  * @param {object} bot Mineflayer bot instance
  * @returns {boolean} True when a solid terrain ceiling block is detected within 20 blocks above
  */
 function hasSolidCeilingAbove(bot) {
-  if (!bot.entity?.position || typeof bot.blockAt !== 'function') return false;
-  const basePos = bot.entity.position.floored();
-  for (let dy = 2; dy <= 20; dy++) {
-    const block = bot.blockAt(basePos.offset(0, dy, 0));
-    if (block && TERRAIN_CEILING_BLOCKS.has(block.name)) {
-      return true;
-    }
-  }
-  return false;
+  return hasTerrainAbove(bot, 20);
 }
 
 /**
  * Attempt to climb upwards toward surface elevation when deep underground
  * @param {object} bot Mineflayer bot instance
  * @param {number} [timeoutMs=14000] Maximum ascent wait in milliseconds
+ * @param {number|null} [goalY=null] Altitude to reach (defaults to ten blocks higher, at most Y:72)
  * @returns {Promise<boolean>} True if ascent succeeded
  */
-async function trySurfaceAscent(bot, timeoutMs = 14000) {
+async function trySurfaceAscent(bot, timeoutMs = 14000, goalY = null) {
   if (!bot.entity?.position || !goals.GoalY) return false;
   let navTimer = null;
   let gotoPromise = null;
   const startX = bot.entity.position.x;
   const startZ = bot.entity.position.z;
   try {
-    const targetY = Math.min(72, Math.round(bot.entity.position.y) + 10);
-    console.log(`[EXPLORE] Underground path blocked; climbing towards Y:${targetY}...`);
+    const targetY = goalY ?? Math.min(72, Math.round(bot.entity.position.y) + 10);
+    console.log(`[EXPLORE] Climbing towards Y:${targetY}...`);
     gotoPromise = bot.pathfinder.goto(new goals.GoalY(targetY));
     const timeoutPromise = new Promise((_, reject) => {
       navTimer = setTimeout(() => reject(new Error("Surface ascent timeout")), timeoutMs);
@@ -528,6 +521,41 @@ async function trySurfaceAscent(bot, timeoutMs = 14000) {
     bot.pathfinder.setGoal(null);
     bot.clearControlStates();
   }
+}
+
+/**
+ * Climb out of a mine or a cave leg by leg, through existing galleries or by digging a staircase,
+ * until the sky is open or the time budget runs out
+ * @param {object} bot Mineflayer bot instance
+ * @param {number} budgetMs Time the whole climb may take
+ * @returns {Promise<{ risen: number, surfaced: boolean }>} Height gained and whether the bot is back on the surface
+ */
+async function climbTowardsSurface(bot, budgetMs) {
+  const deadline = Date.now() + budgetMs;
+  const startY = bot.entity.position.y;
+  let legStartY = startY;
+
+  while (isBelowSurface(bot) && deadline - Date.now() >= MIN_CLIMB_LEG_MS) {
+    // Short legs keep each path search fast; the last one stops at the estimated surface instead of overshooting it
+    const legGoalY = Math.min(Math.floor(legStartY) + SURFACE_CLIMB_LEG, Math.max(Math.floor(legStartY) + 2, estimateSurfaceY(bot)));
+    await trySurfaceAscent(bot, Math.min(SURFACE_CLIMB_LEG_MAX_MS, deadline - Date.now()), legGoalY);
+    const nowY = bot.entity.position.y;
+    // A leg that gained nothing will not do better on a second try: let the caller search another way
+    if (nowY < legStartY + 2) break;
+    legStartY = nowY;
+  }
+
+  return { risen: bot.entity.position.y - startY, surfaced: !isBelowSurface(bot) };
+}
+
+/**
+ * Tell whether an exploration target is only found on the surface (trees, animals, wood products)
+ * @param {string} cleanTarget Normalized exploration target
+ * @returns {boolean} True when the bot must be on the surface to find it
+ */
+function isSurfaceTarget(cleanTarget) {
+  if (!cleanTarget) return false;
+  return SURFACE_TARGETS.has(cleanTarget) || isWoodLog(cleanTarget) || isPlanks(cleanTarget) || cleanTarget === 'stick';
 }
 
 /**
@@ -679,9 +707,20 @@ async function skillExplore(bot, state = null, target = null) {
     }
   }
 
-  // Animals and most mobs are on the surface: climb out of caves before searching for them
-  if (inOverworld && SURFACE_TARGETS.has(cleanTarget) && isUnderground && remainingMs() >= 15000 && await trySurfaceAscent(bot, 14000)) {
-    return { success: true, message: `Climbed towards the surface to look for '${cleanTarget}'.` };
+  // Trees and animals only exist on the surface: from the bottom of a mine or a cave, wandering through the
+  // galleries finds nothing, so climb back up (through the existing tunnels or by digging a staircase) first
+  if (inOverworld && isSurfaceTarget(cleanTarget) && isBelowSurface(bot) && remainingMs() >= MIN_CLIMB_LEG_MS + 2000) {
+    const ascent = await climbTowardsSurface(bot, remainingMs() - 2000);
+    if (ascent.risen >= 2) {
+      const nowY = Math.round(bot.entity.position.y);
+      return {
+        success: true,
+        message: ascent.surfaced
+          ? `Back on the surface (Y:${nowY}) to look for '${cleanTarget}'.`
+          : `Climbed ${Math.round(ascent.risen)} blocks towards the surface to look for '${cleanTarget}' (now Y:${nowY}, keep climbing).`
+      };
+    }
+    console.warn(`[EXPLORE] Could not climb towards the surface from Y:${Math.round(bot.entity.position.y)}; exploring the galleries instead.`);
   }
 
   let attemptedAscent = false;
@@ -801,6 +840,8 @@ module.exports = {
   findNearestDryLand,
   moveExploreStep,
   hasSolidCeilingAbove,
+  climbTowardsSurface,
+  isSurfaceTarget,
   hasDropAhead,
   getHeadingAwayFromSpawn,
   headingToMineflayerYaw,

@@ -1,6 +1,6 @@
 const config = require('../infrastructure/config');
 const invUtils = require('../perception/inventory');
-const { checkTerrainSituation, isBadBlock, isBlockSubmerged, isInFloodedZone } = require('../perception/environment');
+const { checkTerrainSituation, isBadBlock, isBlockSubmerged, isInFloodedZone, isBelowSurface } = require('../perception/environment');
 const { resolveGoalPlan } = require('../minecraft/knowledge');
 const { getBlockNamesForTarget, canHarvestBlock } = require('../minecraft/wikiData');
 const { getDimension, getWaypoint, saveWaypoint, horizontalDistanceTo, isInsideProtectedSpawn } = require('../core/progress');
@@ -15,6 +15,8 @@ const LIQUID_TARGETS = new Set(['water', 'lava']);
 const CRAFT_ANYWHERE_OBJECTIVES = new Set(['blaze_powder', 'ender_eye']);
 const FORTRESS_BLOCKS = ['spawner', 'nether_bricks', 'nether_brick_fence'];
 const UNSAFE_FOODS = new Set(['rotten_flesh', 'spider_eye', 'poisonous_potato', 'pufferfish', 'chorus_fruit']);
+// Underground, a log higher than this above the feet is on the surface behind rock: climbing out beats pathing to it
+const UNDERGROUND_WOOD_MAX_RISE = 6;
 
 /**
  * Build a decision object in the format executed by the ReAct loop
@@ -77,9 +79,10 @@ function findNearestEntity(bot, name, maxDistance = 28) {
  * @param {string} targetName Resource or block name
  * @param {number} [maxDistance=30] Search radius
  * @param {boolean} [allowSubmerged=false] Accept blocks under water or in a flooded area (liquids themselves)
+ * @param {Function|null} [accept=null] Extra condition on the block position
  * @returns {boolean} True if such a block exists nearby
  */
-function isBlockNearby(bot, targetName, maxDistance = 30, allowSubmerged = false) {
+function isBlockNearby(bot, targetName, maxDistance = 30, allowSubmerged = false, accept = null) {
   if (typeof bot.findBlock !== 'function') return false;
   const names = new Set(getBlockNamesForTarget(bot, targetName));
   return Boolean(bot.findBlock({
@@ -87,11 +90,35 @@ function isBlockNearby(bot, targetName, maxDistance = 30, allowSubmerged = false
       if (!block?.name || !names.has(block.name)) return false;
       if (!block.position) return true;
       if (isBadBlock(block.position)) return false;
+      if (accept && !accept(block)) return false;
       // A block the bot would have to dive for does not count: it looks for a dry one elsewhere
       return allowSubmerged || !(isBlockSubmerged(bot, block) || isInFloodedZone(block.position));
     },
     maxDistance
   }));
+}
+
+/**
+ * Decide how to get wood: chop a tree in reach, otherwise go find one, climbing out of the mine first when underground.
+ * From the bottom of a mine a tree "within 30 blocks" stands on the surface far above, behind solid rock.
+ * @param {object} bot Mineflayer bot instance
+ * @param {string} target Wood target ('log' or a specific log)
+ * @param {number} qty Number of logs wanted
+ * @param {string} reason Explanation logged when a tree is in reach
+ * @returns {object} Mine or explore decision
+ */
+function decideWoodGathering(bot, target, qty, reason) {
+  const feetY = bot.entity?.position?.y ?? 0;
+  const underground = getDimension(bot) === 'overworld' && isBelowSurface(bot);
+  // Underground, only a log at about the bot's own level is worth walking to (a tree at the mouth of the cave)
+  const withinReach = underground ? (block) => Math.abs(block.position.y - feetY) <= UNDERGROUND_WOOD_MAX_RISE : null;
+  if (isBlockNearby(bot, target, 30, false, withinReach)) {
+    return makeDecision('mine', target, Math.min(qty, 3), reason);
+  }
+  if (underground) {
+    return makeDecision('explore', target, 1, `Sous terre (Y:${Math.round(feetY)}) : aucun arbre ici, je remonte à la surface pour chercher du bois.`);
+  }
+  return makeDecision('explore', target, 1, `Aucun '${target}' chargé à portée : exploration ciblée.`);
 }
 
 /**
@@ -289,9 +316,7 @@ function adaptPlanStep(bot, step) {
 
     case 'smelt':
       if (!hasFuel(bot)) {
-        return isBlockNearby(bot, 'log')
-          ? makeDecision('mine', 'log', 2, 'Aucun combustible pour le four : je coupe du bois.')
-          : makeDecision('explore', 'log', 1, 'Aucun combustible ni arbre à portée : exploration.');
+        return decideWoodGathering(bot, 'log', 2, 'Aucun combustible pour le four : je coupe du bois.');
       }
       return makeDecision('smelt', step.target, step.qty, step.reason);
 
@@ -301,7 +326,10 @@ function adaptPlanStep(bot, step) {
           ? makeDecision('mine', step.target, 1, step.reason)
           : makeDecision('explore', step.target, 1, `Aucune source de '${step.target}' à portée : exploration.`);
       }
-      if (step.target !== 'log' && !canHarvestBlock(bot, step.target).canHarvest) return null;
+      if (invUtils.isWoodLog(step.target)) {
+        return decideWoodGathering(bot, step.target, step.qty, step.reason);
+      }
+      if (!canHarvestBlock(bot, step.target).canHarvest) return null;
       if (isBlockNearby(bot, step.target)) {
         return makeDecision('mine', step.target, Math.min(step.qty, 3), step.reason);
       }

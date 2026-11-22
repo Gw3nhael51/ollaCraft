@@ -34,7 +34,7 @@ const { handleBreath, LOW_OXYGEN_LEVEL } = require('../src/agent/watchdog');
 const { getBlockNamesForTarget } = require('../src/minecraft/wikiData');
 const water = require('../src/actions/behaviors/movement/water');
 const environment = require('../src/perception/environment');
-const { skillUnstuck, isDiggableObstacle } = require('../src/actions/behaviors/movement/navigate');
+const { skillUnstuck, isDiggableObstacle, skillExplore, isSurfaceTarget } = require('../src/actions/behaviors/movement/navigate');
 
 /**
  * Give a bot a rule-based voxel world and a minimal swimming simulation driven by its control states,
@@ -1447,4 +1447,115 @@ test('Submerged blocks are not mining targets, and standing in water is a reason
   assert.equal(isDiggableObstacle({ name: 'obsidian', boundingBox: 'block' }, miner), false);
   assert.equal(isDiggableObstacle({ name: 'deepslate', boundingBox: 'block' }), false);
   assert.equal(isDiggableObstacle({ name: 'dirt', boundingBox: 'block' }), true);
+});
+
+test('Objective chain jumps over tiers the inventory has already made pointless', () => {
+  const objectiveOf = (bot, state = createState()) => {
+    invUtils.syncObjective(bot, state);
+    return state.currentObjective;
+  };
+
+  // Nothing to shortcut with: the chain order stands
+  assert.equal(objectiveOf(createBot()), 'wooden_pickaxe');
+  assert.equal(objectiveOf(createBot([['oak_log', 3]])), 'wooden_pickaxe');
+  // Stone without any wood: a log has to be chopped anyway, the wooden pickaxe stays the first step
+  assert.equal(objectiveOf(createBot([['cobblestone', 3]])), 'wooden_pickaxe');
+
+  // Wood and stone: the stone pickaxe is crafted directly, the wooden tools are skipped
+  const said = [];
+  const woodAndStone = createBot([['oak_log', 3], ['cobblestone', 3]]);
+  woodAndStone.chat = (message) => said.push(message);
+  const state = createState();
+  assert.equal(objectiveOf(woodAndStone, state), 'stone_pickaxe');
+  assert.match(said.join('\n'), /je saute wooden_pickaxe/);
+  const steps = resolveGoalPlan(woodAndStone, 'stone_pickaxe', 1, state).steps.map(step => `${step.action}:${step.target}`);
+  assert.equal(steps.includes('craft:wooden_pickaxe'), false);
+  assert.ok(steps.every(step => step.startsWith('craft:')));
+  const firstStep = planner.getDeterministicDecision(woodAndStone, state);
+  assert.deepEqual([firstStep.action, firstStep.target], ['craft', 'planks']);
+
+  // Deepslate from a deep mine is stone as well
+  assert.equal(objectiveOf(createBot([['oak_log', 3], ['cobbled_deepslate', 5]])), 'stone_pickaxe');
+  assert.equal(invUtils.isQuestDone(createBot([['cobbled_deepslate', 3]]), 'cobblestone', createState()), true);
+
+  // Iron ingots and wood: straight to the iron pickaxe, past every stone-age step
+  assert.equal(objectiveOf(createBot([['oak_log', 3], ['iron_ingot', 3]])), 'iron_pickaxe');
+  assert.equal(objectiveOf(createBot([['oak_log', 3], ['cobblestone', 3], ['iron_ingot', 3]])), 'iron_pickaxe');
+
+  // Gear of another kind is never skipped: the sword is still crafted before the shield
+  assert.equal(objectiveOf(createBot([['iron_pickaxe', 1], ['iron_ingot', 3], ['stick', 2], ['oak_planks', 6]])), 'iron_sword');
+
+  // The what-if plans leave the real memory untouched
+  const furnaceState = createState({ base: { crafting_table: null, furnace: { x: 9, y: 64, z: 9 }, chest: null } });
+  objectiveOf(createBot([['iron_pickaxe', 1], ['iron_sword', 1], ['shield', 1], ['iron_ingot', 1]]), furnaceState);
+  assert.deepEqual(furnaceState.base.furnace, { x: 9, y: 64, z: 9 });
+
+  // A player asking for cobblestone gets real cobblestone, not deepslate
+  const manualBot = createBot([['stone_pickaxe', 1], ['cobbled_deepslate', 10]]);
+  const manualState = createState({ currentObjective: 'cobblestone', manualObjective: true, manualObjectiveQty: 5 });
+  invUtils.syncObjective(manualBot, manualState);
+  assert.equal(manualState.manualObjective, true);
+  assert.deepEqual(resolveGoalPlan(manualBot, 'cobblestone', 5, manualState).steps.map(step => step.action), ['mine']);
+});
+
+test('Wood is searched on the surface: from the bottom of a mine the bot climbs back up first', async () => {
+  const logAt = (x, y, z) => ({ name: 'oak_log', type: mcData.blocksByName.oak_log.id, position: new Vec3(x, y, z) });
+  const withLogs = (bot, logs) => {
+    bot.findBlock = ({ matching, maxDistance = 16 }) => logs.find(block => (
+      block.position.distanceTo(bot.entity.position) <= maxDistance &&
+      (typeof matching === 'function' ? matching(block) : matching === block.type)
+    )) || null;
+  };
+
+  // Deep in a mine, a tree 30 blocks overhead is behind solid rock: climb out instead of pathing to it
+  const miner = createBot([['stone_pickaxe', 1]], { position: new Vec3(0, -20, 0) });
+  withLogs(miner, [logAt(4, 8, 2)]);
+  assert.equal(environment.isBelowSurface(miner), true);
+  const climb = planner.getDeterministicDecision(miner, createState({ currentObjective: 'wooden_pickaxe' }));
+  assert.deepEqual([climb.action, climb.target], ['explore', 'log']);
+  assert.match(climb.thought, /remonte à la surface/);
+
+  // A log at the bot's own level (a tree at the mouth of the cave) is still chopped directly
+  withLogs(miner, [logAt(3, -19, 1)]);
+  assert.equal(planner.getDeterministicDecision(miner, createState({ currentObjective: 'wooden_pickaxe' })).action, 'mine');
+
+  // On the surface the usual search applies
+  const walker = createBot();
+  assert.equal(environment.isBelowSurface(walker), false);
+  withLogs(walker, [logAt(10, 66, 4)]);
+  assert.equal(planner.getDeterministicDecision(walker, createState()).action, 'mine');
+  withLogs(walker, []);
+  const search = planner.getDeterministicDecision(walker, createState());
+  assert.deepEqual([search.action, search.target], ['explore', 'log']);
+  assert.doesNotMatch(search.thought, /surface/);
+
+  // Underground also means under a rock ceiling above sea level, or deep in a pit open to the sky
+  const caver = createBot([], { position: new Vec3(0, 70, 0) });
+  caver.blockAt = (pos) => ({ name: pos.y === 76 ? 'stone' : 'air', position: pos });
+  assert.equal(environment.isBelowSurface(caver), true);
+  caver.blockAt = (pos) => ({ name: pos.y === 76 ? 'oak_leaves' : 'air', position: pos });
+  assert.equal(environment.isBelowSurface(caver), false);
+  assert.equal(environment.isBelowSurface(createBot([], { position: new Vec3(0, 30, 0) })), true);
+
+  assert.equal(isSurfaceTarget('log'), true);
+  assert.equal(isSurfaceTarget('oak_log'), true);
+  assert.equal(isSurfaceTarget('sheep'), true);
+  assert.equal(isSurfaceTarget('diamond'), false);
+
+  // The exploration climbs leg by leg until the sky is open, without overshooting the surface
+  const climber = createBot([['stone_pickaxe', 1]], { position: new Vec3(0, 20, 0) });
+  climber.blockAt = (pos) => ({ name: pos.y <= 70 ? 'stone' : 'air', position: pos });
+  const legs = [];
+  climber.pathfinder = {
+    goto: async (goal) => {
+      legs.push(goal.y);
+      climber.entity.position = new Vec3(0, goal.y, 0);
+    },
+    setGoal() {}
+  };
+  const result = await skillExplore(climber, createState(), 'log');
+  assert.equal(result.success, true);
+  assert.match(result.message, /Back on the surface \(Y:71\)/);
+  assert.deepEqual(legs, [32, 44, 56, 68, 71]);
+  assert.equal(environment.isBelowSurface(climber), false);
 });

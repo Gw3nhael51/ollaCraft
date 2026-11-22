@@ -643,7 +643,7 @@ function tryAssignPickaxeRecovery(bot) {
   if (invUtils.hasToolType(bot, '_pickaxe') || typeof bot.inventory?.items !== 'function') return false;
 
   const ironCount = invUtils.countItem(bot, 'iron_ingot');
-  const cobbleCount = invUtils.countItem(bot, 'cobblestone');
+  const cobbleCount = invUtils.countBestStoneStack(bot);
   if (ironCount < 3 && cobbleCount < 3) return false;
 
   const items = bot.inventory.items();

@@ -360,7 +360,10 @@ function hasPlacedStation(bot, state, stationName) {
  */
 function countUsable(bot, name) {
   // Une recette prend toutes ses planches dans une seule essence : des restes mélangés ne s'additionnent pas
-  return invUtils.GENERIC_PLANK_NAMES.has(name) ? invUtils.countBestPlankStack(bot) : invUtils.countItem(bot, name);
+  if (invUtils.GENERIC_PLANK_NAMES.has(name)) return invUtils.countBestPlankStack(bot);
+  // Outils en pierre et fourneau acceptent aussi la deepslate ou la blackstone (une seule sorte par recette)
+  if (name === 'cobblestone') return invUtils.countBestStoneStack(bot);
+  return invUtils.countItem(bot, name);
 }
 
 /**
@@ -483,7 +486,8 @@ function resolveGoalPlan(bot, targetObjective, requiredQty = 1, state = null) {
     };
   }
 
-  const virtualInventory = new Map();
+  // The target itself is counted literally: substitutes (other stones, mixed planks) only stand in for ingredients
+  const virtualInventory = new Map([[cleanTarget, owned]]);
   const steps = [];
   collectDependencySteps(bot, cleanTarget, requiredQty, state, virtualInventory, new Set(), steps);
 

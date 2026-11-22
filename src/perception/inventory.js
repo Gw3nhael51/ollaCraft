@@ -323,8 +323,25 @@ function getQuestRequirement(bot, state, questName) {
   return config.QUEST_AMOUNT[questName] || 1;
 }
 
+// Stone tools and the furnace accept cobblestone, cobbled deepslate or blackstone (a single kind per recipe)
+const STONE_TOOL_MATERIALS = ['cobblestone', 'cobbled_deepslate', 'blackstone'];
+
+/**
+ * Count the largest stock of one stone material usable for stone tools and the furnace
+ * @param {object} bot Mineflayer bot instance
+ * @returns {number} Best single-kind stone stock
+ */
+function countBestStoneStack(bot) {
+  return Math.max(...STONE_TOOL_MATERIALS.map(name => countItem(bot, name)));
+}
+
 // Equivalent items or conditions that directly satisfy a specific quest
 const QUEST_EQUIVALENTS = {
+  // The chain only wants stone for stone tools: deepslate from a deep mine serves as well.
+  // A player asking for cobblestone explicitly gets real cobblestone.
+  cobblestone: (bot, state) => (
+    state?.manualObjective && state.currentObjective === 'cobblestone' ? countItem(bot, 'cobblestone') : countBestStoneStack(bot)
+  ),
   raw_iron: ['raw_iron', 'iron_ore'],
   bucket: ['bucket', 'water_bucket', 'lava_bucket'],
   blaze_rod: (bot) => countBlazeRodEquivalent(bot),
@@ -405,6 +422,71 @@ function isQuestDone(bot, questName, state) {
     .some(laterQuest => !SIDE_QUESTS.has(laterQuest) && isQuestDirectlyMet(bot, laterQuest, state));
 }
 
+/**
+ * Tell whether obtaining a later quest makes a pending one pointless: a lower tier of the same tool,
+ * or a plain stepping stone (cobblestone, furnace, raw_iron...) that only matters on the way to later quests
+ * @param {string} questName Pending quest
+ * @param {string} laterQuest Later quest of the chain
+ * @returns {boolean} True if the pending quest can be skipped once the later one is obtained
+ */
+function isQuestSupersededBy(questName, laterQuest) {
+  for (const tierList of Object.values(TOOL_TIERS)) {
+    const lowerIndex = tierList.indexOf(questName);
+    if (lowerIndex !== -1) return tierList.indexOf(laterQuest) > lowerIndex;
+  }
+  if (PERSISTENT_GEAR_QUESTS.has(questName) || STRICT_RESOURCE_QUESTS.has(questName) || SPAWN_BED_QUESTS.has(questName)) {
+    return false;
+  }
+  // Same rule as isQuestDone: a side quest says nothing about earlier quests
+  return !SIDE_QUESTS.has(laterQuest);
+}
+
+/**
+ * Check whether the inventory already holds everything a quest needs, so that only crafting remains
+ * @param {object} bot Mineflayer bot instance
+ * @param {object} state Global bot state
+ * @param {string} questName Quest to check
+ * @returns {boolean} True if the dependency plan of the quest is made of crafts only
+ */
+function isQuestCraftableNow(bot, state, questName) {
+  // Loaded lazily: the knowledge module depends on this one
+  const { getItemKnowledge, resolveGoalPlan } = require('../minecraft/knowledge');
+  if (getItemKnowledge(bot, questName).method !== 'craft') return false;
+  // A what-if plan must not touch the real memory (station lookups forget furnaces or tables they cannot see)
+  const sandbox = { ...state, base: { ...(state?.base || {}) } };
+  const plan = resolveGoalPlan(bot, questName, getQuestRequirement(bot, sandbox, questName), sandbox);
+  return plan.steps.length > 0 && plan.steps.every(step => step.action === 'craft');
+}
+
+/**
+ * Look past the first pending quest for the furthest later quest the inventory already allows to craft outright,
+ * every quest in between being made pointless by it. With wood and cobblestone, the stone pickaxe is crafted
+ * directly instead of going through the wooden one; with iron ingots, the iron pickaxe skips both.
+ * @param {object} bot Mineflayer bot instance
+ * @param {object} state Global bot state
+ * @param {Set<string>} done Quests already done
+ * @param {number} pendingIndex Chain index of the first pending quest
+ * @returns {string|null} Quest to pursue instead, or null when the chain order stands
+ */
+function findShortcutObjective(bot, state, done, pendingIndex) {
+  const chain = config.QUEST_CHAIN;
+  let shortcut = null;
+  for (let i = pendingIndex + 1; i < chain.length; i++) {
+    const candidate = chain[i];
+    if (done.has(candidate) || SIDE_QUESTS.has(candidate)) continue;
+    const skipped = chain.slice(pendingIndex, i).filter(name => !done.has(name));
+    if (!skipped.every(name => isQuestSupersededBy(name, candidate))) continue;
+    try {
+      if (isQuestCraftableNow(bot, state, candidate)) shortcut = candidate;
+    } catch (error) {
+      // Partial world or registry data: keep the plain chain order
+      console.warn(`[OBJECTIVE] Shortcut check failed for '${candidate}':`, error.message);
+      return shortcut;
+    }
+  }
+  return shortcut;
+}
+
 // The crafting table is portable (carried, deployed, then collected): only fixed stations are memorized
 const BASE_STATION_NAMES = ['furnace', 'chest'];
 
@@ -451,16 +533,22 @@ function syncObjective(bot, state) {
     }
   }
 
+  const done = new Set(config.QUEST_CHAIN.filter(name => isQuestDone(bot, name, state)));
   if (state.completedQuests) {
     state.completedQuests.clear();
-    for (const name of config.QUEST_CHAIN) {
-      if (isQuestDone(bot, name, state)) {
-        state.completedQuests.add(name);
-      }
-    }
+    done.forEach(name => state.completedQuests.add(name));
   }
 
-  let nextObjective = config.QUEST_CHAIN.find(name => !state.completedQuests?.has(name)) || config.QUEST_CHAIN.at(-1);
+  const pendingIndex = config.QUEST_CHAIN.findIndex(name => !done.has(name));
+  let nextObjective = pendingIndex === -1 ? config.QUEST_CHAIN.at(-1) : config.QUEST_CHAIN[pendingIndex];
+
+  // Jump over steps the inventory has already made pointless instead of replaying them in order
+  let skippedQuests = [];
+  const shortcut = pendingIndex === -1 ? null : findShortcutObjective(bot, state, done, pendingIndex);
+  if (shortcut) {
+    skippedQuests = config.QUEST_CHAIN.slice(pendingIndex, config.QUEST_CHAIN.indexOf(shortcut)).filter(name => !done.has(name));
+    nextObjective = shortcut;
+  }
 
   // Nothing else can be pursued inside the End: the only way out is defeating the dragon
   if (getDimension(bot) === 'the_end' && !hasMilestone(state, 'dragon_defeated')) {
@@ -475,10 +563,13 @@ function syncObjective(bot, state) {
     state.currentObjective = nextObjective;
 
     if (previousObjective && previousObjective !== nextObjective) {
-      bot.chat(`🚀 NOUVEAU PALIER : ${state.currentObjective}`);
+      const jumped = nextObjective === shortcut && skippedQuests.length > 0;
+      const skipNote = jumped ? ` (j'ai déjà de quoi le fabriquer : je saute ${skippedQuests.join(', ')})` : '';
+      bot.chat(`🚀 NOUVEAU PALIER : ${state.currentObjective}${skipNote}`);
+      const previousStatus = jumped && skippedQuests.includes(previousObjective) ? 'inutile' : 'terminé';
       state.lastActionResult = {
         ...state.lastActionResult,
-        message: `${state.lastActionResult.message} | Palier '${previousObjective}' terminé. NOUVEL objectif : obtenir '${state.currentObjective}'.`
+        message: `${state.lastActionResult?.message || ''} | Palier '${previousObjective}' ${previousStatus}. NOUVEL objectif : obtenir '${state.currentObjective}'${skipNote}.`
       };
     }
   }
@@ -763,6 +854,9 @@ module.exports = {
   getAvailableCrafts,
   getCarriedItems,
   countBestPlankStack,
+  countBestStoneStack,
+  STONE_TOOL_MATERIALS,
+  findShortcutObjective,
   getBestWoolStack,
   resolveBedTarget,
   findBedItem,

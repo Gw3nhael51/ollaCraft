@@ -40,6 +40,13 @@ function getStoneHint(bot, objectiveName = '') {
   if (objectiveName === 'nether_portal') {
     return "Pour 'nether_portal', ne perds pas de temps à fabriquer une pioche : explore ('explore' cible 'lava') pour trouver un lac de lave puis utilise 'portal'.";
   }
+  // Skip the tiers the inventory has already made pointless
+  if (invUtils.countItem(bot, 'iron_ingot') >= 3) {
+    return "Tu n'as AUCUNE pioche mais tu as déjà 3 lingots de fer : fabrique directement une 'iron_pickaxe' (inutile de repasser par le bois ou la pierre).";
+  }
+  if (invUtils.countBestStoneStack(bot) >= 3) {
+    return "Tu n'as AUCUNE pioche mais tu as déjà de la pierre : fabrique directement une 'stone_pickaxe' (inutile de repasser par une pioche en bois).";
+  }
   return "Tu n'as AUCUNE pioche. Casser de la pierre sans pioche ne donne rien : fabrique d'abord une 'wooden_pickaxe'.";
 }
 
