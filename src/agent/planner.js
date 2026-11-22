@@ -5,6 +5,7 @@ const { resolveGoalPlan } = require('../minecraft/knowledge');
 const { getBlockNamesForTarget, canHarvestBlock } = require('../minecraft/wikiData');
 const { getDimension, getWaypoint, saveWaypoint, horizontalDistanceTo, isInsideProtectedSpawn } = require('../core/progress');
 const { isActionBlocked, getFailureEntry, buildRemedyDecision, MAX_REMEDY_ROUNDS } = require('./recovery');
+const { findHuntTarget } = require('../actions/behaviors/combat/combat');
 
 // Returned by a stage rule to hand the decision over to the Manager rules or the LLM
 const DEFER = Symbol('defer');
@@ -337,6 +338,11 @@ function adaptPlanStep(bot, step) {
     }
 
     case 'hunt':
+      // Same filter as the hunt skill: lambs, sheared sheep and animals found unreachable do not count
+      return findHuntTarget(bot, step.target)
+        ? makeDecision('hunt', step.target, 1, step.reason)
+        : makeDecision('explore', step.target, 1, `Aucun '${step.target}' chassable en vue : exploration pour trouver un autre troupeau.`);
+
     case 'fight':
       return findNearestEntity(bot, step.target)
         ? makeDecision(step.action, step.target, 1, step.reason)

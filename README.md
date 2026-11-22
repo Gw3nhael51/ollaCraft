@@ -259,7 +259,7 @@ The ReAct loop provides the LLM with structured actions formatted in JSON:
 | `place` | `target: string` | Places a block from inventory on safe, valid adjacent ground (`furnace`, `chest`). A manually placed `crafting_table` is tracked and collected as soon as the bot moves on. |
 | `smelt` | `target: string, qty?: number` | Approaches a furnace, loads fuel (coal/charcoal/wood), and smelts raw ores or food. |
 | `chest` | *None* | Navigates to a nearby chest and deposits bulky materials (excess dirt, cobblestone, mob drops). |
-| `hunt` | `target?: string` | Hunts nearby passive animals (`cow`, `pig`, `sheep`, `chicken`) to gather food. |
+| `hunt` | `target?: string` | Hunts nearby passive animals (`cow`, `pig`, `sheep`, `chicken`) for food or materials, then walks onto the dropped items to pick them up. Babies, sheared sheep and animals found unreachable (for 3 min) are skipped; `sheep` and `chicken` are never replaced by another species, and sheep of the wool color already carried come first (a bed needs three of one color). |
 | `fight` | `target?: string` | Engages nearby hostile mobs (`zombie`, `skeleton`, `spider`, `blaze`) with best weapon and armor. |
 | `equip` | `target?: string` | Equips best available armor pieces and places the shield in the off-hand slot. |
 | `portal` | *None* | Detects active `nether_portal` blocks as well as complete unlit or partial obsidian frames on X/Z axes, fills `water_bucket`, casts or completes frames via water-cascade lava mold or carried obsidian, clears doorway obstructions, ignites with `flint_and_steel`, sets the spawn bed next to the portal, memorizes both portal sides and enters `the_nether`. From the Nether, target `overworld` walks back to the memorized portal and returns. |

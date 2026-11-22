@@ -35,6 +35,7 @@ const { getBlockNamesForTarget } = require('../src/minecraft/wikiData');
 const water = require('../src/actions/behaviors/movement/water');
 const environment = require('../src/perception/environment');
 const { skillUnstuck, isDiggableObstacle, skillExplore, isSurfaceTarget } = require('../src/actions/behaviors/movement/navigate');
+const combat = require('../src/actions/behaviors/combat/combat');
 
 /**
  * Give a bot a rule-based voxel world and a minimal swimming simulation driven by its control states,
@@ -1558,4 +1559,97 @@ test('Wood is searched on the surface: from the bottom of a mine the bot climbs 
   assert.match(result.message, /Back on the surface \(Y:71\)/);
   assert.deepEqual(legs, [32, 44, 56, 68, 71]);
   assert.equal(environment.isBelowSurface(climber), false);
+});
+
+test('Bed quest: sheep hunting picks real wool sources, picks the wool up and ends with the bed craft', async () => {
+  combat.clearUnreachableTargets();
+  const keys = mcData.entitiesByName.sheep.metadataKeys;
+  const metadataOf = ({ baby = false, color = 0, sheared = false }) => {
+    const metadata = [];
+    metadata[keys.indexOf('baby')] = baby;
+    metadata[keys.indexOf('wool')] = color | (sheared ? 0x10 : 0);
+    return metadata;
+  };
+  let nextId = 1;
+  const animal = (name, x, z, wool = {}) => ({
+    id: nextId++, name, isValid: true, height: 1.3, position: new Vec3(x, 64, z), metadata: name === 'sheep' ? metadataOf(wool) : []
+  });
+  const portalReady = [...IRON_GEAR, ['flint_and_steel', 1], ['water_bucket', 1]];
+
+  // Lambs and sheared sheep drop no wool: the bot looks for another herd instead of killing them
+  const bot = createBot(portalReady);
+  const state = createState();
+  invUtils.syncObjective(bot, state);
+  assert.equal(state.currentObjective, 'bed');
+  const lamb = animal('sheep', 4, 0, { baby: true });
+  const shorn = animal('sheep', 6, 0, { sheared: true });
+  const cow = animal('cow', 2, 0);
+  bot.entities = { [lamb.id]: lamb, [shorn.id]: shorn, [cow.id]: cow };
+  const search = planner.getDeterministicDecision(bot, state);
+  assert.deepEqual([search.action, search.target], ['explore', 'sheep']);
+
+  // Wool only comes from sheep: the cow standing next to the bot is left alone
+  bot.attack = (entity) => { entity.isValid = false; };
+  const noSheep = await combat.skillHunt(bot, 'sheep');
+  assert.equal(noSheep.success, false);
+  assert.equal(cow.isValid, true);
+  assert.match(noSheep.message, /No huntable 'sheep'/);
+
+  // An adult sheep is hunted, and the bot walks onto the dropped wool so it really lands in the inventory
+  const ewe = animal('sheep', 3, 1, { color: 0 });
+  bot.entities[ewe.id] = ewe;
+  assert.deepEqual(
+    [planner.getDeterministicDecision(bot, state).action, planner.getDeterministicDecision(bot, state).target],
+    ['hunt', 'sheep']
+  );
+  const drops = [];
+  bot.attack = (entity) => {
+    entity.isValid = false;
+    const drop = { id: nextId++, name: 'item', isValid: true, position: entity.position.offset(1.4, 0, 0.6), item: 'white_wool' };
+    bot.entities[drop.id] = drop;
+    drops.push(drop);
+  };
+  bot.pathfinder.goto = async (goal) => {
+    const drop = drops.find(item => item.isValid && Math.floor(item.position.x) === goal.x && Math.floor(item.position.z) === goal.z);
+    if (!drop) return;
+    bot.entity.position = drop.position.clone();
+    drop.isValid = false;
+    bot.give(drop.item, 1);
+  };
+  const hunted = await combat.skillHunt(bot, 'sheep');
+  assert.equal(hunted.success, true);
+  assert.match(hunted.message, /\+1 white_wool/);
+  assert.equal(invUtils.countItem(bot, 'wool'), 1);
+
+  // A sheep killed without its wool picked up is reported as a failure, not as progress
+  const lonely = animal('sheep', 2, 2, { color: 0 });
+  bot.entities = { [lonely.id]: lonely };
+  bot.attack = (entity) => { entity.isValid = false; };
+  const lostWool = await combat.skillHunt(bot, 'sheep');
+  assert.equal(lostWool.success, false);
+  assert.match(lostWool.message, /wool was not picked up/);
+
+  // A bed needs three wool of one color: a sheep of the color already collected is worth the longer walk
+  const collector = createBot([['black_wool', 2]]);
+  const whiteNear = animal('sheep', 3, 0, { color: 0 });
+  const blackFar = animal('sheep', 20, 0, { color: 15 });
+  collector.entities = { [whiteNear.id]: whiteNear, [blackFar.id]: blackFar };
+  assert.equal(combat.findHuntTarget(collector, 'sheep'), blackFar);
+  assert.equal(combat.getSheepWool(collector, blackFar).color, 'black');
+
+  // A sheep that could not be reached is skipped for a while
+  combat.markUnreachableTarget(blackFar);
+  assert.equal(combat.findHuntTarget(collector, 'sheep'), whiteNear);
+  combat.clearUnreachableTargets();
+
+  // Three wool of one color and planks: the next step is the bed craft, and the bed completes the quest
+  const crafter = createBot([...portalReady, ['white_wool', 3], ['oak_planks', 3], ['crafting_table', 1]]);
+  const craftState = createState();
+  invUtils.syncObjective(crafter, craftState);
+  assert.equal(craftState.currentObjective, 'bed');
+  const craft = planner.getDeterministicDecision(crafter, craftState);
+  assert.deepEqual([craft.action, craft.target], ['craft', 'bed']);
+  crafter.give('white_bed', 1);
+  invUtils.syncObjective(crafter, craftState);
+  assert.equal(craftState.currentObjective, 'nether_portal');
 });
