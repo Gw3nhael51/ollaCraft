@@ -1,8 +1,11 @@
 const config = require('../infrastructure/config');
 const { syncAdvancementsWithInventory } = require('./advancements');
+const { getDimension, getWaypoint, hasMilestone } = require('../core/progress');
 
 const GENERIC_LOG_NAMES = new Set(['log', 'logs', 'wood', 'bois', 'buche', 'buches', 'bûche', 'bûches', 'tree', 'arbre']);
 const GENERIC_PLANK_NAMES = new Set(['planks', 'plank', 'planche', 'planches']);
+const GENERIC_WOOL_NAMES = new Set(['wool', 'laine']);
+const GENERIC_BED_NAMES = new Set(['bed', 'beds', 'lit', 'end_bed']);
 const WOOD_TYPES = [
   'dark_oak', 'oak', 'spruce', 'birch', 'jungle', 'acacia', 'mangrove', 'cherry', 'bamboo', 'crimson', 'warped'
 ];
@@ -16,7 +19,9 @@ function isWoodLog(name) {
   if (!name || typeof name !== 'string') return false;
   const clean = name.toLowerCase().trim();
   if (GENERIC_LOG_NAMES.has(clean)) return true;
-  return clean.endsWith('_log') || clean.endsWith('_wood') || clean.endsWith('_stem') || clean.endsWith('_hyphae');
+  if (clean.endsWith('_log') || clean.endsWith('_wood') || clean.endsWith('_hyphae')) return true;
+  // Only the Nether fungi have wooden stems: 'big_dripleaf_stem', 'mushroom_stem' or 'pumpkin_stem' give no wood
+  return /(^|_)(crimson|warped)_stem$/.test(clean);
 }
 
 /**
@@ -29,6 +34,28 @@ function isPlanks(name) {
   const clean = name.toLowerCase().trim();
   if (GENERIC_PLANK_NAMES.has(clean)) return true;
   return clean.endsWith('_planks');
+}
+
+/**
+ * Check whether an item name corresponds to wool of any color
+ * @param {string} name Item or block name
+ * @returns {boolean} True if wool
+ */
+function isWool(name) {
+  if (!name || typeof name !== 'string') return false;
+  const clean = name.toLowerCase().trim();
+  return GENERIC_WOOL_NAMES.has(clean) || clean.endsWith('_wool');
+}
+
+/**
+ * Check whether an item name corresponds to a bed of any color
+ * @param {string} name Item or block name
+ * @returns {boolean} True if bed
+ */
+function isBed(name) {
+  if (!name || typeof name !== 'string') return false;
+  const clean = name.toLowerCase().trim();
+  return GENERIC_BED_NAMES.has(clean) || clean.endsWith('_bed');
 }
 
 /**
@@ -124,7 +151,73 @@ function countItem(bot, name) {
     return allSlots.filter(item => isPlanks(item.name)).reduce((sum, item) => sum + item.count, 0);
   }
 
+  // A bed recipe needs three wool of the same color: report the largest single-color stock
+  if (GENERIC_WOOL_NAMES.has(clean)) {
+    return getBestWoolStack(bot)?.count || 0;
+  }
+
+  // Sum beds of every color for generic bed query
+  if (GENERIC_BED_NAMES.has(clean)) {
+    return allSlots.filter(item => isBed(item.name)).reduce((sum, item) => sum + item.count, 0);
+  }
+
   return allSlots.filter(item => item.name === clean).reduce((sum, item) => sum + item.count, 0);
+}
+
+/**
+ * Count the planks of the wood type carried in the largest quantity.
+ * A recipe takes all its planks from one wood type: 2 oak + 2 birch planks cannot make a crafting table.
+ * @param {object} bot Mineflayer bot instance
+ * @returns {number} Size of the largest single-type plank stock
+ */
+function countBestPlankStack(bot) {
+  const totals = new Map();
+  for (const item of getCarriedItems(bot)) {
+    if (item.name.endsWith('_planks')) {
+      totals.set(item.name, (totals.get(item.name) || 0) + item.count);
+    }
+  }
+  return totals.size > 0 ? Math.max(...totals.values()) : 0;
+}
+
+/**
+ * Find the wool color carried in the largest quantity
+ * @param {object} bot Mineflayer bot instance
+ * @returns {{ name: string, color: string, count: number }|null} Best wool stock or null
+ */
+function getBestWoolStack(bot) {
+  const totals = new Map();
+  for (const item of getCarriedItems(bot)) {
+    if (item.name.endsWith('_wool')) {
+      totals.set(item.name, (totals.get(item.name) || 0) + item.count);
+    }
+  }
+  let best = null;
+  for (const [name, count] of totals.entries()) {
+    if (!best || count > best.count) {
+      best = { name, color: name.slice(0, -'_wool'.length), count };
+    }
+  }
+  return best;
+}
+
+/**
+ * Resolve the concrete bed item to craft according to the wool color carried
+ * @param {object} bot Mineflayer bot instance
+ * @returns {string} Bed item name (e.g. 'white_bed')
+ */
+function resolveBedTarget(bot) {
+  const wool = getBestWoolStack(bot);
+  return wool ? `${wool.color}_bed` : 'white_bed';
+}
+
+/**
+ * Find a bed item currently carried in the inventory
+ * @param {object} bot Mineflayer bot instance
+ * @returns {object|null} Bed item or null
+ */
+function findBedItem(bot) {
+  return getCarriedItems(bot).find(item => item.name.endsWith('_bed')) || null;
 }
 
 /**
@@ -164,17 +257,107 @@ const TOOL_TIERS = {
 // Quests requiring the item (or a higher tool tier) to remain in inventory
 const PERSISTENT_GEAR_QUESTS = new Set([
   'wooden_pickaxe', 'stone_pickaxe', 'iron_pickaxe', 'iron_sword', 'shield',
-  'iron_helmet', 'iron_chestplate', 'iron_leggings', 'iron_boots'
+  'iron_helmet', 'iron_chestplate', 'iron_leggings', 'iron_boots', 'bow'
 ]);
+
+// Quests about setting a respawn point: never skipped by the portal-ready shortcut
+const SPAWN_BED_QUESTS = new Set(['bed', 'end_bed']);
+
+// Side quests whose completion says nothing about earlier quests (a looted bow must not skip the Nether)
+const SIDE_QUESTS = new Set(['bed', 'end_bed', 'bow', 'arrow']);
+
+// Quests fully described by their own rule: a known stronghold must not hide lost eyes, arrows or a missing bed
+const STRICT_RESOURCE_QUESTS = new Set([
+  'bed', 'nether_portal', 'blaze_rod', 'blaze_powder', 'ender_pearl', 'ender_eye', 'arrow', 'end_bed'
+]);
+
+/**
+ * Count blaze rods already owned or already turned into powder and eyes
+ * @param {object} bot Mineflayer bot instance
+ * @returns {number} Blaze rod equivalent
+ */
+function countBlazeRodEquivalent(bot) {
+  return countItem(bot, 'blaze_rod') + Math.ceil((countItem(bot, 'blaze_powder') + countItem(bot, 'ender_eye')) / 2);
+}
+
+/**
+ * Tell whether the Nether has nothing left to give: enough blaze rods (or what they became) are owned
+ * @param {object} bot Mineflayer bot instance
+ * @param {object|null} state Global bot state
+ * @returns {boolean} True if no more blaze rods are needed
+ */
+function isNetherStageComplete(bot, state) {
+  return countBlazeRodEquivalent(bot) >= getQuestRequirement(bot, state, 'blaze_rod');
+}
+
+/**
+ * Compute how many Eyes of Ender are still required: remaining triangulation throws plus empty portal frames
+ * @param {object|null} state Global bot state
+ * @returns {number} Number of eyes the bot must own right now
+ */
+function getEyeRequirement(state) {
+  const frameCount = config.END_PORTAL_FRAME_COUNT;
+  const filled = Math.min(frameCount, state?.endPortal?.filledCount || 0);
+  const throwsDone = state?.stronghold?.throws?.length || 0;
+  const throwsLeft = state?.stronghold?.located ? 0 : Math.max(0, config.EYE_TRIANGULATION_THROWS - throwsDone);
+  return Math.max(0, frameCount - filled) + throwsLeft;
+}
+
+/**
+ * Return the quantity required to validate a quest, honoring manual objectives and dynamic eye needs
+ * @param {object} bot Mineflayer bot instance
+ * @param {object|null} state Global bot state
+ * @param {string} questName Objective name
+ * @returns {number} Required quantity
+ */
+function getQuestRequirement(bot, state, questName) {
+  if (state?.manualObjective && state.currentObjective === questName) {
+    return Math.max(1, state.manualObjectiveQty || 1);
+  }
+  if (questName === 'ender_eye' || questName === 'ender_pearl' || questName === 'blaze_powder') {
+    return getEyeRequirement(state);
+  }
+  if (questName === 'blaze_rod') {
+    return Math.ceil(getEyeRequirement(state) / 2);
+  }
+  return config.QUEST_AMOUNT[questName] || 1;
+}
+
+// Stone tools and the furnace accept cobblestone, cobbled deepslate or blackstone (a single kind per recipe)
+const STONE_TOOL_MATERIALS = ['cobblestone', 'cobbled_deepslate', 'blackstone'];
+
+/**
+ * Count the largest stock of one stone material usable for stone tools and the furnace
+ * @param {object} bot Mineflayer bot instance
+ * @returns {number} Best single-kind stone stock
+ */
+function countBestStoneStack(bot) {
+  return Math.max(...STONE_TOOL_MATERIALS.map(name => countItem(bot, name)));
+}
 
 // Equivalent items or conditions that directly satisfy a specific quest
 const QUEST_EQUIVALENTS = {
+  // The chain only wants stone for stone tools: deepslate from a deep mine serves as well.
+  // A player asking for cobblestone explicitly gets real cobblestone.
+  cobblestone: (bot, state) => (
+    state?.manualObjective && state.currentObjective === 'cobblestone' ? countItem(bot, 'cobblestone') : countBestStoneStack(bot)
+  ),
   raw_iron: ['raw_iron', 'iron_ore'],
   bucket: ['bucket', 'water_bucket', 'lava_bucket'],
-  blaze_rod: (bot) => countItem(bot, 'blaze_rod') + Math.ceil((countItem(bot, 'blaze_powder') + countItem(bot, 'ender_eye')) / 2),
+  blaze_rod: (bot) => countBlazeRodEquivalent(bot),
   blaze_powder: (bot) => countItem(bot, 'blaze_powder') + countItem(bot, 'ender_eye'),
   ender_pearl: (bot) => countItem(bot, 'ender_pearl') + countItem(bot, 'ender_eye'),
-  nether_portal: (bot) => (bot.game?.dimension === 'the_nether' ? 1 : 0)
+  // The Nether trip is needed exactly as long as blaze rods are missing
+  nether_portal: (bot, state) => (getDimension(bot) === 'the_nether' || isNetherStageComplete(bot, state) ? 1 : 0),
+  // The first spawn bed matters until the Nether stage is over; later the stronghold bed takes its place
+  bed: (bot, state) => (
+    countItem(bot, 'bed') > 0 || getWaypoint(state, 'spawn_bed') || getWaypoint(state, 'end_spawn_bed') ||
+    getDimension(bot) !== 'overworld' || isNetherStageComplete(bot, state) ? 1 : 0
+  ),
+  end_bed: (bot, state) => (countItem(bot, 'bed') > 0 || getWaypoint(state, 'end_spawn_bed') ? 1 : 0),
+  stronghold: (bot, state) => ((state?.stronghold?.located && state.stronghold.reached) || getWaypoint(state, 'end_portal') ? 1 : 0),
+  end_portal: (bot, state) => (getDimension(bot) === 'the_end' || hasMilestone(state, 'dragon_defeated') ? 1 : 0),
+  ender_dragon: (bot, state) => (hasMilestone(state, 'dragon_defeated') ? 1 : 0)
 };
 
 /**
@@ -192,15 +375,21 @@ function isQuestDirectlyMet(bot, questName, state) {
     }
   }
 
-  if (questName === 'furnace' || questName === 'crafting_table') {
+  if (questName === 'crafting_table') {
+    return countItem(bot, questName) > 0 || Boolean(findNearbyCraftingTable(bot, state));
+  }
+
+  if (questName === 'furnace') {
     const nearby = bot.findBlock({ matching: bot.registry.blocksByName[questName]?.id, maxDistance: 32 });
     return countItem(bot, questName) > 0 || Boolean(state?.base?.[questName]) || Boolean(nearby);
   }
 
-  const required = config.QUEST_AMOUNT[questName] || 1;
+  if (SPAWN_BED_QUESTS.has(questName) && !config.REQUIRE_SPAWN_BED) return true;
+
+  const required = getQuestRequirement(bot, state, questName);
   const rule = QUEST_EQUIVALENTS[questName];
 
-  if (typeof rule === 'function') return rule(bot) >= required;
+  if (typeof rule === 'function') return rule(bot, state) >= required;
   if (Array.isArray(rule)) return rule.some(item => countItem(bot, item) >= required);
 
   return countItem(bot, questName) >= required;
@@ -220,18 +409,86 @@ function isQuestDone(bot, questName, state) {
   const portalIndex = config.QUEST_CHAIN.indexOf('nether_portal');
   const isPortalReady = isQuestDirectlyMet(bot, 'flint_and_steel', state)
     && (isQuestDirectlyMet(bot, 'water_bucket', state) || countItem(bot, 'obsidian') >= 10);
-  if (isPortalReady && questIndex !== -1 && portalIndex !== -1 && questIndex < portalIndex) {
+  if (isPortalReady && questIndex !== -1 && portalIndex !== -1 && questIndex < portalIndex && !SPAWN_BED_QUESTS.has(questName)) {
     return true;
   }
 
-  if (PERSISTENT_GEAR_QUESTS.has(questName)) return false;
+  if (PERSISTENT_GEAR_QUESTS.has(questName) || STRICT_RESOURCE_QUESTS.has(questName)) return false;
 
   if (questIndex === -1) return false;
 
-  return config.QUEST_CHAIN.slice(questIndex + 1).some(laterQuest => isQuestDirectlyMet(bot, laterQuest, state));
+  return config.QUEST_CHAIN
+    .slice(questIndex + 1)
+    .some(laterQuest => !SIDE_QUESTS.has(laterQuest) && isQuestDirectlyMet(bot, laterQuest, state));
 }
 
-const BASE_STATION_NAMES = ['crafting_table', 'furnace', 'chest'];
+/**
+ * Tell whether obtaining a later quest makes a pending one pointless: a lower tier of the same tool,
+ * or a plain stepping stone (cobblestone, furnace, raw_iron...) that only matters on the way to later quests
+ * @param {string} questName Pending quest
+ * @param {string} laterQuest Later quest of the chain
+ * @returns {boolean} True if the pending quest can be skipped once the later one is obtained
+ */
+function isQuestSupersededBy(questName, laterQuest) {
+  for (const tierList of Object.values(TOOL_TIERS)) {
+    const lowerIndex = tierList.indexOf(questName);
+    if (lowerIndex !== -1) return tierList.indexOf(laterQuest) > lowerIndex;
+  }
+  if (PERSISTENT_GEAR_QUESTS.has(questName) || STRICT_RESOURCE_QUESTS.has(questName) || SPAWN_BED_QUESTS.has(questName)) {
+    return false;
+  }
+  // Same rule as isQuestDone: a side quest says nothing about earlier quests
+  return !SIDE_QUESTS.has(laterQuest);
+}
+
+/**
+ * Check whether the inventory already holds everything a quest needs, so that only crafting remains
+ * @param {object} bot Mineflayer bot instance
+ * @param {object} state Global bot state
+ * @param {string} questName Quest to check
+ * @returns {boolean} True if the dependency plan of the quest is made of crafts only
+ */
+function isQuestCraftableNow(bot, state, questName) {
+  // Loaded lazily: the knowledge module depends on this one
+  const { getItemKnowledge, resolveGoalPlan } = require('../minecraft/knowledge');
+  if (getItemKnowledge(bot, questName).method !== 'craft') return false;
+  // A what-if plan must not touch the real memory (station lookups forget furnaces or tables they cannot see)
+  const sandbox = { ...state, base: { ...(state?.base || {}) } };
+  const plan = resolveGoalPlan(bot, questName, getQuestRequirement(bot, sandbox, questName), sandbox);
+  return plan.steps.length > 0 && plan.steps.every(step => step.action === 'craft');
+}
+
+/**
+ * Look past the first pending quest for the furthest later quest the inventory already allows to craft outright,
+ * every quest in between being made pointless by it. With wood and cobblestone, the stone pickaxe is crafted
+ * directly instead of going through the wooden one; with iron ingots, the iron pickaxe skips both.
+ * @param {object} bot Mineflayer bot instance
+ * @param {object} state Global bot state
+ * @param {Set<string>} done Quests already done
+ * @param {number} pendingIndex Chain index of the first pending quest
+ * @returns {string|null} Quest to pursue instead, or null when the chain order stands
+ */
+function findShortcutObjective(bot, state, done, pendingIndex) {
+  const chain = config.QUEST_CHAIN;
+  let shortcut = null;
+  for (let i = pendingIndex + 1; i < chain.length; i++) {
+    const candidate = chain[i];
+    if (done.has(candidate) || SIDE_QUESTS.has(candidate)) continue;
+    const skipped = chain.slice(pendingIndex, i).filter(name => !done.has(name));
+    if (!skipped.every(name => isQuestSupersededBy(name, candidate))) continue;
+    try {
+      if (isQuestCraftableNow(bot, state, candidate)) shortcut = candidate;
+    } catch (error) {
+      // Partial world or registry data: keep the plain chain order
+      console.warn(`[OBJECTIVE] Shortcut check failed for '${candidate}':`, error.message);
+      return shortcut;
+    }
+  }
+  return shortcut;
+}
+
+// The crafting table is portable (carried, deployed, then collected): only fixed stations are memorized
+const BASE_STATION_NAMES = ['furnace', 'chest'];
 
 /**
  * Discover and memorize nearby placed base stations if not already recorded in state
@@ -260,18 +517,43 @@ function syncObjective(bot, state) {
   syncAdvancementsWithInventory(bot, state);
   syncBaseStations(bot, state);
 
-  if (state.manualObjective) return;
+  if (state.manualObjective) {
+    if (!isQuestDirectlyMet(bot, state.currentObjective, state)) return;
 
-  if (state.completedQuests) {
-    state.completedQuests.clear();
-    for (const name of config.QUEST_CHAIN) {
-      if (isQuestDone(bot, name, state)) {
-        state.completedQuests.add(name);
-      }
+    // Hand control back to the automatic chain once the user-requested objective is obtained
+    const finishedObjective = state.currentObjective;
+    state.manualObjective = false;
+    state.manualObjectiveQty = 1;
+    bot.chat?.(`✅ Objectif '${finishedObjective}' atteint. Reprise de la progression automatique.`);
+    if (state.lastActionResult) {
+      state.lastActionResult = {
+        ...state.lastActionResult,
+        message: `${state.lastActionResult.message} | Objectif manuel '${finishedObjective}' atteint.`
+      };
     }
   }
 
-  const nextObjective = config.QUEST_CHAIN.find(name => !state.completedQuests?.has(name)) || config.QUEST_CHAIN.at(-1);
+  const done = new Set(config.QUEST_CHAIN.filter(name => isQuestDone(bot, name, state)));
+  if (state.completedQuests) {
+    state.completedQuests.clear();
+    done.forEach(name => state.completedQuests.add(name));
+  }
+
+  const pendingIndex = config.QUEST_CHAIN.findIndex(name => !done.has(name));
+  let nextObjective = pendingIndex === -1 ? config.QUEST_CHAIN.at(-1) : config.QUEST_CHAIN[pendingIndex];
+
+  // Jump over steps the inventory has already made pointless instead of replaying them in order
+  let skippedQuests = [];
+  const shortcut = pendingIndex === -1 ? null : findShortcutObjective(bot, state, done, pendingIndex);
+  if (shortcut) {
+    skippedQuests = config.QUEST_CHAIN.slice(pendingIndex, config.QUEST_CHAIN.indexOf(shortcut)).filter(name => !done.has(name));
+    nextObjective = shortcut;
+  }
+
+  // Nothing else can be pursued inside the End: the only way out is defeating the dragon
+  if (getDimension(bot) === 'the_end' && !hasMilestone(state, 'dragon_defeated')) {
+    nextObjective = 'ender_dragon';
+  }
 
   if (nextObjective !== state.currentObjective) {
     const previousObjective = state.currentObjective;
@@ -281,10 +563,13 @@ function syncObjective(bot, state) {
     state.currentObjective = nextObjective;
 
     if (previousObjective && previousObjective !== nextObjective) {
-      bot.chat(`🚀 NOUVEAU PALIER : ${state.currentObjective}`);
+      const jumped = nextObjective === shortcut && skippedQuests.length > 0;
+      const skipNote = jumped ? ` (j'ai déjà de quoi le fabriquer : je saute ${skippedQuests.join(', ')})` : '';
+      bot.chat(`🚀 NOUVEAU PALIER : ${state.currentObjective}${skipNote}`);
+      const previousStatus = jumped && skippedQuests.includes(previousObjective) ? 'inutile' : 'terminé';
       state.lastActionResult = {
         ...state.lastActionResult,
-        message: `${state.lastActionResult.message} | Palier '${previousObjective}' terminé. NOUVEL objectif : obtenir '${state.currentObjective}'.`
+        message: `${state.lastActionResult?.message || ''} | Palier '${previousObjective}' ${previousStatus}. NOUVEL objectif : obtenir '${state.currentObjective}'${skipNote}.`
       };
     }
   }
@@ -314,47 +599,53 @@ function getInventorySummary(bot) {
 }
 
 /**
- * Locate a placed crafting table within reach or remembered in base state
+ * Locate the crafting table usable right now: the deployed portable table or one within arm's reach.
+ * The bot never walks back to a remembered table: it carries its own and redeploys it where it stands.
  * @param {object} bot Mineflayer bot instance
  * @param {object} [state] Global bot state
- * @param {number} [maxDistance] Maximum detection distance
+ * @param {number} [maxDistance] Maximum detection distance for an already placed table
  * @returns {object|null} Located crafting table block or null
  */
-function findNearbyCraftingTable(bot, state, maxDistance = config.CRAFTING_TABLE_RANGE) {
-  const tableId = bot.registry?.blocksByName?.crafting_table?.id;
-  const nearby = tableId ? bot.findBlock({ matching: tableId, maxDistance }) : null;
-  if (nearby) {
-    if (state?.base && !state.base.crafting_table && nearby.position) {
-      state.base.crafting_table = nearby.position.clone ? nearby.position.clone() : nearby.position;
+function findNearbyCraftingTable(bot, state, maxDistance = config.PORTABLE_TABLE_REUSE_RANGE) {
+  const deployedPos = state?.deployedTable;
+  if (deployedPos) {
+    const deployedBlock = typeof bot.blockAt === 'function' ? bot.blockAt(deployedPos) : null;
+    const distance = bot.entity?.position?.distanceTo ? bot.entity.position.distanceTo(deployedPos) : 0;
+    if (distance > config.CRAFTING_TABLE_RANGE) {
+      // The bot was dragged away before collecting it (timeout, emergency): abandon it rather than walk back
+      state.deployedTable = null;
+    } else if (deployedBlock?.name === 'crafting_table') {
+      return deployedBlock.position ? deployedBlock : { ...deployedBlock, position: deployedPos };
+    } else if (deployedBlock) {
+      // Forget the deployment once the block is confirmed gone (unloaded chunks return null and are kept)
+      state.deployedTable = null;
     }
-    return nearby;
-  }
-  if (!state?.base?.crafting_table) return null;
-
-  const basePos = state.base.crafting_table;
-  const baseTableBlock = bot.blockAt(basePos);
-  if (!baseTableBlock) return null;
-
-  // Clear remembered base coordinate if crafting table is no longer present
-  if (baseTableBlock.name !== 'crafting_table') {
-    state.base.crafting_table = null;
-    return null;
   }
 
-  const targetPos = baseTableBlock.position || basePos;
-  const dist = bot.entity?.position?.distanceTo ? bot.entity.position.distanceTo(targetPos) : 0;
-  return dist <= maxDistance ? baseTableBlock : null;
+  const tableId = bot.registry?.blocksByName?.crafting_table?.id;
+  if (!tableId || typeof bot.findBlock !== 'function') return null;
+  return bot.findBlock({ matching: tableId, maxDistance }) || null;
+}
+
+/**
+ * Check whether a 3x3 craft can be performed without any extra step (table in reach or carried)
+ * @param {object} bot Mineflayer bot instance
+ * @param {object} [state] Global bot state
+ * @returns {boolean} True if a crafting table is usable or can be deployed immediately
+ */
+function hasCraftingTableAccess(bot, state) {
+  return countItem(bot, 'crafting_table') > 0 || Boolean(findNearbyCraftingTable(bot, state));
 }
 
 /**
  * Resolve craft availability label for a single item
  * @param {object} bot Mineflayer bot instance
  * @param {string} itemName Item name to evaluate
- * @param {object|null} craftingTable Placed crafting table block if available
- * @param {object|null} dummyTable Virtual or placed table for recipe lookup
+ * @param {boolean} hasTableAccess Whether a crafting table is placed nearby or carried
+ * @param {object} virtualTable Virtual or placed table used for 3x3 recipe lookup
  * @returns {string|null} Craftable label or null if not craftable
  */
-function resolveCraftEntry(bot, itemName, craftingTable, dummyTable) {
+function resolveCraftEntry(bot, itemName, hasTableAccess, virtualTable) {
   const itemDefinition = bot.registry.itemsByName[itemName];
   if (!itemDefinition) return null;
 
@@ -362,8 +653,8 @@ function resolveCraftEntry(bot, itemName, craftingTable, dummyTable) {
     return itemName;
   }
 
-  if (dummyTable && bot.recipesFor(itemDefinition.id, null, 1, dummyTable).length > 0) {
-    return craftingTable ? itemName : `${itemName} (nécessite de poser ton établi d'abord)`;
+  if (bot.recipesFor(itemDefinition.id, null, 1, virtualTable).length > 0) {
+    return hasTableAccess ? itemName : `${itemName} (nécessite un établi : fabrique d'abord 'crafting_table')`;
   }
 
   return null;
@@ -383,14 +674,23 @@ function getAvailableCrafts(bot, craftingTable) {
     'stone_pickaxe', 'stone_axe', 'stone_sword', 'stone_shovel',
     'iron_pickaxe', 'iron_axe', 'iron_sword', 'iron_shovel', 'shield',
     'iron_helmet', 'iron_chestplate', 'iron_leggings', 'iron_boots',
-    'flint_and_steel', 'blaze_powder', 'ender_eye'
+    'flint_and_steel', 'blaze_powder', 'ender_eye', 'bow', 'arrow',
+    'diamond_pickaxe', 'diamond_sword'
   ];
-  const hasTableInInv = countItem(bot, 'crafting_table') > 0;
-  const dummyTable = craftingTable || (hasTableInInv ? { type: bot.registry.blocksByName['crafting_table']?.id, name: 'crafting_table' } : null);
+  // The table is portable: carrying one is as good as having one placed, 'craft' deploys it automatically
+  const hasTableAccess = Boolean(craftingTable) || countItem(bot, 'crafting_table') > 0;
+  const virtualTable = craftingTable || { type: bot.registry.blocksByName['crafting_table']?.id, name: 'crafting_table' };
 
   const availableCrafts = targetItemsToCheck
-    .map(itemName => resolveCraftEntry(bot, itemName, craftingTable, dummyTable))
+    .map(itemName => resolveCraftEntry(bot, itemName, hasTableAccess, virtualTable))
     .filter(Boolean);
+
+  // Expose the bed under its generic name whatever the wool color carried
+  const bedTarget = resolveBedTarget(bot);
+  const bedEntry = resolveCraftEntry(bot, bedTarget, hasTableAccess, virtualTable);
+  if (bedEntry) {
+    availableCrafts.push(bedEntry.replace(bedTarget, 'bed'));
+  }
 
   // Provide generic planks craft option if any wood plank variety is available
   if (availableCrafts.some(craft => isPlanks(craft)) && !availableCrafts.includes('planks')) {
@@ -538,14 +838,30 @@ function getBestToolForBlock(bot, block) {
 module.exports = {
   GENERIC_LOG_NAMES,
   GENERIC_PLANK_NAMES,
+  GENERIC_WOOL_NAMES,
+  GENERIC_BED_NAMES,
   countItem,
   hasToolType,
   getOwnedTools,
   isQuestDone,
+  isQuestDirectlyMet,
+  getQuestRequirement,
+  getEyeRequirement,
   syncObjective,
   getInventorySummary,
   findNearbyCraftingTable,
+  hasCraftingTableAccess,
   getAvailableCrafts,
+  getCarriedItems,
+  countBestPlankStack,
+  countBestStoneStack,
+  STONE_TOOL_MATERIALS,
+  findShortcutObjective,
+  getBestWoolStack,
+  resolveBedTarget,
+  findBedItem,
+  isWool,
+  isBed,
   getBestToolForBlock,
   isToolOrWeapon,
   isWoodLog,

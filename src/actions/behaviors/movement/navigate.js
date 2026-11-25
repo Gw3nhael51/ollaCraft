@@ -2,38 +2,43 @@ const crypto = require('node:crypto');
 const { Vec3 } = require('vec3');
 const { goals } = require('mineflayer-pathfinder');
 const config = require('../../../infrastructure/config');
-const { getBestToolForBlock, isWoodLog, hasToolType } = require('../../../perception/inventory');
-const { isBadBlock } = require('../../../perception/environment');
+const { getBestToolForBlock, isWoodLog, isPlanks, hasToolType } = require('../../../perception/inventory');
+const { isBadBlock, hasTerrainAbove, isBelowSurface, estimateSurfaceY } = require('../../../perception/environment');
 const { markLavaClusterBad } = require('../world/portal');
+const { getOreDepthHint } = require('../../../minecraft/knowledge');
+const { escapeWater, isInLiquid } = require('./water');
+
+// Exploration hints naming creatures that only live on the surface (trees are recognized separately)
+const SURFACE_TARGETS = new Set(['sheep', 'chicken', 'cow', 'pig', 'spider', 'enderman', 'wool', 'feather', 'string', 'sapling', 'apple']);
+// Height gained per pathfinder leg while climbing out of a mine
+const SURFACE_CLIMB_LEG = 12;
+const SURFACE_CLIMB_LEG_MAX_MS = 16000;
+// Shortest time worth starting a climbing leg with: digging a single stair step already takes a few seconds
+const MIN_CLIMB_LEG_MS = 5000;
+
+// Longest time worth spending on one block while digging a way out of a hole
+const UNSTUCK_DIG_LIMIT_MS = 7000;
 
 /**
  * Check whether an adjacent block can be dug quickly during an unstuck maneuver
  * @param {object|null} block Candidate block
+ * @param {object|null} [bot=null] Mineflayer bot instance; when given, the real dig time with the carried tools decides
  * @returns {boolean} True if block can be broken to escape
  */
-function isDiggableObstacle(block) {
+function isDiggableObstacle(block, bot = null) {
   if (!block?.name) return false;
   if (config.SOFT_BLOCKS.has(block.name)) return true;
-  return block.name.endsWith('_leaves') || isWoodLog(block.name);
-}
+  if (block.name.endsWith('_leaves') || isWoodLog(block.name)) return true;
 
-/**
- * Swim upwards recursively to reach water surface
- * @param {object} bot Mineflayer bot instance
- * @param {number} startTime Swimming start timestamp
- * @param {number} maxDurationMs Maximum swimming duration in milliseconds
- * @returns {Promise<void>}
- */
-async function swimUpwardsStep(bot, startTime, maxDurationMs) {
-  if (Date.now() - startTime >= maxDurationMs) return;
-
-  await bot.waitForTicks(5);
-  const currentEye = bot.blockAt(bot.entity.position.offset(0, 1, 0));
-  if (!currentEye || (currentEye.name !== 'water' && currentEye.name !== 'flowing_water')) {
-    return;
+  // With a pickaxe in the pocket, deepslate, andesite or ore walls are no obstacle either
+  if (bot && typeof bot.digTime === 'function' && block.boundingBox === 'block' && block.diggable !== false) {
+    try {
+      return bot.digTime(block) <= UNSTUCK_DIG_LIMIT_MS;
+    } catch {
+      return false;
+    }
   }
-
-  await swimUpwardsStep(bot, startTime, maxDurationMs);
+  return false;
 }
 
 /**
@@ -72,14 +77,14 @@ async function findAndDigEscapeRoute(bot, cardinals, index) {
   const sideEyeBlock = bot.blockAt(bot.entity.position.plus(dir).offset(0, 1, 0));
   const sideFeetBlock = bot.blockAt(bot.entity.position.plus(dir));
 
-  if (isDiggableObstacle(sideEyeBlock)) {
+  if (isDiggableObstacle(sideEyeBlock, bot)) {
     console.log(`[UNSTUCK] Passable wall found in direction (${dir.x}, ${dir.y}, ${dir.z}) : ${sideEyeBlock.name}. Digging escape path...`);
     try {
       const eyeTool = getBestToolForBlock(bot, sideEyeBlock);
       if (eyeTool) await bot.equip(eyeTool, 'hand').catch(() => {});
       await digWithTimeout(bot, sideEyeBlock, 8000);
 
-      if (isDiggableObstacle(sideFeetBlock)) {
+      if (isDiggableObstacle(sideFeetBlock, bot)) {
         const feetTool = getBestToolForBlock(bot, sideFeetBlock);
         if (feetTool) await bot.equip(feetTool, 'hand').catch(() => {});
         await digWithTimeout(bot, sideFeetBlock, 8000);
@@ -169,24 +174,22 @@ async function skillUnstuck(bot) {
   console.log("[UNSTUCK] Launching unstuck procedure.");
   bot.clearControlStates();
 
-  const eyeBlock = bot.blockAt(bot.entity.position.offset(0, 1, 0));
-  const isUnderwater = eyeBlock && (eyeBlock.name === 'water' || eyeBlock.name === 'flowing_water');
-
-  // Swim urgently towards surface if submerged
-  if (isUnderwater || bot.entity.isInWater) {
-    console.log("[UNSTUCK] Bot is in water! Swimming urgently to surface...");
-    bot.setControlState('jump', true);
-
-    await swimUpwardsStep(bot, Date.now(), 8000);
-    bot.setControlState('jump', false);
-    const reachedLand = await swimToDryLand(bot, 36);
-    return {
-      success: true,
-      message: reachedLand
-        ? "Emergency surfacing completed and reached dry land."
-        : "Emergency surfacing completed; swam towards shore."
-    };
+  // In water the only goal is air, then dry ground. Floating up is not enough in a flooded cave: the escape
+  // searches a real route (diving or digging when needed) and reports honestly when the bot is still in water
+  if (isInLiquid(bot)) {
+    console.log("[UNSTUCK] Bot is in water: looking for a way out...");
+    if (currentExploreHeadingRad === null) {
+      currentExploreHeadingRad = (crypto.randomInt(0, 360) * Math.PI) / 180;
+    }
+    const outcome = await escapeWater(bot, { headingRad: currentExploreHeadingRad });
+    if (outcome.enclosed && outcome.success) {
+      // Leave the flooded gallery behind: the next exploration starts in a fresh direction
+      recentExplorePositions = [];
+    }
+    return { success: outcome.success, message: outcome.message };
   }
+
+  const startY = bot.entity.position.y;
 
   // Check and break ceiling if solid block obstructs above
   const headBlock = bot.blockAt(bot.entity.position.offset(0, 2, 0));
@@ -195,7 +198,7 @@ async function skillUnstuck(bot) {
     try {
       const tool = getBestToolForBlock(bot, headBlock);
       if (tool) await bot.equip(tool, 'hand').catch(() => {});
-      await bot.dig(headBlock);
+      await digWithTimeout(bot, headBlock, 10000);
       console.log("[UNSTUCK] Ceiling block broken successfully.");
     } catch (error) {
       console.warn("[UNSTUCK] Failed to break ceiling block :", error.message);
@@ -220,7 +223,40 @@ async function skillUnstuck(bot) {
     return { success: true, message: "Dug exit route through wall to escape hole." };
   }
 
+  // Last resort: let the pathfinder climb out, digging steps or stacking blocks under the bot as it sees fit
+  if (await climbOutOfHole(bot, startY)) {
+    return { success: true, message: `Climbed out of the hole (now at Y:${Math.round(bot.entity.position.y)}).` };
+  }
+
   return { success: false, message: "Unable to dig an exit through immediate surrounding walls." };
+}
+
+/**
+ * Climb a few blocks with the pathfinder, which digs steps or pillars up as needed
+ * @param {object} bot Mineflayer bot instance
+ * @param {number} startY Altitude the bot was stuck at
+ * @param {number} [timeoutMs=12000] Maximum climb duration
+ * @returns {Promise<boolean>} True if the bot ended at least two blocks higher
+ */
+async function climbOutOfHole(bot, startY, timeoutMs = 12000) {
+  if (!goals.GoalY || typeof bot.pathfinder?.goto !== 'function') return false;
+  let navTimer = null;
+  let gotoPromise = null;
+  try {
+    gotoPromise = bot.pathfinder.goto(new goals.GoalY(Math.floor(startY) + 3));
+    const timeoutPromise = new Promise((_, reject) => {
+      navTimer = setTimeout(() => reject(new Error("Climb timeout")), timeoutMs);
+    });
+    await Promise.race([gotoPromise, timeoutPromise]);
+  } catch (err) {
+    console.warn('[UNSTUCK] Climbing out failed:', err.message);
+  } finally {
+    if (navTimer) clearTimeout(navTimer);
+    gotoPromise?.catch(() => {});
+    bot.pathfinder.setGoal?.(null);
+    bot.clearControlStates?.();
+  }
+  return bot.entity.position.y >= startY + 2;
 }
 
 const EXPLORE_WINDOW_SIZE = 6;
@@ -357,14 +393,54 @@ function hasLavaAhead(bot, headingRad) {
 }
 
 /**
- * Walk forward in short safe slices while avoiding lava hazards ahead
+ * Check whether the ground falls away just ahead along the given heading (cliff, ravine, pit)
+ * @param {object} bot Mineflayer bot instance
+ * @param {number} headingRad Heading angle in radians
+ * @param {number} [maxDrop=4] Deepest drop the bot may walk off without damage worth worrying about
+ * @returns {boolean} True if no solid block or water lies within maxDrop blocks below the next two blocks ahead
+ */
+function hasDropAhead(bot, headingRad, maxDrop = 4) {
+  if (!bot.entity?.position || typeof bot.blockAt !== 'function') return false;
+  const pos = bot.entity.position;
+  for (const step of [1, 2]) {
+    const checkX = Math.floor(pos.x + Math.cos(headingRad) * step);
+    const checkZ = Math.floor(pos.z + Math.sin(headingRad) * step);
+    let supported = false;
+    for (let depth = 1; depth <= maxDrop + 1 && !supported; depth++) {
+      const block = bot.blockAt(new Vec3(checkX, Math.floor(pos.y) - depth, checkZ));
+      supported = Boolean(block && (block.boundingBox === 'block' || block.name === 'water'));
+    }
+    if (!supported) return true;
+  }
+  return false;
+}
+
+/**
+ * Compute the heading pointing straight away from the world spawn when the bot is still close to it
+ * @param {object} bot Mineflayer bot instance
+ * @param {number} withinDistance Only applies within this horizontal distance of the spawn
+ * @returns {number|null} Heading in radians or null when the spawn is unknown or far away
+ */
+function getHeadingAwayFromSpawn(bot, withinDistance) {
+  const spawn = bot.spawnPoint;
+  const pos = bot.entity?.position;
+  if (!spawn || !pos) return null;
+  const dx = pos.x - spawn.x;
+  const dz = pos.z - spawn.z;
+  const distance = Math.hypot(dx, dz);
+  if (distance > withinDistance) return null;
+  return distance < 1 ? (crypto.randomInt(0, 360) * Math.PI) / 180 : Math.atan2(dz, dx);
+}
+
+/**
+ * Walk forward in short safe slices while avoiding lava and cliffs ahead
  * @param {object} bot Mineflayer bot instance
  * @param {number} headingRad Heading angle in radians
  * @param {number} [remainingTicks=35] Remaining movement ticks
  * @returns {Promise<void>}
  */
 async function walkForwardSlices(bot, headingRad, remainingTicks) {
-  if (remainingTicks <= 0 || hasLavaAhead(bot, headingRad)) return;
+  if (remainingTicks <= 0 || hasLavaAhead(bot, headingRad) || hasDropAhead(bot, headingRad)) return;
   const slice = Math.min(5, remainingTicks);
   if (typeof bot.waitForTicks === 'function') {
     await bot.waitForTicks(slice);
@@ -398,43 +474,31 @@ async function walkForwardBurst(bot, headingRad, ticks = 35) {
   return Math.hypot(endPos.x - startPos.x, endPos.z - startPos.z) >= 1;
 }
 
-const TERRAIN_CEILING_BLOCKS = new Set([
-  'stone', 'dirt', 'grass_block', 'deepslate', 'granite', 'diorite', 'andesite',
-  'gravel', 'sand', 'sandstone', 'tuff', 'cobblestone', 'cobbled_deepslate', 'netherrack'
-]);
-
 /**
  * Check whether solid terrain blocks sit above the bot, indicating an enclosed cave or overhang
  * @param {object} bot Mineflayer bot instance
  * @returns {boolean} True when a solid terrain ceiling block is detected within 20 blocks above
  */
 function hasSolidCeilingAbove(bot) {
-  if (!bot.entity?.position || typeof bot.blockAt !== 'function') return false;
-  const basePos = bot.entity.position.floored();
-  for (let dy = 2; dy <= 20; dy++) {
-    const block = bot.blockAt(basePos.offset(0, dy, 0));
-    if (block && TERRAIN_CEILING_BLOCKS.has(block.name)) {
-      return true;
-    }
-  }
-  return false;
+  return hasTerrainAbove(bot, 20);
 }
 
 /**
  * Attempt to climb upwards toward surface elevation when deep underground
  * @param {object} bot Mineflayer bot instance
  * @param {number} [timeoutMs=14000] Maximum ascent wait in milliseconds
+ * @param {number|null} [goalY=null] Altitude to reach (defaults to ten blocks higher, at most Y:72)
  * @returns {Promise<boolean>} True if ascent succeeded
  */
-async function trySurfaceAscent(bot, timeoutMs = 14000) {
+async function trySurfaceAscent(bot, timeoutMs = 14000, goalY = null) {
   if (!bot.entity?.position || !goals.GoalY) return false;
   let navTimer = null;
   let gotoPromise = null;
   const startX = bot.entity.position.x;
   const startZ = bot.entity.position.z;
   try {
-    const targetY = Math.min(72, Math.round(bot.entity.position.y) + 10);
-    console.log(`[EXPLORE] Underground path blocked; climbing towards Y:${targetY}...`);
+    const targetY = goalY ?? Math.min(72, Math.round(bot.entity.position.y) + 10);
+    console.log(`[EXPLORE] Climbing towards Y:${targetY}...`);
     gotoPromise = bot.pathfinder.goto(new goals.GoalY(targetY));
     const timeoutPromise = new Promise((_, reject) => {
       navTimer = setTimeout(() => reject(new Error("Surface ascent timeout")), timeoutMs);
@@ -457,6 +521,85 @@ async function trySurfaceAscent(bot, timeoutMs = 14000) {
     bot.pathfinder.setGoal(null);
     bot.clearControlStates();
   }
+}
+
+/**
+ * Climb out of a mine or a cave leg by leg, through existing galleries or by digging a staircase,
+ * until the sky is open or the time budget runs out
+ * @param {object} bot Mineflayer bot instance
+ * @param {number} budgetMs Time the whole climb may take
+ * @returns {Promise<{ risen: number, surfaced: boolean }>} Height gained and whether the bot is back on the surface
+ */
+async function climbTowardsSurface(bot, budgetMs) {
+  const deadline = Date.now() + budgetMs;
+  const startY = bot.entity.position.y;
+  let legStartY = startY;
+
+  while (isBelowSurface(bot) && deadline - Date.now() >= MIN_CLIMB_LEG_MS) {
+    // Short legs keep each path search fast; the last one stops at the estimated surface instead of overshooting it
+    const legGoalY = Math.min(Math.floor(legStartY) + SURFACE_CLIMB_LEG, Math.max(Math.floor(legStartY) + 2, estimateSurfaceY(bot)));
+    await trySurfaceAscent(bot, Math.min(SURFACE_CLIMB_LEG_MAX_MS, deadline - Date.now()), legGoalY);
+    const nowY = bot.entity.position.y;
+    // A leg that gained nothing will not do better on a second try: let the caller search another way
+    if (nowY < legStartY + 2) break;
+    legStartY = nowY;
+  }
+
+  return { risen: bot.entity.position.y - startY, surfaced: !isBelowSurface(bot) };
+}
+
+/**
+ * Tell whether an exploration target is only found on the surface (trees, animals, wood products)
+ * @param {string} cleanTarget Normalized exploration target
+ * @returns {boolean} True when the bot must be on the surface to find it
+ */
+function isSurfaceTarget(cleanTarget) {
+  if (!cleanTarget) return false;
+  return SURFACE_TARGETS.has(cleanTarget) || isWoodLog(cleanTarget) || isPlanks(cleanTarget) || cleanTarget === 'stick';
+}
+
+/**
+ * Dig a descending staircase towards the altitude where a wanted ore is most common
+ * @param {object} bot Mineflayer bot instance
+ * @param {number} targetY Altitude to reach
+ * @param {number} [timeoutMs=26000] Maximum descent duration for this step
+ * @returns {Promise<boolean>} True if the bot ended at least two blocks lower
+ */
+async function descendTowardsDepth(bot, targetY, timeoutMs = 26000) {
+  if (!bot.entity?.position || typeof bot.pathfinder?.goto !== 'function') return false;
+  const startX = bot.entity.position.x;
+  const startY = bot.entity.position.y;
+  const startZ = bot.entity.position.z;
+  if (currentExploreHeadingRad === null) {
+    currentExploreHeadingRad = (crypto.randomInt(0, 360) * Math.PI) / 180;
+  }
+
+  // A sloped tunnel rather than a vertical shaft: safer around lava pockets and easy to climb back out
+  const drop = Math.min(10, Math.max(3, Math.round(startY - targetY)));
+  const stepY = Math.round(startY) - drop;
+  const run = drop + 2;
+  const goalX = Math.round(startX + Math.cos(currentExploreHeadingRad) * run);
+  const goalZ = Math.round(startZ + Math.sin(currentExploreHeadingRad) * run);
+
+  let navTimer = null;
+  let gotoPromise = null;
+  try {
+    console.log(`[EXPLORE] Digging a staircase down to Y:${stepY} (ore level Y:${targetY})...`);
+    gotoPromise = bot.pathfinder.goto(new goals.GoalNear(goalX, stepY, goalZ, 2));
+    const timeoutPromise = new Promise((_, reject) => {
+      navTimer = setTimeout(() => reject(new Error("Descent timeout")), timeoutMs);
+    });
+    await Promise.race([gotoPromise, timeoutPromise]);
+  } catch (err) {
+    console.warn('[EXPLORE] Descent impeded:', err.message);
+    currentExploreHeadingRad = (currentExploreHeadingRad + Math.PI * 0.5) % (Math.PI * 2);
+  } finally {
+    if (navTimer) clearTimeout(navTimer);
+    gotoPromise?.catch(() => {});
+    bot.pathfinder.setGoal(null);
+    bot.clearControlStates();
+  }
+  return bot.entity.position.y <= startY - 2;
 }
 
 /**
@@ -534,6 +677,52 @@ async function skillExplore(bot, state = null, target = null) {
     `[EXPLORE] Pos=(${Math.round(startPos.x)},${Math.round(startPos.y)},${Math.round(startPos.z)}) enclosed=${isEnclosed} inWater=${Boolean(bot.entity.isInWater)} pickaxe=${hasToolType(bot, '_pickaxe')}`
   );
 
+  const cleanTarget = typeof target === 'string' ? target.toLowerCase().trim() : '';
+
+  // Relocation request: leave the spawn area in a straight line when still inside it (the server may refuse
+  // any building there), otherwise turn well away from the direction that led to the dead end
+  const leavingSpawn = cleanTarget === 'leave_spawn';
+  if (cleanTarget === 'relocate' || leavingSpawn) {
+    const awayFromSpawn = getHeadingAwayFromSpawn(bot, leavingSpawn ? 64 : 24);
+    if (awayFromSpawn === null) {
+      const turn = Math.PI * (0.6 + crypto.randomInt(0, 81) / 100);
+      currentExploreHeadingRad = ((currentExploreHeadingRad ?? 0) + turn) % (Math.PI * 2);
+    } else {
+      currentExploreHeadingRad = (awayFromSpawn + Math.PI * 2) % (Math.PI * 2);
+    }
+    recentExplorePositions = [];
+    console.log(`[EXPLORE] Relocation requested; ${awayFromSpawn === null ? 'heading turned away from the previous area' : 'walking straight away from the world spawn'}.`);
+  }
+
+  // Wanted ore not loaded nearby: dig down to the altitude where it generates instead of wandering on the surface
+  const inOverworld = String(bot.game?.dimension || 'overworld').includes('overworld');
+  const oreDepth = inOverworld ? getOreDepthHint(cleanTarget) : null;
+  if (oreDepth !== null && startPos.y > oreDepth + 6 && hasToolType(bot, '_pickaxe')) {
+    const descended = await descendTowardsDepth(bot, oreDepth, Math.min(26000, remainingMs() - 4000));
+    if (descended) {
+      return {
+        success: true,
+        message: `Dug down towards Y:${oreDepth} where '${cleanTarget}' is most common (now at Y:${Math.round(bot.entity.position.y)}).`
+      };
+    }
+  }
+
+  // Trees and animals only exist on the surface: from the bottom of a mine or a cave, wandering through the
+  // galleries finds nothing, so climb back up (through the existing tunnels or by digging a staircase) first
+  if (inOverworld && isSurfaceTarget(cleanTarget) && isBelowSurface(bot) && remainingMs() >= MIN_CLIMB_LEG_MS + 2000) {
+    const ascent = await climbTowardsSurface(bot, remainingMs() - 2000);
+    if (ascent.risen >= 2) {
+      const nowY = Math.round(bot.entity.position.y);
+      return {
+        success: true,
+        message: ascent.surfaced
+          ? `Back on the surface (Y:${nowY}) to look for '${cleanTarget}'.`
+          : `Climbed ${Math.round(ascent.risen)} blocks towards the surface to look for '${cleanTarget}' (now Y:${nowY}, keep climbing).`
+      };
+    }
+    console.warn(`[EXPLORE] Could not climb towards the surface from Y:${Math.round(bot.entity.position.y)}; exploring the galleries instead.`);
+  }
+
   let attemptedAscent = false;
   let climbedToSurface = false;
   const seekingLava = state?.currentObjective === 'nether_portal' || target === 'lava';
@@ -578,13 +767,15 @@ async function skillExplore(bot, state = null, target = null) {
     currentExploreHeadingRad = (currentExploreHeadingRad + Math.PI * 0.5) % (Math.PI * 2);
     recentExplorePositions = [{ x: curPos.x, z: curPos.z }];
     console.log("[EXPLORE] Box trap detected (<32x32 over 4+ cycles); rotating +90 deg & enabling dig breakout.");
-  } else {
+  } else if (!leavingSpawn) {
     const deltaRad = (crypto.randomInt(-20, 21) * Math.PI) / 180;
     currentExploreHeadingRad = ((currentExploreHeadingRad + deltaRad) % (Math.PI * 2) + Math.PI * 2) % (Math.PI * 2);
   }
 
   const allowDig = isEnclosed || trappedInBox;
-  const distance = allowDig ? crypto.randomInt(12, 18) : crypto.randomInt(16, 24);
+  let distance = allowDig ? crypto.randomInt(12, 18) : crypto.randomInt(16, 24);
+  // One stride long enough to clear the protected radius instead of several short ones
+  if (leavingSpawn) distance = 28;
   const targetX = Math.round(curPos.x + Math.cos(currentExploreHeadingRad) * distance);
   const targetZ = Math.round(curPos.z + Math.sin(currentExploreHeadingRad) * distance);
   const stepOrigin = { x: curPos.x, z: curPos.z };
@@ -649,6 +840,10 @@ module.exports = {
   findNearestDryLand,
   moveExploreStep,
   hasSolidCeilingAbove,
+  climbTowardsSurface,
+  isSurfaceTarget,
+  hasDropAhead,
+  getHeadingAwayFromSpawn,
   headingToMineflayerYaw,
   isBoxStuck
 };

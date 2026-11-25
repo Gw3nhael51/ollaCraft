@@ -20,9 +20,24 @@ flowchart LR
     D --> E["Furnace"]
     E --> F["Iron Gear & Shield"]
     F --> G["Water Bucket & Flint & Steel"]
-    G --> H["Nether Portal"]
+    G --> G2["Spawn Bed"]
+    G2 --> H["Nether Portal"]
     H --> I["Blaze Rods & Ender Eyes"]
+    I --> J["Bow & Arrows"]
+    J --> K["Stronghold (2-eye triangulation)"]
+    K --> L["Spawn Bed + End Portal"]
+    L --> M["Ender Dragon"]
 ```
+
+- **Deterministic Dependency Planner (LLM bypass):** `src/agent/planner.js` executes the next feasible step of the recursive dependency plan (`craft`, `mine`, `smelt`, `hunt`...) and the stage logistics (portal return, stronghold, End) **without any model call**. The LLM is only consulted when no deterministic step exists or when a step keeps failing.
+- **Contextual Failure Memory & Loop Breaker:** `src/agent/recovery.js` remembers where and with what inventory an `(action, target)` pair failed. After 2 failures in the same situation the pair is refused **at that spot** and the bot relocates without any model call; the refusal lifts as soon as it has moved 6 blocks or its inventory changed, so the step is simply retried elsewhere. Only a step that failed in several different places is handed to the model. Stagnation (no change of inventory, position or objective) forces a *different* action, and the same mechanism is exposed to players through the `debug` chat command.
+- **Portable Crafting Table:** the bot carries a single crafting table. `craft` deploys it where the bot stands, crafts, then **breaks it and picks it back up**. No table position is ever memorized or walked back to. Deployment scans the cells around the bot, never picks one its own body overlaps (the server refuses those), places through grass, and tries up to three spots.
+- **Spawn Protection Awareness:** when the server refuses a placement next to the world spawn, the bot remembers it and, after every respawn, walks straight out of the protected radius before trying to place or break anything.
+- **Survival Watchdog:** `src/agent/watchdog.js` aborts the running action and heads for air when the air supply runs low, since a skill can hold the bot under water longer than its air lasts.
+- **Water Escape:** `mineflayer-pathfinder` always holds jump in water and therefore cannot dive: in a flooded gallery it pins the bot against the ceiling. `src/actions/behaviors/movement/water.js` searches the water for the quickest route to air (swimming down or sideways, or breaking a thin wall or ceiling when that is faster), swims it with direct controls, then reaches dry ground. A flooded cave the bot had to escape from is remembered for 15 minutes: the bot leaves it, and blocks under water are no longer mining targets.
+- **Milestone Waypoints:** portals (both sides), spawn beds, fortress, stronghold, End portal and the last death position are saved to `data/progress-*.json` and survive deaths and restarts (`goto` skill).
+- **Spawn Beds:** a bed is placed and used to set the respawn point before entering the Nether, and again in the stronghold before entering the End.
+- **Stronghold Triangulation:** exactly two Eyes of Ender thrown from two positions give two bearings whose intersection is the stronghold (`src/minecraft/triangulation.js`).
 
 - **Data-Driven Tool Selection:** 100% driven by `minecraft-data` (`harvestTools`, `digTime` vs bare hands, and `material`), overriding `mineflayer-pathfinder`'s `bestHarvestTool` and safely unequipping unrelated tools or weapons before digging.
 - **Nether Portal Automation:** Detects active `nether_portal` blocks, complete unlit frames, and partial/ruined obsidian frames on both X and Z axes (`findPortalFrameCandidate`); completes frames with carried obsidian or water-cascade lava mold casting (`castPortalWithMold`), automatically gathers 12 building blocks beside lava pools before casting, clears doorway obstructions, ignites with `flint_and_steel`, and transitions into `the_nether`.
@@ -69,18 +84,21 @@ flowchart TD
 │   └── benchmark.js           # Performance & cognitive token-savings benchmark suite
 ├── src/
 │   ├── index.js               # Entry point, bot connection, server chat & event listeners
-│   ├── core/                  # Central runtime state (state.js)
+│   ├── core/                  # Central runtime state (state.js), persisted waypoints & milestones (progress.js)
 │   ├── infrastructure/        # Configuration (config.js) and environment loader
-│   ├── agent/                 # ReAct loop (loop.js), Supervisor (manager.js), Ollama client & Prompt builder
+│   ├── agent/                 # ReAct loop (loop.js), deterministic planner (planner.js), failure memory & loop breaker (recovery.js),
+│   │                          # goal command (goals.js), Supervisor (manager.js), Ollama client & Prompt builder
 │   ├── actions/
 │   │   ├── dispatcher.js      # Central router for skills and autonomous procedures
 │   │   ├── primitives/        # Verified primitives (movement, blocks, items, container, combat, locks)
-│   │   └── behaviors/         # High-level skills (mine, craft, smelt, place, navigate, combat, storage, portal)
+│   │   └── behaviors/         # High-level skills (mine, craft, portable table, smelt, place, navigate, waypoint travel,
+│   │                          # combat, dragon, storage, portal, bed, stronghold, endportal)
 │   ├── procedures/            # Procedural Learning Engine (schema, registry, validator, matcher, generator, runner, evaluator, lifecycle, memory, store)
-│   ├── perception/            # Unified 3D scanner with TTL bad-block sync (environment.js), inventory & advancements
-│   └── minecraft/             # Offline WikiCraft lookups (wiki.js, wikiData.js) & dependency resolver (knowledge.js)
+│   ├── perception/            # Unified 3D scanner with TTL bad-block sync (environment.js), inventory, quests & advancements
+│   └── minecraft/             # Offline WikiCraft lookups (wiki.js, wikiData.js), dependency resolver (knowledge.js), eye triangulation (triangulation.js)
 ├── data/procedures/           # Persisted JSON procedures (mounted via Docker volume ./data:/app/data)
-├── test/                      # 188 automated unit and E2E integration tests across 18 test files
+├── data/progress-*.json       # Persisted waypoints, milestones and stronghold estimate (one file per server/account)
+├── test/                      # 214 automated unit and E2E integration tests across 20 test files
 ├── Dockerfile                 # Node 20 Alpine image build for ollacraft-bot
 ├── Makefile                   # Shortcuts (run, bot, bot-logs, bot-stop, test)
 ├── docker-compose.yml         # Paper server + ollacraft-bot service (--profile bot) with /app/data persistence
@@ -186,11 +204,15 @@ Players can interact with and command the bot directly using in-game chat:
 |---|---|
 | `start` | Starts or resumes the autonomous ReAct survival loop. |
 | `stop` | Immediately suspends the autonomous loop, clears current pathfinding, and resets controls. |
-| `objectif <item>` or `goal <item>` | Manually sets the agent's target objective (e.g., `objectif iron_pickaxe`). |
+| `objectif <item> [qty]` or `goal <item> [qty]` | Gives the bot a direct objective (e.g., `objectif diamond 3`, `objectif pioche en fer`, `objectif dragon`). If it is not directly reachable, the bot builds and announces the prerequisite chain and follows it (e.g. `mine iron_ore x3 -> smelt raw_iron x3 -> craft iron_pickaxe -> mine diamond_ore x3`). Once obtained, the automatic chain resumes. |
 | `objectif auto` or `goal auto` | Restores the default automatic survival quest progression chain. |
+| `debug` (aliases `debloque`, `coince`, `unstuck`) | Loop breaker: prints a diagnostic, cancels the running action, refuses the action the bot was repeating at that spot and forces a **different** action (unstuck, relocation, return to a waypoint). |
+| `debug info` | Diagnostic only (objective, last action, history, stagnation counters, refused actions, LLM vs planned decision counts). |
+| `plan` | Prints the dependency chain of the current objective from the current inventory. |
+| `waypoints` or `reperes` | Lists the memorized milestone coordinates (portals, spawn beds, fortress, stronghold, End portal, last death). |
 | `inventaire` or `inv` | Causes the bot to output its current inventory contents into chat. |
 | `coords` or `pos` | Outputs the bot's current `(X, Y, Z)` coordinates into chat. |
-| `tokens` or `token` | Outputs token consumption statistics for both the Player and Manager LLMs. |
+| `tokens` or `token` | Outputs token consumption statistics for both LLMs, plus how many decisions were taken without any model call. |
 
 ---
 
@@ -208,14 +230,21 @@ Players can interact with and command the bot directly using in-game chat:
 | `OLLAMA_MODEL` | `qwen3.5:9B` | Fallback Ollama model tag. |
 | `OLLAMA_MODEL_PLAYER` | `qwen3.5:9B` | Dedicated model for tactical ReAct decisions. |
 | `OLLAMA_MODEL_MANAGER` | `qwen3.5:9B` | Dedicated model for strategic supervision and loop recovery. |
-| `ENABLE_PROCEDURE_GENERATION` | `true` | Toggle runtime experimental procedure generation in `manager.js` (`false` to disable). |
+| `ENABLE_PROCEDURE_GENERATION` | `true` | Experimental procedure generation in `manager.js`. `true`: only for objectives the deterministic planner cannot handle; `always`: unconditional; `false`: disabled. |
+| `DETERMINISTIC_PLANNER` | `true` | Execute known plan steps without calling the LLM (`false` restores a model call every cycle). |
+| `REQUIRE_SPAWN_BED` | `true` | Require a spawn bed before the Nether portal and before the End portal (`false` to skip both bed quests). |
+| `EYE_TRIANGULATION_BASELINE` | `250` | Sideways distance (blocks) walked between the two Eye of Ender throws. A longer baseline gives a more accurate intersection. |
+| `OLLAMA_NUM_CTX` | `8192` | Context window sent to Ollama. The ReAct prompt does not fit in Ollama's small default and would be silently truncated. |
+| `OLLAMA_NUM_PREDICT` | `512` | Safety cap on generated tokens per decision. The answer schema already bounds the reasoning text; a cap set too low cuts the JSON before its end. |
+| `SPAWN_PROTECTION_RADIUS` | `16` | Radius of the server's `spawn-protection`. Once a placement has been refused near the world spawn, the bot leaves this radius before building. |
+| `OLLAMA_KEEP_ALIVE` | `30m` | How long Ollama keeps the model loaded between cycles. |
 | `PORT` | `127.0.0.1:25565:25565` | Optional Docker port mapping for `mc-server`. |
 
 ### Bot Rules & Parameters (`src/infrastructure/config.js`)
 
-- **Quest Chain:** Progresses from wooden, stone, and iron gear plus `shield` through `bucket`, `water_bucket`, `flint_and_steel`, `nether_portal`, `blaze_rod`, `blaze_powder`, `ender_pearl`, and `ender_eye` (`QUEST_CHAIN` & `QUEST_AMOUNT`).
+- **Quest Chain:** Progresses from wooden, stone, and iron gear plus `shield` through `bucket`, `water_bucket`, `flint_and_steel`, `bed`, `nether_portal`, `blaze_rod`, `blaze_powder`, `ender_pearl`, `ender_eye`, `bow`, `arrow`, `end_bed`, `stronghold`, `end_portal` and `ender_dragon` (`QUEST_CHAIN` & `QUEST_AMOUNT`). The number of eyes required is dynamic: 12 frames minus the frames already filled, plus the triangulation throws still to do. Steps the inventory has already made pointless are skipped: when a later quest can be crafted outright from what is carried (wood + stone → `stone_pickaxe`, wood + 3 iron ingots → `iron_pickaxe`), the bot goes straight to it instead of replaying the lower tiers. Cobbled deepslate and blackstone count as stone for stone tools and the furnace.
 - **Action Whitelist:** Strict validation of allowed LLM actions (`VALID_ACTIONS`) and valid placement surfaces (`VALID_GROUND_BLOCKS`).
-- **Base Management & Recovery:** Stored coordinates in `src/core/state.js` for the player base (`crafting_table`, `furnace`, `chest`) and `portalCastOrigin`, cleanly reset on `death` alongside temporary TTL blacklists.
+- **Base Management & Recovery:** `furnace` and `chest` coordinates are kept in `src/core/state.js` and reset on `death` alongside temporary TTL blacklists. The crafting table is portable and never memorized. Milestone waypoints are **kept** on death so the bot walks back to its portal or stronghold.
 
 ---
 
@@ -226,17 +255,22 @@ The ReAct loop provides the LLM with structured actions formatted in JSON:
 | Skill | Parameters | Description |
 |---|---|---|
 | `mine` | `target: string, qty?: number` | Finds the closest target block, equips the optimal tool dynamically via `minecraft-data` (`harvestTools` and `digTime`), and mines it (with BFS vein mining for ores). |
-| `craft` | `target: string, qty?: number` | Crafts an item using 2x2 player inventory or navigates to a nearby crafting table for 3x3 recipes. |
-| `place` | `target: string` | Places a block from inventory on safe, valid adjacent ground (e.g., `crafting_table`, `furnace`, `chest`). |
+| `craft` | `target: string, qty?: number` | Crafts an item using the 2x2 player inventory. For 3x3 recipes (including items that also have a 2x2 recipe the inventory cannot make, like a bed's re-dye recipe) it deploys the carried crafting table on the spot, crafts, then breaks the table and collects it (it stays deployed only when the very next plan step is another table recipe). |
+| `place` | `target: string` | Places a block from inventory on safe, valid adjacent ground (`furnace`, `chest`). A manually placed `crafting_table` is tracked and collected as soon as the bot moves on. |
 | `smelt` | `target: string, qty?: number` | Approaches a furnace, loads fuel (coal/charcoal/wood), and smelts raw ores or food. |
 | `chest` | *None* | Navigates to a nearby chest and deposits bulky materials (excess dirt, cobblestone, mob drops). |
-| `hunt` | `target?: string` | Hunts nearby passive animals (`cow`, `pig`, `sheep`, `chicken`) to gather food. |
+| `hunt` | `target?: string` | Hunts nearby passive animals (`cow`, `pig`, `sheep`, `chicken`) for food or materials, then walks onto the dropped items to pick them up. Babies, sheared sheep and animals found unreachable (for 3 min) are skipped; `sheep` and `chicken` are never replaced by another species, and sheep of the wool color already carried come first (a bed needs three of one color). |
 | `fight` | `target?: string` | Engages nearby hostile mobs (`zombie`, `skeleton`, `spider`, `blaze`) with best weapon and armor. |
 | `equip` | `target?: string` | Equips best available armor pieces and places the shield in the off-hand slot. |
-| `portal` | *None* | Detects active `nether_portal` blocks as well as complete unlit or partial obsidian frames on X/Z axes, fills `water_bucket`, casts or completes frames via water-cascade lava mold or carried obsidian, clears doorway obstructions, ignites with `flint_and_steel`, and enters `the_nether`. |
+| `portal` | *None* | Detects active `nether_portal` blocks as well as complete unlit or partial obsidian frames on X/Z axes, fills `water_bucket`, casts or completes frames via water-cascade lava mold or carried obsidian, clears doorway obstructions, ignites with `flint_and_steel`, sets the spawn bed next to the portal, memorizes both portal sides and enters `the_nether`. From the Nether, target `overworld` walks back to the memorized portal and returns. |
 | `eat` | `target?: string` | Scans inventory for an edible food item and consumes it. |
-| `explore` | `target?: string` | Advances along a persistent outward heading (with optional target hint like `'lava'`), detects solid ceilings (`hasSolidCeilingAbove`), breaks out of 32×32 box traps (+90° with dig breakout), and runs within a bounded 34s budget. |
-| `unstuck` | *None* | Performs emergency ceiling breaking, wall digging with bounded dig timeouts, or nearest dry-land water escape (`findNearestDryLand`). |
+| `explore` | `target?: string` | Advances along a persistent outward heading (with optional target hint like `'lava'`), detects solid ceilings (`hasSolidCeilingAbove`), breaks out of 32×32 box traps (+90° with dig breakout), and runs within a bounded 34s budget. An ore target (`diamond`, `iron_ore`...) digs a staircase down to the altitude where that ore generates; a surface target (trees and wood, animals) first climbs out of the mine or cave leg by leg, through the existing galleries or by digging a staircase, until the sky is open; `relocate` (used by the loop breaker) turns away from the current area. |
+| `unstuck` | *None* | In water: finds a route to air (straight up when the surface is open, otherwise diving through the flooded gallery or breaking a thin wall or ceiling), then reaches dry ground; reports failure when the bot is still in the water. On land: breaks the ceiling, digs through any wall its tools break quickly, or climbs out with the pathfinder. |
+| `goto` | `target: string` | Travels back to a memorized waypoint (`nether_portal`, `nether_exit`, `spawn_bed`, `end_spawn_bed`, `fortress`, `stronghold`, `end_portal`, `death`), one bounded leg per call. |
+| `bed` | `target?: string` | Places the carried bed (crafting it from 3 same-colored wool + 3 planks if possible) and uses it to set the respawn point. `pickup` breaks and recovers the spawn bed. |
+| `stronghold` | *None* | Throws an Eye of Ender and measures its bearing from the entity's flight, walks `EYE_TRIANGULATION_BASELINE` blocks sideways, throws a second eye, intersects both bearings, then travels to the estimate. |
+| `endportal` | *None* | Scans loaded chunks for the End portal frame around the estimate, digs to the portal room, sets the spawn bed, fills the empty frames with Eyes of Ender and enters the End. |
+| `dragon` | *None* | In the End: reaches the main island, shoots End crystals with a gravity-compensated bow, shoots or strikes the dragon when in range, and detects victory from the active exit portal. |
 | `wiki` | `target: string` | Looks up recipes, tool requirements, and drops for any block or item in the local game database. |
 | `procedure` | `target: string \| object, qty?: number \| object` | Executes a validated or experimental multi-step DSL procedure from `ProcedureMemory` under supervision and records its lifecycle evaluation. |
 
@@ -244,7 +278,7 @@ The ReAct loop provides the LLM with structured actions formatted in JSON:
 
 ## 🧪 Automated Tests & Benchmark
 
-Run the full test suite (**188 unit & integration tests across 18 suites**):
+Run the full test suite (**214 unit & integration tests across 20 suites**):
 ```bash
 npm test
 ```
@@ -253,6 +287,10 @@ Run the architecture & procedural learning benchmark:
 ```bash
 npm run benchmark
 ```
+
+### Validation status of the end-game stages
+
+The planner, failure memory, portable crafting table, spawn bed, waypoints, goal command and triangulation math are covered by automated offline tests against simulated worlds (`test/endgame_autonomy.test.js`, `test/chat_commands.test.js`). The stages that depend on live server behavior (eye flight tracking, stronghold digging, End portal entry and the Ender Dragon fight) have **not yet been validated in a real game**: expect to tune them during in-game test campaigns. Known limits of the dragon fight: End crystals protected by iron cages are not handled, and without a bow the crystals keep healing the dragon.
 
 ---
 
@@ -266,7 +304,12 @@ npm run benchmark
 - **Error:** `Server closed connection` or `Invalid credentials`
 - **Solution:** If the server is in online mode (`online-mode=true`), the bot must use official Microsoft credentials. For local testing, set `online-mode=false` in `server.properties`.
 
-### 3. Navigation Timeouts
+### 3. Blocks Refused Near the World Spawn
+- **Symptom:** `Server refused to place ... the block is still air`, or blocks reappearing right after being mined, always close to where the bot respawns.
+- **Cause:** as soon as one player is an operator, the server's `spawn-protection` (16 blocks by default) forbids non-operators from placing or breaking blocks around the world spawn.
+- **Solution:** the provided `docker-compose.yml` sets `SPAWN_PROTECTION: "0"`; on an existing server set `spawn-protection=0` in `server.properties` and restart it. Without that, the bot detects the refusal and walks out of the radius by itself after each respawn.
+
+### 4. Navigation Timeouts
 - **Symptom:** Bot attempts to reach a block but logs `Navigation timeout`.
 - **Solution:** This is normal behavior when a block is unreachable (e.g., suspended high in the air or sealed behind bedrock). The bot's built-in blacklist automatically ignores failed coordinates for subsequent steps.
 

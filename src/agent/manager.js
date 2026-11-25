@@ -10,6 +10,9 @@ const { resolveGoalPlan } = require('../minecraft/knowledge');
 const { evaluateObjectiveCoverage, ObjectiveGenerationTracker } = require('../procedures/matcher');
 const { generateProcedure } = require('../procedures/generator');
 const { registerExperimentalProcedure } = require('../procedures/memory');
+const { getDeterministicDecision } = require('./planner');
+const { formatBlockedActions, isActionBlocked, buildRemedyDecision } = require('./recovery');
+const { getWaypoint, formatWaypoints } = require('../core/progress');
 
 /**
  * Detect whether the bot is stuck in an action loop or consecutive failure streak
@@ -22,7 +25,9 @@ function detectActionLoop(actionHistory) {
   const recent3 = actionHistory.slice(-3);
   const allFailures = recent3.every(item => !item.success);
   const sameAction = recent3.every(item => item.action === recent3[0].action && item.target === recent3[0].target);
-  if (allFailures || sameAction) return true;
+  // Repeating a successful action (mining three logs in a row) is progress, not a loop
+  const sameActionStruggling = sameAction && recent3.some(item => !item.success);
+  if (allFailures || sameActionStruggling) return true;
 
   if (actionHistory.length >= 4) {
     const r4 = actionHistory.slice(-4);
@@ -87,6 +92,8 @@ function cleanTargetIdentifier(rawTarget) {
 
   const activeMemory = state.procedureMemory || defaultProcedureMemory;
   if (activeMemory?.get?.(candidate)) return candidate;
+  // Waypoint names ('spawn_bed', 'nether_exit'...) are valid 'goto' targets and must not be truncated
+  if (getWaypoint(state, candidate)) return candidate;
   if (isKnownMinecraftIdentifier(candidate)) return candidate;
 
   const parts = candidate.split('_').filter(Boolean);
@@ -241,14 +248,18 @@ function sanitizeCraftDecision(bot, target, directive) {
   }
 
   if (target === 'crafting_table') {
+    if (invUtils.countItem(bot, 'crafting_table') > 0) {
+      // Already carrying the portable table: resume the real plan instead of crafting a second one
+      const required = invUtils.getQuestRequirement(bot, state, state.currentObjective);
+      const nextStep = resolveGoalPlan(bot, state.currentObjective, required, state).nextAction;
+      return nextStep
+        ? { action: nextStep.action, target: nextStep.target, directive: `Tu portes déjà un établi portable. ${nextStep.reason}` }
+        : { action: 'explore', target: 'none', directive: "Tu portes déjà un établi portable : utilise directement 'craft' sur l'objet voulu." };
+    }
     const hasLogs = bot.inventory.items().some(i => invUtils.isWoodLog(i.name));
     return hasLogs
       ? { action: 'craft', target: 'planks', directive: "Fabriquer des planches à partir des bûches pour créer un établi." }
       : { action: 'mine', target: 'log', directive: "Couper du bois pour obtenir des planches et un établi." };
-  }
-
-  if (!table && invUtils.countItem(bot, 'crafting_table') > 0) {
-    return { action: 'place', target: 'crafting_table', directive: `Poser l'établi au sol pour pouvoir fabriquer ${target}.` };
   }
 
   const needsOnlyTable = available.some(entry => entry.startsWith(`${target} (`));
@@ -363,6 +374,16 @@ function sanitizeManagerOutput(bot, rawDecision) {
     isReliable = procRes.isReliable;
   } else if (action === 'wiki' && target === 'none') {
     target = state.currentObjective;
+  } else if (action === 'place' && target === 'crafting_table') {
+    // The table is portable and deployed by 'craft' itself: placing it by hand is a wasted cycle
+    action = 'craft';
+    target = state.currentObjective;
+    directive = "L'établi est portable : utilise directement 'craft', il est posé puis récupéré automatiquement.";
+    ({ action, target, directive } = sanitizeCraftDecision(bot, target, directive));
+  } else if (action === 'goto' && !getWaypoint(state, target)) {
+    action = 'explore';
+    target = 'none';
+    directive = "Point de repère inconnu : explore les environs.";
   } else if (action === 'unstuck' && checkTerrainSituation(bot) === 'Terrain libre.') {
     action = 'explore';
     target = 'none';
@@ -406,7 +427,7 @@ function buildSupervisorPrompt(bot) {
   const inventory = invUtils.getInventorySummary(bot);
   const loopDetected = detectActionLoop(state.actionHistory);
   const recentHistory = JSON.stringify(state.actionHistory.slice(-4));
-  const requiredAmount = config.QUEST_AMOUNT[state.currentObjective] || 1;
+  const requiredAmount = invUtils.getQuestRequirement(bot, state, state.currentObjective);
   const currentAmount = invUtils.countItem(bot, state.currentObjective);
   const progressSummary = `${currentAmount}/${requiredAmount}`;
   const goalPlan = resolveGoalPlan(bot, state.currentObjective, requiredAmount, state);
@@ -442,17 +463,20 @@ function buildSupervisorPrompt(bot) {
       - État du terrain : ${terrainStatus}
       - Historique des actions récentes : ${recentHistory}
       - Blocage ou boucle détectée : ${loopNotice}
+      - ACTIONS REFUSÉES ICI (échecs répétés à cet endroit : ne les suggère PAS, demande d'abord un déplacement avec "explore") : ${formatBlockedActions(state)}
+      - Points de repère mémorisés (action "goto") : ${formatWaypoints(bot, state)}
       - Décomposition déterministe des prérequis : ${goalPlan.summary}
 
       CONSIGNE :
       Définis la prochaine étape logique pour progresser ou te débloquer. Sois direct, clair et réaliste.
+      L'établi est portable : "craft" le pose puis le récupère tout seul, ne suggère jamais "place" pour 'crafting_table'.
       RÈGLE ABSOLUE POUR "suggestedTarget" :
       - "suggestedTarget" doit être UNIQUEMENT l'identifiant technique Minecraft (ex: "oak_log", "stone", "chest", "none"), sans espace ni phrase.
       Réponds UNIQUEMENT en JSON :
       {
         "thought": "Diagnostic rapide de la situation",
         "directive": "Consigne impérative et courte pour le joueur",
-        "suggestedAction": "mine" | "craft" | "place" | "smelt" | "explore" | "unstuck" | "wiki" | "eat" | "chest" | "equip" | "portal" | "fight" | "hunt" | "procedure",
+        "suggestedAction": "mine" | "craft" | "place" | "smelt" | "explore" | "unstuck" | "wiki" | "eat" | "chest" | "equip" | "portal" | "fight" | "hunt" | "procedure" | "goto" | "bed" | "stronghold" | "endportal" | "dragon",
         "suggestedTarget": "nom_cible_strict"
       }
     `;
@@ -619,7 +643,7 @@ function tryAssignPickaxeRecovery(bot) {
   if (invUtils.hasToolType(bot, '_pickaxe') || typeof bot.inventory?.items !== 'function') return false;
 
   const ironCount = invUtils.countItem(bot, 'iron_ingot');
-  const cobbleCount = invUtils.countItem(bot, 'cobblestone');
+  const cobbleCount = invUtils.countBestStoneStack(bot);
   if (ironCount < 3 && cobbleCount < 3) return false;
 
   const items = bot.inventory.items();
@@ -643,16 +667,11 @@ function tryAssignPickaxeRecovery(bot) {
   }
 
   const pickaxeTarget = ironCount >= 3 ? 'iron_pickaxe' : 'stone_pickaxe';
-  if (invUtils.findNearbyCraftingTable(bot, state)) {
+  // A carried table is as good as a placed one: 'craft' deploys it and takes it back
+  if (invUtils.hasCraftingTableAccess(bot, state)) {
     state.managerDirective = `Fabrique une '${pickaxeTarget}' pour creuser vers la lave et miner dans le Nether.`;
     state.managerSubGoal = { action: 'craft', target: pickaxeTarget, isReliable: true };
     console.log(`\n[MANAGER 🧠] Directive mise à jour : "${state.managerDirective}" (action suggérée: craft)`);
-    return true;
-  }
-  if (invUtils.countItem(bot, 'crafting_table') > 0) {
-    state.managerDirective = `Pose ta 'crafting_table' pour fabriquer une '${pickaxeTarget}'.`;
-    state.managerSubGoal = { action: 'place', target: 'crafting_table', isReliable: false };
-    console.log(`\n[MANAGER 🧠] Directive mise à jour : "${state.managerDirective}" (action suggérée: place)`);
     return true;
   }
   return false;
@@ -797,19 +816,46 @@ async function runManagerCycle(bot, deps = {}) {
     invUtils.syncObjective(bot, state);
 
     const memory = state.procedureMemory || defaultProcedureMemory;
+    const planned = getDeterministicDecision(bot, state);
+
+    // Generating an experimental procedure costs supervisor inferences: by default it is reserved for objectives
+    // the dependency planner cannot handle (ENABLE_PROCEDURE_GENERATION=always restores unconditional generation)
+    const generationSetting = process.env.ENABLE_PROCEDURE_GENERATION;
+    const generationByDefault = generationSetting === 'always' || (generationSetting !== 'false' && !planned);
     const assigned = await tryAssignProceduralGoal(bot, memory, state.currentObjective, {
-      enableProcedureGeneration: deps.enableProcedureGeneration ?? (process.env.ENABLE_PROCEDURE_GENERATION !== 'false'),
+      enableProcedureGeneration: deps.enableProcedureGeneration ?? generationByDefault,
       ...deps
     });
     if (assigned) return;
 
     if (tryAssignPortalOrNetherGoal(bot)) return;
 
+    // The dependency planner already knows the next feasible step: no need to spend a supervisor inference on it
+    if (planned) {
+      state.managerDirective = planned.thought;
+      state.managerSubGoal = { action: planned.action, target: planned.target, qty: planned.qty, isReliable: false, fromPlanner: true };
+      return;
+    }
+
     const prompt = buildSupervisorPrompt(bot);
+    if (state.metrics) state.metrics.managerLlmCalls += 1;
     const result = await askOllama(prompt, config.OLLAMA_MODEL_MANAGER, 'manager');
 
     if (result) {
       const validated = sanitizeManagerOutput(bot, result);
+
+      // Never push the player towards an action the failure memory refuses here: it would be intercepted
+      // and the player would not understand why. Give the relocation as the directive instead.
+      if (isActionBlocked(state, validated.suggestedAction, validated.suggestedTarget, Date.now(), bot)) {
+        const remedy = buildRemedyDecision(bot, state, { action: validated.suggestedAction, target: validated.suggestedTarget });
+        if (remedy) {
+          validated.directive = remedy.thought;
+          validated.suggestedAction = remedy.action;
+          validated.suggestedTarget = remedy.target;
+          validated.isReliable = false;
+        }
+      }
+
       state.managerDirective = validated.directive;
       state.managerSubGoal = {
         action: validated.suggestedAction,

@@ -10,6 +10,7 @@ module.exports = {
   hasStarted: false,
   currentObjective: 'wooden_pickaxe',
   manualObjective: false,
+  manualObjectiveQty: 1,
   unlockedAdvancements: [],
   currentAdvancement: 'Stone Age',
   completedQuests: new Set(),
@@ -19,7 +20,27 @@ module.exports = {
     furnace: null,
     chest: null
   },
+  // Position of the carried crafting table while it is deployed on the ground (null when in inventory)
+  deployedTable: null,
   portalCastOrigin: null,
+  // Named coordinates of major milestones (portals, spawn beds, stronghold) kept across deaths and restarts
+  waypoints: {},
+  // Sticky progression flags that cannot be derived from the inventory
+  milestones: {},
+  // Eye of Ender triangulation: recorded throws and the resulting stronghold estimate
+  stronghold: {
+    throws: [],
+    estimate: null,
+    located: false,
+    reached: false
+  },
+  endPortal: {
+    center: null,
+    frameCount: 0,
+    filledCount: 0
+  },
+  // Path of the JSON file persisting waypoints and milestones (null disables persistence, e.g. in tests)
+  progressFile: null,
   lastActionResult: {
     action: 'none',
     target: 'none',
@@ -35,6 +56,16 @@ module.exports = {
   cyclesSinceLastManager: 0,
   activeActionId: 0,
   survivalSessionId: 0,
+  // Failure memory, stagnation counters and forced decisions (managed by agent/recovery.js)
+  recovery: null,
+  lastDecisionSource: 'none',
+  metrics: {
+    deterministicDecisions: 0,
+    llmDecisions: 0,
+    managerLlmCalls: 0,
+    recoveries: 0,
+    refusals: 0
+  },
   tokenStats: {
     playerPromptTokens: 0,
     playerCompletionTokens: 0,

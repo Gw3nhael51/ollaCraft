@@ -100,6 +100,14 @@ function getBlockNamesForTarget(bot, targetItemName) {
       return Boolean(b.drops?.some(id => mcData.items[id]?.name === targetItemName));
     }).map(b => b.name);
     result = matchingBlocks.length > 0 ? matchingBlocks : [targetItemName];
+
+    // An ore named by its block also matches its stone/deepslate twin, which drops the same resource
+    if (isOreBlock(clean)) {
+      const twin = clean.startsWith('deepslate_') ? clean.slice('deepslate_'.length) : `deepslate_${clean}`;
+      if (mcData.blocksByName[twin] && !result.includes(twin)) {
+        result = [...result, twin];
+      }
+    }
   }
 
   targetBlocksCache.set(cacheKey, result);

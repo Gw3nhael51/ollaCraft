@@ -38,8 +38,20 @@
 
 ---
 
+## ✅ Autonomie Fin de Jeu & Anti-Boucle (branche `feat/endgame-autonomy`)
+- [x] **Planificateur déterministe (`src/agent/planner.js`)** : exécution sans LLM de la prochaine étape faisable du plan de dépendances, réflexes de survie et logistique d'étape (retour au portail, Nether, stronghold, End).
+- [x] **Mémoire d'échecs & déblocage (`src/agent/recovery.js`)** : refus d'une paire action/cible après 2 échecs (5 min), détection de stagnation, action de remplacement forcée ; commande chat `debug`.
+- [x] **Objectif direct (`src/agent/goals.js`)** : `objectif <item> [qté]` construit et annonce la chaîne de prérequis (ex. pioche en fer avant diamant) ; correction des plans circulaires (`diamond`, `raw_iron`, `coal`).
+- [x] **Établi portable (`src/actions/behaviors/items/table.js`)** : posé pour le craft, cassé et récupéré en repartant, plus aucune position d'établi mémorisée.
+- [x] **Points de repère persistants (`src/core/progress.js`)** : portails, lits, forteresse, stronghold, portail de l'End, dernière mort ; conservés après une mort et un redémarrage.
+- [x] **Lits de réapparition (`src/actions/behaviors/world/bed.js`)** : avant le portail du Nether puis avant le portail de l'End.
+- [x] **Chaîne de quêtes complète** : `bed` → `nether_portal` → `blaze_rod` → … → `bow` / `arrow` → `end_bed` → `stronghold` → `end_portal` → `ender_dragon`.
+- [x] **Triangulation du stronghold à 2 yeux (`src/minecraft/triangulation.js`, `stronghold.js`)**, portail de l'End (`endportal.js`) et combat du dragon (`dragon.js`).
+
+---
+
 ## 🧪 Campagne de Tests In-Game & Perspectives (Roadmap Future)
 - [ ] **Campagne de tests en conditions réelles (Serveur Minecraft 1.20.4 + Ollama)** : Relever et ouvrir des issues dédiées sur les éventuels cas limites rencontrés en jeu.
-- [ ] **Étape 2 Speedrun — Exploration du Nether & Chasse aux Blazes (#23)** : Recherche de Forteresse et récolte de `blaze_rod`.
-- [ ] **Étape 3 Speedrun — Yeux de l'Ender & Triangulation du Stronghold (#24)** : Récolte d'`ender_pearl`, craft d'`ender_eye` et localisation du portail.
-- [ ] **Étape 4 Speedrun — Combat contre l'Ender Dragon (#25)** : Activation du portail de l'End, destruction des cristaux et combat final.
+- [ ] **Validation en jeu — Nether & Chasse aux Blazes (#23)** : la recherche de forteresse et le combat sont implémentés mais non validés sur serveur réel.
+- [ ] **Validation en jeu — Yeux de l'Ender & Triangulation (#24)** : mesure du cap sur l'entité `eye_of_ender`, marche de la ligne de base, trajet et recherche de la salle du portail à valider en jeu.
+- [ ] **Validation en jeu — Combat contre l'Ender Dragon (#25)** : tir à l'arc sur les cristaux et attaque du dragon à valider ; cristaux en cage et absence d'arc non gérés.

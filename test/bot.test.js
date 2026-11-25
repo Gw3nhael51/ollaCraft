@@ -178,19 +178,36 @@ test('Wiki, Manager sanitization, and ReAct prompt generation work offline', () 
   assert.equal(fallbackDecision.target, 'iron_ore');
 });
 
-test('Crafting table detection uses unified range, checks base coordinates, and clears missing table', () => {
+test('Crafting table is portable: short reuse range, no base memory, carried table grants craft access', () => {
   const bot = createMockBot([
     { name: 'oak_planks', count: 3 },
     { name: 'stick', count: 2 }
   ]);
-  const tablePos = { x: 20, y: 64, z: 0 };
-  state.base.crafting_table = tablePos;
-  bot.entity.position.distanceTo = (target) => Math.hypot(target.x, target.z);
-  bot.blockAt = (pos) => (pos === tablePos ? { name: 'crafting_table', position: tablePos } : { name: 'air' });
+  const tableId = mcData.blocksByName.crafting_table.id;
+  state.deployedTable = null;
+  state.base.crafting_table = null;
   bot.recipesFor = (id, _meta, _count, table) => (table ? [{ id }] : []);
 
-  const table = invUtils.findNearbyCraftingTable(bot, state);
-  assert.equal(table?.name, 'crafting_table');
+  // A placed table is only reused within arm's reach and is never memorized as a base to walk back to
+  const requestedRanges = [];
+  bot.findBlock = ({ matching, maxDistance }) => {
+    requestedRanges.push(maxDistance);
+    return matching === tableId ? { name: 'crafting_table', position: { x: 2, y: 64, z: 0 } } : null;
+  };
+  assert.equal(invUtils.findNearbyCraftingTable(bot, state)?.name, 'crafting_table');
+  assert.equal(requestedRanges[0], config.PORTABLE_TABLE_REUSE_RANGE);
+  assert.equal(state.base.crafting_table, null);
+
+  // Without any table, 3x3 recipes are flagged as needing a crafting table first
+  bot.findBlock = () => null;
+  assert.equal(invUtils.findNearbyCraftingTable(bot, state), null);
+  assert.equal(invUtils.hasCraftingTableAccess(bot, state), false);
+  assert.ok(invUtils.getAvailableCrafts(bot, null).some(entry => entry.startsWith('wooden_pickaxe (')));
+
+  // Carrying the table is enough: the Manager keeps 'craft' and never asks to place the table by hand
+  bot.inventory.slots[20] = { name: 'crafting_table', count: 1, type: mcData.itemsByName.crafting_table.id };
+  assert.equal(invUtils.hasCraftingTableAccess(bot, state), true);
+  assert.ok(invUtils.getAvailableCrafts(bot, null).includes('wooden_pickaxe'));
 
   const sanitized = manager.sanitizeManagerOutput(bot, {
     suggestedAction: 'craft',
@@ -200,14 +217,22 @@ test('Crafting table detection uses unified range, checks base coordinates, and 
   assert.equal(sanitized.suggestedAction, 'craft');
   assert.equal(sanitized.suggestedTarget, 'wooden_pickaxe');
 
-  const farPos = { x: 40, y: 64, z: 0 };
-  state.base.crafting_table = farPos;
-  bot.blockAt = (pos) => (pos === farPos ? { name: 'crafting_table', position: farPos } : { name: 'air' });
-  assert.equal(invUtils.findNearbyCraftingTable(bot, state), null);
+  const redirected = manager.sanitizeManagerOutput(bot, {
+    suggestedAction: 'place',
+    suggestedTarget: 'crafting_table',
+    directive: 'Pose ton établi'
+  });
+  assert.notEqual(`${redirected.suggestedAction}:${redirected.suggestedTarget}`, 'place:crafting_table');
+
+  // A deployed table is tracked until it is confirmed gone
+  const deployedPos = { x: 1, y: 64, z: 1 };
+  state.deployedTable = deployedPos;
+  bot.blockAt = (pos) => (pos === deployedPos ? { name: 'crafting_table', position: deployedPos } : { name: 'air' });
+  assert.equal(invUtils.findNearbyCraftingTable(bot, state)?.position, deployedPos);
 
   bot.blockAt = () => ({ name: 'air' });
   assert.equal(invUtils.findNearbyCraftingTable(bot, state), null);
-  assert.equal(state.base.crafting_table, null);
+  assert.equal(state.deployedTable, null);
 });
 
 test('Manager supports wiki action and defaults missing target to currentObjective', () => {
@@ -335,13 +360,29 @@ test('Smelt skill calculates fuel requirements and waits for full batch output',
   assert.ok(fullSmeltRes.message.includes('inventory is full'));
 });
 
-test('Progression stays on nether_portal when portal prerequisites exist despite missing pickaxe', () => {
+test('Progression requires a spawn bed before nether_portal, then stays on nether_portal despite missing pickaxe', () => {
   const botPortalReady = createMockBot([
     { name: 'flint_and_steel', count: 1 },
     { name: 'water_bucket', count: 1 }
   ]);
+  state.waypoints = {};
+
+  // Portal prerequisites skip the gear quests but never the spawn bed
+  invUtils.syncObjective(botPortalReady, state);
+  assert.equal(state.currentObjective, 'bed');
+
+  // Carrying a bed (it is placed right before entering the portal) unlocks the portal quest
+  botPortalReady.inventory.slots[30] = { name: 'white_bed', count: 1, type: mcData.itemsByName.white_bed.id };
   invUtils.syncObjective(botPortalReady, state);
   assert.equal(state.currentObjective, 'nether_portal');
+
+  // So does a spawn bed already placed and memorized
+  botPortalReady.inventory.slots[30] = null;
+  state.waypoints = { spawn_bed: { x: 10, y: 64, z: 10, dimension: 'overworld' } };
+  invUtils.syncObjective(botPortalReady, state);
+  assert.equal(state.currentObjective, 'nether_portal');
+
+  state.waypoints = {};
 });
 
 test('Combat collects drops at actual death position instead of initial position and avoids lava', async () => {
@@ -731,6 +772,8 @@ test('Radar keeps nether_portal, findCastOriginNearLava locates flat site, and w
   waterBot.findBlock = () => ({ name: 'grass_block', position: new Vec3(6, 64, 0) });
   waterBot.pathfinder.goto = async (goal) => {
     goalReached = { x: goal.x, y: goal.y, z: goal.z };
+    // Reaching the shore takes the bot out of the water: unstuck only reports success when that is true
+    waterBot.entity.isInWater = false;
   };
 
   const unstuckRes = await skillUnstuck(waterBot);

@@ -2,7 +2,9 @@ const { goals } = require('mineflayer-pathfinder');
 const { Vec3 } = require('vec3');
 const { getBestToolForBlock, isToolOrWeapon, countItem, getInventorySummary, isWoodLog, GENERIC_LOG_NAMES } = require('../../../perception/inventory');
 const { getBlockDrops, canHarvestBlock, getBlockNamesForTarget } = require('../../../minecraft/wikiData');
-const { isBlockExposedToAir, VALUABLE_ORES, markBadBlock, isBadBlock } = require('../../../perception/environment');
+const {
+  isBlockExposedToAir, VALUABLE_ORES, markBadBlock, isBadBlock, isBlockSubmerged, isInFloodedZone
+} = require('../../../perception/environment');
 const { fillBucketFromSource } = require('../world/portal');
 
 const LIQUID_TARGETS = new Map([
@@ -68,6 +70,8 @@ function findMineableTargetBlock(bot, targetName, isOpportunistic) {
     matching: (block) => {
       if (!block?.position) return candidateSet.has(block?.name);
       if (!candidateSet.has(block.name) || isBadBlock(block.position)) return false;
+      // Mining under water is five times slower and is how the bot drowns: only dry blocks are targeted
+      if (isBlockSubmerged(bot, block) || isInFloodedZone(block.position)) return false;
       return !isOpportunistic || (isBlockExposedToAir(bot, block) && canHarvestBlock(bot, block).canHarvest);
     },
     maxDistance: 30
@@ -260,12 +264,13 @@ function getSafeVeinNeighbor(bot, neighborPos, key, veinState) {
   if (!neighborBlock || !veinState.targetTypes.has(neighborBlock.name)) return null;
   if (!canHarvestBlock(bot, neighborBlock).canHarvest) return null;
 
-  const touchesLava = VEIN_DIRECTIONS.some(d => {
+  // Breaking a block that holds back lava or water floods the tunnel the bot is standing in
+  const touchesLiquid = VEIN_DIRECTIONS.some(d => {
     const checkBlock = bot.blockAt(neighborPos.plus(d));
-    return checkBlock && (checkBlock.name === 'lava' || checkBlock.name === 'flowing_lava');
+    return checkBlock && ['lava', 'flowing_lava', 'water', 'flowing_water'].includes(checkBlock.name);
   });
 
-  return touchesLava ? null : neighborBlock;
+  return touchesLiquid ? null : neighborBlock;
 }
 
 /**
@@ -362,6 +367,7 @@ async function harvestNearbyExposedOresStep(bot, currentCount, maxCount, state =
     matching: (block) => {
       if (!VALUABLE_ORES.has(block.name)) return false;
       if (isBadBlock(block.position)) return false;
+      if (isBlockSubmerged(bot, block) || isInFloodedZone(block.position)) return false;
       const harvestCheck = canHarvestBlock(bot, block);
       if (!harvestCheck.canHarvest) return false;
       return isBlockExposedToAir(bot, block);
