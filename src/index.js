@@ -257,7 +257,7 @@ bot.on('spawn', () => {
   }
 
   // Authenticate bot via AuthMe with safety delay
-  const pwd = config.AUTH_PASSWORD;
+  const pwd = config.AUTH_ENABLED ? config.AUTH_PASSWORD : '';
   if (pwd && !state.hasStarted) {
     setTimeout(() => {
       bot.chat(`/login ${pwd}`);
@@ -271,7 +271,7 @@ bot.on('spawn', () => {
 // Handle server messages for authentication and advancements
 bot.on('messagestr', (message) => {
   const text = message.toLowerCase();
-  const pwd = config.AUTH_PASSWORD;
+  const pwd = config.AUTH_ENABLED ? config.AUTH_PASSWORD : '';
 
   if (text.includes('/register') && pwd) {
     bot.chat(`/register ${pwd} ${pwd}`);

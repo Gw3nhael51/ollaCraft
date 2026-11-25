@@ -226,6 +226,7 @@ Players can interact with and command the bot directly using in-game chat:
 | `MC_PORT` | `25565` | Minecraft server port. |
 | `MC_USERNAME` | `Ollama` | In-game player name for the bot. |
 | `MC_PASSWORD` | *(Empty)* | Password used for server `/register` or `/login` commands. |
+| `MC_AUTH_PLUGIN` | `true` if `MC_PASSWORD` is set, else `false` | Set to `false` when the server has no `/register` / `/login` plugin: the bot then starts right after spawning. |
 | `OLLAMA_HOST` | `http://localhost:11434` | Ollama REST API base URL. |
 | `OLLAMA_MODEL` | `qwen3.5:9B` | Fallback Ollama model tag. |
 | `OLLAMA_MODEL_PLAYER` | `qwen3.5:9B` | Dedicated model for tactical ReAct decisions. |

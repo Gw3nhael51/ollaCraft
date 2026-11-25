@@ -27,6 +27,10 @@ module.exports = {
   // Keep the model loaded between cycles to avoid reload latency
   OLLAMA_KEEP_ALIVE: process.env.OLLAMA_KEEP_ALIVE || '30m',
   AUTH_PASSWORD: process.env.MC_PASSWORD || '',
+  // Whether the server runs an auth plugin (/register, /login). Defaults to true when a password is set.
+  AUTH_ENABLED: process.env.MC_AUTH_PLUGIN === undefined
+    ? Boolean(process.env.MC_PASSWORD)
+    : ['true', '1', 'yes', 'on'].includes(process.env.MC_AUTH_PLUGIN.trim().toLowerCase()),
   BOT_CONFIG: {
     host: process.env.MC_HOST || 'localhost',
     port: Number.parseInt(process.env.MC_PORT) || 25565,
