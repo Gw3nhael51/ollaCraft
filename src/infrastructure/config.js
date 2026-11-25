@@ -31,7 +31,7 @@ module.exports = {
     host: process.env.MC_HOST || 'localhost',
     port: Number.parseInt(process.env.MC_PORT) || 25565,
     username: process.env.MC_USERNAME || 'Ollama',
-    version: '1.20.4'
+    version: process.env.MC_VERSION || '1.20.4'
   },
 
   SOFT_BLOCKS: new Set(['dirt', 'grass_block', 'sand', 'gravel', 'stone', 'cobblestone', 'clay']),
