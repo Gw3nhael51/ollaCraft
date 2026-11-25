@@ -31,6 +31,8 @@ module.exports = {
   AUTH_ENABLED: process.env.MC_AUTH_PLUGIN === undefined
     ? Boolean(process.env.MC_PASSWORD)
     : ['true', '1', 'yes', 'on'].includes(process.env.MC_AUTH_PLUGIN.trim().toLowerCase()),
+  // Minimum delay (ms) between two chat lines sent by the bot, to stay under the server's anti-spam
+  CHAT_MIN_INTERVAL_MS: parsePositiveInt(process.env.MC_CHAT_INTERVAL_MS, 1500),
   // Read-only status API consumed by the stats dashboard (disabled when BOT_API_PORT is 0 or BOT_API_KEY is empty)
   BOT_API_PORT: Number.parseInt(process.env.BOT_API_PORT, 10) || 0,
   BOT_API_HOST: process.env.BOT_API_HOST || '0.0.0.0',

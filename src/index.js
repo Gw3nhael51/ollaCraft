@@ -12,6 +12,7 @@ const { parseGoalCommand, describeGoalPlan, setManualGoal, clearManualGoal } = r
 const { forceRecovery, describeDebugState } = require('./agent/recovery');
 const { installSurvivalWatchdog } = require('./agent/watchdog');
 const { startStatusApi } = require('./api/server');
+const { installChatQueue } = require('./core/chat');
 const {
   loadProgress, getDimension, getWaypoint, saveWaypoint, removeWaypoint, listWaypoints,
   setMilestone, horizontalDistanceTo
@@ -19,6 +20,8 @@ const {
 const { saveRegisteredPortalCoords, loadRegisteredPortalCoords, executeFallbackPortalTeleport } = require('./actions/behaviors/world/portal');
 
 const bot = mineflayer.createBot(config.BOT_CONFIG);
+// Every bot.chat() goes through a rate limiter: the server kicks bots that talk too fast
+installChatQueue(bot, { minIntervalMs: config.CHAT_MIN_INTERVAL_MS });
 startStatusApi(bot, state, {
   port: config.BOT_API_PORT,
   host: config.BOT_API_HOST,
