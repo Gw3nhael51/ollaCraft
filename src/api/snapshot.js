@@ -60,6 +60,32 @@ function buildInventory(bot) {
 }
 
 /**
+ * List the 36 slots of the player inventory in display order: the 3 rows of 9 (slots 9-35), then the hotbar (36-44)
+ * @param {object} bot Mineflayer bot instance
+ * @returns {Array<{ name: string, count: number }|null>} 36 entries, null for an empty slot
+ */
+function buildInventorySlots(bot) {
+  const slots = bot?.inventory?.slots || [];
+  const result = [];
+  for (let index = 9; index <= 44; index += 1) {
+    const item = slots[index];
+    result.push(item ? { name: item.name, count: item.count } : null);
+  }
+  return result;
+}
+
+/**
+ * Turn the manager's sub-goal (a string or an object such as { action, target }) into a short text
+ * @param {string|object|null|undefined} subGoal Sub-goal held in the state
+ * @returns {string|null} Text such as "procedure build_portal", or null
+ */
+function formatSubGoal(subGoal) {
+  if (!subGoal) return null;
+  if (typeof subGoal === 'string') return subGoal;
+  return [subGoal.action, subGoal.target].filter(Boolean).join(' ') || null;
+}
+
+/**
  * Describe how many units of the current objective are required
  * @param {object} bot Mineflayer bot instance
  * @param {object} state Global bot state
@@ -98,10 +124,11 @@ function buildSnapshot(bot, state, options = {}) {
       amount: spawned ? safeRequirement(bot, state) : 1,
       manual: Boolean(state.manualObjective),
       directive: state.managerDirective || null,
-      sub_goal: state.managerSubGoal || null
+      sub_goal: formatSubGoal(state.managerSubGoal)
     },
     quests: spawned ? buildQuests(bot, state, now) : [],
     inventory: spawned ? buildInventory(bot) : {},
+    inventory_slots: spawned ? buildInventorySlots(bot) : [],
     last_action: state.lastActionResult || null,
     recent_actions: (state.actionHistory || []).slice(-RECENT_ACTIONS_LIMIT),
     decision_source: state.lastDecisionSource || 'none',

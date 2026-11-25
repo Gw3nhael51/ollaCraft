@@ -65,7 +65,12 @@ test('snapshot reports position, inventory, objective and the ordered quest chai
   assert.equal(snap.dimension, 'overworld');
   assert.deepEqual(snap.position, { x: 10, y: 64, z: -6 });
   assert.equal(snap.inventory.oak_log, 4);
+  assert.equal(snap.inventory_slots.length, 36);
+  assert.deepEqual(snap.inventory_slots[0], { name: 'wooden_pickaxe', count: 1 });
+  assert.deepEqual(snap.inventory_slots[1], { name: 'oak_log', count: 4 });
+  assert.equal(snap.inventory_slots[35], null);
   assert.equal(snap.objective.id, 'cobblestone');
+  assert.equal(snap.objective.sub_goal, null);
   assert.equal(snap.uptime_seconds, 5);
   assert.deepEqual(snap.quests.map(q => q.id), config.QUEST_CHAIN);
   assert.equal(snap.quests.find(q => q.id === 'wooden_pickaxe').done, true);
@@ -113,4 +118,11 @@ test('status server requires the API key, keeps /health public and rejects other
   } finally {
     await new Promise(resolve => server.close(resolve));
   }
+});
+
+test('snapshot turns an object sub-goal into text', () => {
+  resetQuestCache();
+  const state = createState();
+  state.managerSubGoal = { action: 'procedure', target: 'build_portal', isReliable: true };
+  assert.equal(buildSnapshot(createFakeBot(), state).objective.sub_goal, 'procedure build_portal');
 });
