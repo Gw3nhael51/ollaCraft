@@ -31,6 +31,10 @@ module.exports = {
   AUTH_ENABLED: process.env.MC_AUTH_PLUGIN === undefined
     ? Boolean(process.env.MC_PASSWORD)
     : ['true', '1', 'yes', 'on'].includes(process.env.MC_AUTH_PLUGIN.trim().toLowerCase()),
+  // Read-only status API consumed by the stats dashboard (disabled when BOT_API_PORT is 0 or BOT_API_KEY is empty)
+  BOT_API_PORT: Number.parseInt(process.env.BOT_API_PORT, 10) || 0,
+  BOT_API_HOST: process.env.BOT_API_HOST || '0.0.0.0',
+  BOT_API_KEY: process.env.BOT_API_KEY || '',
   BOT_CONFIG: {
     host: process.env.MC_HOST || 'localhost',
     port: Number.parseInt(process.env.MC_PORT) || 25565,

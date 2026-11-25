@@ -11,6 +11,7 @@ const { clearBadBlocks } = require('./perception/environment');
 const { parseGoalCommand, describeGoalPlan, setManualGoal, clearManualGoal } = require('./agent/goals');
 const { forceRecovery, describeDebugState } = require('./agent/recovery');
 const { installSurvivalWatchdog } = require('./agent/watchdog');
+const { startStatusApi } = require('./api/server');
 const {
   loadProgress, getDimension, getWaypoint, saveWaypoint, removeWaypoint, listWaypoints,
   setMilestone, horizontalDistanceTo
@@ -18,6 +19,11 @@ const {
 const { saveRegisteredPortalCoords, loadRegisteredPortalCoords, executeFallbackPortalTeleport } = require('./actions/behaviors/world/portal');
 
 const bot = mineflayer.createBot(config.BOT_CONFIG);
+startStatusApi(bot, state, {
+  port: config.BOT_API_PORT,
+  host: config.BOT_API_HOST,
+  apiKey: config.BOT_API_KEY
+});
 bot.loadPlugin(pathfinder);
 // Skills can keep the bot under water longer than its air lasts: this aborts them in time
 installSurvivalWatchdog(bot, state);

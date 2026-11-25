@@ -240,6 +240,9 @@ Players can interact with and command the bot directly using in-game chat:
 | `SPAWN_PROTECTION_RADIUS` | `16` | Radius of the server's `spawn-protection`. Once a placement has been refused near the world spawn, the bot leaves this radius before building. |
 | `OLLAMA_KEEP_ALIVE` | `30m` | How long Ollama keeps the model loaded between cycles. |
 | `PORT` | `127.0.0.1:25565:25565` | Optional Docker port mapping for `mc-server`. |
+| `BOT_API_PORT` | `0` (disabled) | Port of the read-only status API (`GET /status`, `GET /health`) used by the stats dashboard. |
+| `BOT_API_HOST` | `0.0.0.0` | Interface the status API listens on. |
+| `BOT_API_KEY` | *(Empty)* | Required to enable the API; sent by clients in the `X-API-Key` header. |
 
 ### Bot Rules & Parameters (`src/infrastructure/config.js`)
 
