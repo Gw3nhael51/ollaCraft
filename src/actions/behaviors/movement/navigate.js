@@ -34,7 +34,7 @@ const DRY_GROUND_BLOCKS = new Set([
  */
 function isDiggableObstacle(block, bot = null) {
   if (!block?.name) return false;
-  if (config.SOFT_BLOCKS.has(block.name) || DEEP_CAVE_DIGGABLE_BLOCKS.has(block.name)) return true;
+  if (config.SOFT_BLOCKS.has(block.name)) return true;
   if (block.name.endsWith('_leaves') || isWoodLog(block.name)) return true;
 
   // With a pickaxe in the pocket, deepslate, andesite or ore walls are no obstacle either

@@ -1,6 +1,7 @@
 const { Vec3 } = require('vec3');
 const { goals } = require('mineflayer-pathfinder');
 const config = require('../../../infrastructure/config');
+const { markBadBlock, isBadBlock } = require('../../../perception/environment');
 
 const AIR_NAMES = new Set(['air', 'cave_air', 'void_air']);
 // Blocks a placed block simply replaces, exactly as when a player clicks through tall grass
@@ -151,12 +152,13 @@ function findGroundPlacement(bot, options = {}) {
   if (best) return best.reference;
   if (typeof bot.findBlock !== 'function') return null;
 
-  // Fallback for partially loaded surroundings: nearest solid block with a free, unobstructed top
+  // Fallback for partially loaded surroundings: nearest non-interactive solid block with a free, unobstructed top
   return bot.findBlock({
     matching: (block) => {
-      if (!isSolidGround(block)) return false;
+      if (!isPlacementReference(block)) return false;
       if (!block?.position) return true;
       const placePos = block.position.offset(0, 1, 0);
+      if (isBadBlock(placePos)) return false;
       const above = bot.blockAt(placePos);
       return (isAirBlock(above) || isReplaceableBlock(above)) && !isCellObstructed(bot, placePos);
     },
@@ -199,22 +201,22 @@ function isServerRefusal(error) {
  */
 async function placeItemNearby(bot, item, options = {}) {
   const maxAttempts = options.maxAttempts || 3;
-  let candidates = findPlacementSpots(bot, { floorOnly: Boolean(options.floorOnly) });
-
-  if (candidates.length === 0) {
-    // Fallback for partially loaded surroundings
-    const ground = findGroundPlacement(bot, { maxDistance: 4 });
-    if (ground?.position) {
-      candidates = [{ position: ground.position.offset(0, 1, 0), reference: ground, face: new Vec3(0, 1, 0) }];
-    }
-  }
-  if (candidates.length === 0) {
-    return { success: false, position: null, refused: false, error: 'no free spot next to a solid block within reach' };
-  }
+  const gridCandidates = findPlacementSpots(bot, { floorOnly: Boolean(options.floorOnly) })
+    .filter(spot => !isBadBlock(spot.position));
 
   let lastError = null;
   let refused = false;
-  for (const spot of candidates.slice(0, maxAttempts)) {
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    let spot = gridCandidates[attempt] || null;
+    if (!spot && gridCandidates.length === 0) {
+      // Fallback for partially loaded surroundings
+      const ground = findGroundPlacement(bot, { maxDistance: 4 });
+      if (ground?.position) {
+        spot = { position: ground.position.offset(0, 1, 0), reference: ground, face: new Vec3(0, 1, 0) };
+      }
+    }
+    if (!spot) break;
+
     try {
       const heldItem = bot.inventory.items().find(i => i.name === item.name) || item;
       await bot.equip(heldItem, 'hand');
@@ -222,9 +224,13 @@ async function placeItemNearby(bot, item, options = {}) {
       await bot.placeBlock(spot.reference, spot.face);
       return { success: true, position: spot.position.clone ? spot.position.clone() : spot.position, refused: false, error: null };
     } catch (error) {
+      markBadBlock(spot.position);
       lastError = error;
       refused = refused || isServerRefusal(error);
     }
+  }
+  if (!lastError) {
+    return { success: false, position: null, refused: false, error: 'no free spot next to a solid block within reach' };
   }
   return { success: false, position: null, refused, error: lastError?.message || 'placement failed' };
 }
