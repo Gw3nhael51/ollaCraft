@@ -52,6 +52,13 @@ test('Entry point chat commands: direct objective, debug loop-breaker, plan, way
     exports: { createBot: () => fakeBot }
   };
 
+  const config = require('../src/infrastructure/config');
+  const originalChatInterval = config.CHAT_MIN_INTERVAL_MS;
+  const originalApiPort = config.BOT_API_PORT;
+  // Disable chat rate limiting and status API binding so offline chat tests stay synchronous and isolated
+  config.CHAT_MIN_INTERVAL_MS = 0;
+  config.BOT_API_PORT = 0;
+
   try {
     const state = require('../src/core/state');
     // Keep the autonomous loop (and therefore any model call) from starting during this test
@@ -155,6 +162,8 @@ test('Entry point chat commands: direct objective, debug loop-breaker, plan, way
     assert.equal(state.manualObjective, false);
     assert.equal((await sendChat('tokens')).length, 2);
   } finally {
+    config.CHAT_MIN_INTERVAL_MS = originalChatInterval;
+    config.BOT_API_PORT = originalApiPort;
     if (originalModule) require.cache[mineflayerPath] = originalModule;
     else delete require.cache[mineflayerPath];
     fs.rmSync(tempDir, { recursive: true, force: true });
