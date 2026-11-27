@@ -126,3 +126,17 @@ test('snapshot turns an object sub-goal into text', () => {
   state.managerSubGoal = { action: 'procedure', target: 'build_portal', isReliable: true };
   assert.equal(buildSnapshot(createFakeBot(), state).objective.sub_goal, 'procedure build_portal');
 });
+
+test('snapshot marks bot disconnected when state.isConnected is false even with stale entity', () => {
+  resetQuestCache();
+  const state = createState();
+  state.isConnected = false;
+  state.isSurviving = false;
+  const snap = buildSnapshot(createFakeBot(), state);
+
+  assert.equal(snap.connected, false);
+  assert.equal(snap.running, false);
+  assert.equal(snap.position, null);
+  assert.deepEqual(snap.quests, []);
+  assert.deepEqual(snap.inventory, {});
+});

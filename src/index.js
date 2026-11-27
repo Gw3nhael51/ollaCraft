@@ -244,6 +244,7 @@ bot.once('spawn', () => {
 
 // Handle bot spawn and respawn events on server
 bot.on('spawn', () => {
+  state.isConnected = true;
   console.log('✅ Bot spawned on server!');
   const dimension = getDimension(bot);
   console.log(`[DIMENSION] Spawned in dimension: ${dimension}`);
@@ -572,6 +573,21 @@ bot.on('message', (jsonMsg) => {
   console.log(`[SERVER] ${jsonMsg.toAnsi()}`);
 });
 
+/**
+ * Stop the autonomous survival loop and clear connection flags when the server disconnects
+ * @param {string} [reason] Disconnect reason reported by Mineflayer
+ */
+function handleDisconnect(reason) {
+  console.log(`🔌 Disconnected from server (${reason || 'unknown reason'}). Stopping autonomous loop.`);
+  state.isConnected = false;
+  state.isSurviving = false;
+  state.survivalSessionId = (state.survivalSessionId || 0) + 1;
+  state.activeActionId = (state.activeActionId || 0) + 1;
+  bot.pathfinder?.setGoal(null);
+  bot.clearControlStates?.();
+}
+
 // Log disconnections and socket errors
 bot.on('kicked', console.log);
 bot.on('error', console.log);
+bot.on('end', handleDisconnect);

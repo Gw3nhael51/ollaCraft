@@ -108,7 +108,8 @@ function safeRequirement(bot, state) {
  */
 function buildSnapshot(bot, state, options = {}) {
   const now = options.now ?? Date.now();
-  const spawned = Boolean(bot?.entity);
+  // Ignore stale entity data left in memory after a server disconnect
+  const spawned = Boolean(bot?.entity) && state.isConnected !== false;
 
   return {
     username: bot?.username || config.BOT_CONFIG.username,
