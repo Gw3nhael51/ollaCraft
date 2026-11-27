@@ -1740,3 +1740,36 @@ test('portal loop breaker skips blacklisted partial frames and respects blocked 
     Object.assign(state, prev);
   }
 });
+
+test('travelToKnownLava descends when horizontally above deep remembered lava instead of overshooting', async () => {
+  const { Vec3 } = require('vec3');
+  const { rememberLava, forgetLava } = require('../src/perception/environment');
+  const { travelToKnownLava } = require('../src/actions/behaviors/movement/navigate');
+
+  const lavaPos = new Vec3(730, -43, 5);
+  rememberLava(lavaPos, 'overworld');
+
+  let descendedGoal = false;
+  const bot = {
+    game: { dimension: 'overworld' },
+    entity: { position: new Vec3(715, 64, 2) },
+    pathfinder: {
+      goto: async (goal) => {
+        if (typeof goal?.isEnd === 'function' && goal.isEnd({ y: 40 })) {
+          descendedGoal = true;
+          bot.entity.position = new Vec3(715, 50, 2);
+        }
+      },
+      setGoal: () => {}
+    },
+    clearControlStates: () => {}
+  };
+
+  try {
+    const message = await travelToKnownLava(bot, 20000);
+    assert.equal(descendedGoal, true);
+    assert.match(message, /Descending towards remembered lava/);
+  } finally {
+    forgetLava(lavaPos, 5);
+  }
+});

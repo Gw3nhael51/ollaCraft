@@ -885,24 +885,36 @@ async function travelToKnownLava(bot, timeoutMs) {
   if (dist > KNOWN_LAVA_MAX_TRAVEL) return null;
 
   const { x, y, z } = known.position;
+  const dx = x - pos.x;
+  const dz = z - pos.z;
+  const horiz = Math.hypot(dx, dz);
+  const dy = pos.y - y;
   console.log(`[EXPLORE] Returning to remembered lava at (${x}, ${y}, ${z}), ${Math.round(dist)} blocks away...`);
   if (dist <= 40) {
     const outcome = await stepTowardsLava(bot, { position: known.position });
     return outcome.reached ? outcome.message : null;
   }
 
-  const dx = x - pos.x;
-  const dz = z - pos.z;
-  const horiz = Math.hypot(dx, dz) || 1;
-  const waypointX = Math.round(pos.x + (dx / horiz) * 24);
-  const waypointZ = Math.round(pos.z + (dz / horiz) * 24);
+  // When already horizontally above deep remembered lava, descend instead of overshooting on the surface
+  if (horiz <= 24 && dy > 12) {
+    const descended = await descendTowardsLavaDepth(bot, Math.min(14000, timeoutMs - 2000));
+    if (descended) {
+      return `Descending towards remembered lava at (${x}, ${y}, ${z}) (now Y:${Math.floor(bot.entity.position.y)}).`;
+    }
+    forgetLava(known.position, 2);
+    return null;
+  }
+
+  const stepDist = Math.min(24, horiz || 1);
+  const waypointX = Math.round(pos.x + (dx / (horiz || 1)) * stepDist);
+  const waypointZ = Math.round(pos.z + (dz / (horiz || 1)) * stepDist);
   try {
     await moveExploreStep(bot, waypointX, waypointZ, false, Math.min(14000, timeoutMs - 2000));
   } catch (err) {
     console.warn('[EXPLORE] Travel to remembered lava impeded:', err.message);
   }
-  const moved = Math.hypot(bot.entity.position.x - pos.x, bot.entity.position.z - pos.z);
-  if (moved >= 6) return `Travelling back towards remembered lava at (${x}, ${y}, ${z}).`;
+  const newHoriz = Math.hypot(x - bot.entity.position.x, z - bot.entity.position.z);
+  if (newHoriz <= horiz - 4) return `Travelling back towards remembered lava at (${x}, ${y}, ${z}).`;
   forgetLava(known.position, 2);
   return null;
 }
@@ -1283,6 +1295,7 @@ module.exports = {
   isDiggableObstacle,
   findNearestDryLand,
   moveExploreStep,
+  travelToKnownLava,
   hasSolidCeilingAbove,
   climbTowardsSurface,
   isSurfaceTarget,
