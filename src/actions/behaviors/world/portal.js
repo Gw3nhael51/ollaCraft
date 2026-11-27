@@ -609,9 +609,11 @@ function findPortalFrameCandidate(bot, maxDistance = 48) {
 
   for (const rawPos of obsidianPositions) {
     const obsVec = new Vec3(rawPos.x, rawPos.y, rawPos.z);
+    if (isBadBlock(obsVec)) continue;
     for (const axis of ['x', 'z']) {
       for (const coreOff of coreOffsets) {
         const base = obsVec.minus(orientOffset(coreOff, axis));
+        if (isBadBlock(base)) continue;
         const key = `${base.x},${base.y},${base.z},${axis}`;
         if (seenKeys.has(key)) continue;
         seenKeys.add(key);
@@ -1141,6 +1143,10 @@ async function castPortalWithMold(bot, state, lavaBlock, presetFrame = null) {
 
   if (bot.entity?.position?.distanceTo && bot.entity.position.distanceTo(base) > 10) {
     if (lavaBlock?.position) markLavaClusterBad(bot, lavaBlock.position, 8);
+    markBadBlock(base);
+    for (const step of PORTAL_BUILD_STEPS) {
+      if (!step.isCorner) markBadBlock(base.plus(orientOffset(step.offset, axis)));
+    }
     if (state) state.portalCastOrigin = null;
     return {
       success: false,

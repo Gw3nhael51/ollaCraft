@@ -1656,3 +1656,87 @@ test('buildObsidianFrame tolerates null block positions and builds on cobbled_de
   assert.equal(frameRes.success, true);
   assert.ok(frameRes.portalInnerPos);
 });
+
+test('portal loop breaker skips blacklisted partial frames and respects blocked portal/explore pairs', () => {
+  const { Vec3 } = require('vec3');
+  const state = require('../src/core/state');
+  const { markBadBlock } = require('../src/perception/environment');
+  const { blockAction } = require('../src/agent/recovery');
+  const { findPortalFrameCandidate } = require('../src/actions/behaviors/world/portal');
+  const { tryAssignPortalOrNetherGoal } = require('../src/agent/manager');
+
+  clearBadBlocks();
+  const prev = {
+    currentObjective: state.currentObjective,
+    lastActionResult: state.lastActionResult,
+    managerDirective: state.managerDirective,
+    managerSubGoal: state.managerSubGoal,
+    recovery: state.recovery,
+    useDiamondPortalFallback: state.useDiamondPortalFallback,
+    registeredPortalCoords: state.registeredPortalCoords
+  };
+
+  try {
+    const obsidianId = mcData.blocksByName.obsidian.id;
+    const lavaId = mcData.blocksByName.lava.id;
+    const basePos = new Vec3(2, 53, 113);
+    const frameObsidian = [new Vec3(2, 53, 113), new Vec3(3, 53, 113), new Vec3(1, 54, 113)];
+    const lavaPos = new Vec3(10, 32, 118);
+
+    const bot = {
+      registry: mcData,
+      health: 20,
+      food: 20,
+      game: { dimension: 'minecraft:overworld' },
+      entity: { position: new Vec3(10, 32, 116), isInWater: false },
+      entities: {},
+      inventory: {
+        items: () => [
+          { name: 'flint_and_steel', count: 1 },
+          { name: 'water_bucket', count: 1 },
+          { name: 'stone_pickaxe', count: 1 },
+          { name: 'cobblestone', count: 64 }
+        ]
+      },
+      blockAt: (pos) => {
+        if (frameObsidian.some(p => p.equals(pos))) return { name: 'obsidian', type: obsidianId, position: pos };
+        if (pos.equals(lavaPos)) return { name: 'lava', type: lavaId, metadata: 0, position: pos };
+        return { name: 'air', type: 0, position: pos };
+      },
+      findBlocks: ({ matching }) => {
+        if (matching === obsidianId) return frameObsidian;
+        const pool = [lavaPos, lavaPos.offset(1, 0, 0), lavaPos.offset(0, 0, 1), lavaPos.offset(1, 0, 1)];
+        return pool.filter(p => typeof matching === 'function' && matching({ type: lavaId, metadata: 0, position: p }));
+      },
+      findBlock: ({ matching }) => {
+        if (typeof matching === 'function' && matching({ type: lavaId, metadata: 0, position: lavaPos })) {
+          return { name: 'lava', type: lavaId, metadata: 0, position: lavaPos };
+        }
+        return null;
+      }
+    };
+
+    assert.ok(findPortalFrameCandidate(bot, 48));
+    for (const pos of frameObsidian) markBadBlock(pos);
+    assert.equal(findPortalFrameCandidate(bot, 48), null);
+
+    state.currentObjective = 'nether_portal';
+    state.useDiamondPortalFallback = false;
+    state.registeredPortalCoords = null;
+    state.recovery = null;
+    state.lastActionResult = { action: 'explore', target: 'lava', success: false, message: 'Exploration timeout' };
+    blockAction(state, 'portal', 'none', 'Lava pool unreachable', Date.now(), bot);
+
+    assert.equal(tryAssignPortalOrNetherGoal(bot), true);
+    assert.equal(state.managerSubGoal.action, 'explore');
+    assert.equal(state.managerSubGoal.target, 'lava');
+
+    blockAction(state, 'explore', 'lava', 'Exploration timeout', Date.now(), bot);
+    state.managerSubGoal = null;
+    assert.equal(tryAssignPortalOrNetherGoal(bot), false);
+    assert.equal(state.managerSubGoal, null);
+  } finally {
+    clearBadBlocks();
+    Object.assign(state, prev);
+  }
+});

@@ -596,6 +596,10 @@ function findPortalOpportunity(bot) {
     (!block.metadata || block.metadata === 0) &&
     (!block.position || !isBadBlock(block.position))
   );
+  const isReachableLavaSource = (block) => (
+    isAnyLavaSource(block) &&
+    (!bot.entity?.position || !block.position || Math.abs(block.position.y - bot.entity.position.y) <= 10)
+  );
 
   const frame = findPortalFrameCandidate(bot, 48);
   if (frame?.isComplete) {
@@ -604,7 +608,7 @@ function findPortalOpportunity(bot) {
   if (frame && invUtils.countItem(bot, 'obsidian') > 0) {
     return 'partial_frame_obsidian';
   }
-  if (frame && lavaId && bot.findBlock({ matching: isAnyLavaSource, maxDistance: 48 })) {
+  if (frame && lavaId && bot.findBlock({ matching: isReachableLavaSource, maxDistance: 32 })) {
     return 'partial_frame_lava';
   }
 
@@ -613,10 +617,6 @@ function findPortalOpportunity(bot) {
   }
 
   if (lavaId) {
-    const isReachableLavaSource = (block) => (
-      isAnyLavaSource(block) &&
-      (!bot.entity?.position || !block.position || Math.abs(block.position.y - bot.entity.position.y) <= 10)
-    );
     if (typeof bot.findBlocks === 'function') {
       const poolBlocks = bot.findBlocks({
         matching: isReachableLavaSource,
@@ -971,12 +971,13 @@ function tryAssignPortalOrNetherGoal(bot) {
   const hasWaterOrObsidian = hasWaterBucket || invUtils.countItem(bot, 'obsidian') >= 10;
   const portalOpportunity = findPortalOpportunity(bot);
   const lastFailedPortal = state.lastActionResult?.success === false && state.lastActionResult?.action === 'portal';
+  const portalBlocked = isActionBlocked(state, 'portal', 'none', Date.now(), bot);
 
-  if ((portalOpportunity === 'partial_frame_lava' || portalOpportunity === 'lava_pool') && hasFlintAndSteel && hasWaterBucket && countScaffoldBlocks(bot) < 12) {
+  if ((portalOpportunity === 'partial_frame_lava' || portalOpportunity === 'lava_pool') && !portalBlocked && hasFlintAndSteel && hasWaterBucket && countScaffoldBlocks(bot) < 12) {
     return tryAssignMoldScaffoldGathering(bot);
   }
 
-  if (portalOpportunity && !lastFailedPortal) {
+  if (portalOpportunity && !lastFailedPortal && !portalBlocked) {
     if (portalOpportunity === 'active_portal' || portalOpportunity === 'partial_frame_obsidian') {
       return assignManagerSubGoal('portal', 'none', "Portail détecté à proximité : exécute immédiatement l'action 'portal' pour le compléter ou y entrer.", true);
     }
@@ -995,7 +996,7 @@ function tryAssignPortalOrNetherGoal(bot) {
         `[PORTAL] Début de portail détecté (${partialFrame.presentCount}/10 obsidienne) en (${partialFrame.base.x},${partialFrame.base.y},${partialFrame.base.z}), manque ${partialFrame.missingCount} obsidienne ou de la lave proche.`
       );
     }
-    if (hasFlintAndSteel && hasWaterOrObsidian) {
+    if (hasFlintAndSteel && hasWaterOrObsidian && !isActionBlocked(state, 'explore', 'lava', Date.now(), bot)) {
       const isSafeToFastExplore = (
         (bot.health ?? 20) >= 14 &&
         (bot.food ?? 20) >= 12 &&
@@ -1006,12 +1007,15 @@ function tryAssignPortalOrNetherGoal(bot) {
     }
   }
 
-  if (tryAssignWaterBucketRecovery(bot, lastFailedPortal)) {
+  if (tryAssignWaterBucketRecovery(bot, lastFailedPortal || portalBlocked)) {
     return true;
   }
 
-  if (hasFlintAndSteel && hasWaterOrObsidian && lastFailedPortal) {
-    return assignManagerSubGoal('explore', 'lava', "Échec sur le site actuel : explore pour trouver un autre lac de lave.", true);
+  if (hasFlintAndSteel && hasWaterOrObsidian && (lastFailedPortal || portalBlocked)) {
+    if (!isActionBlocked(state, 'explore', 'lava', Date.now(), bot)) {
+      return assignManagerSubGoal('explore', 'lava', "Échec sur le site actuel : explore pour trouver un autre lac de lave.", true);
+    }
+    return false;
   }
 
   return false;
