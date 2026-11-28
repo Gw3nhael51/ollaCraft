@@ -37,6 +37,8 @@ async function travelTowards(bot, destination, options = {}) {
   if (hasArrived()) return { arrived: true, progressed: false, remaining: startTotal, error: null };
 
   const pos = bot.entity.position;
+  const verticalGap = ignoreY ? 0 : destination.y - pos.y;
+  const needsSteppedAscent = !ignoreY && verticalGap > 16 && startDistance <= legDistance + 8;
   let goal;
   if (startDistance > legDistance + 8) {
     const scale = legDistance / startDistance;
@@ -47,6 +49,9 @@ async function travelTowards(bot, destination, options = {}) {
     );
   } else if (ignoreY) {
     goal = new goals.GoalNearXZ(Math.round(destination.x), Math.round(destination.z), Math.max(1, radius));
+  } else if (needsSteppedAscent && typeof goals.GoalY === 'function') {
+    // Climb in short vertical legs instead of asking pathfinder for a 100-block vertical route at once
+    goal = new goals.GoalY(Math.round(Math.min(destination.y, pos.y + 12)));
   } else {
     goal = new goals.GoalNear(Math.round(destination.x), Math.round(destination.y), Math.round(destination.z), Math.max(1, radius));
   }
@@ -65,6 +70,13 @@ async function travelTowards(bot, destination, options = {}) {
     if (navTimer) clearTimeout(navTimer);
     bot.pathfinder.setGoal?.(null);
     bot.clearControlStates?.();
+  }
+
+  // If pathfinder failed to climb towards a high waypoint, pillar up directly with lava-safe checks
+  if (needsSteppedAscent && startTotal - distanceTo() < 3) {
+    const { tryPillarUp } = require('./navigate');
+    const pillared = await tryPillarUp(bot, Math.min(20000, timeoutMs));
+    if (pillared) error = null;
   }
 
   const remaining = distanceTo();

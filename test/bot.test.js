@@ -1838,3 +1838,26 @@ test('tryAssignPortalOrNetherGoal prioritizes existing nether_portal waypoint an
     Object.assign(state, prev);
   }
 });
+
+test('travelTowards climbs in stepped vertical legs when destination is far above the bot', async () => {
+  const { Vec3 } = require('vec3');
+  const { travelTowards } = require('../src/actions/behaviors/movement/waypoint');
+
+  let receivedGoal = null;
+  const bot = {
+    entity: { position: new Vec3(2, -44, 119) },
+    pathfinder: {
+      goto: async (goal) => {
+        receivedGoal = goal;
+        bot.entity.position = new Vec3(2, -32, 119);
+      },
+      setGoal: () => {}
+    },
+    clearControlStates: () => {}
+  };
+
+  const result = await travelTowards(bot, { x: 6, y: 67, z: 115 }, { radius: 4, timeoutMs: 5000 });
+  assert.equal(result.progressed, true);
+  assert.equal(result.arrived, false);
+  assert.equal(receivedGoal.y, -32);
+});
