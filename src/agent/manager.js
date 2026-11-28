@@ -596,6 +596,10 @@ function findPortalOpportunity(bot) {
     (!block.metadata || block.metadata === 0) &&
     (!block.position || !isBadBlock(block.position))
   );
+  const isReachableLavaSource = (block) => (
+    isAnyLavaSource(block) &&
+    (!bot.entity?.position || !block.position || Math.abs(block.position.y - bot.entity.position.y) <= 10)
+  );
 
   const frame = findPortalFrameCandidate(bot, 48);
   if (frame?.isComplete) {
@@ -604,7 +608,7 @@ function findPortalOpportunity(bot) {
   if (frame && invUtils.countItem(bot, 'obsidian') > 0) {
     return 'partial_frame_obsidian';
   }
-  if (frame && lavaId && bot.findBlock({ matching: isAnyLavaSource, maxDistance: 48 })) {
+  if (frame && lavaId && bot.findBlock({ matching: isReachableLavaSource, maxDistance: 32 })) {
     return 'partial_frame_lava';
   }
 
@@ -613,10 +617,6 @@ function findPortalOpportunity(bot) {
   }
 
   if (lavaId) {
-    const isReachableLavaSource = (block) => (
-      isAnyLavaSource(block) &&
-      (!bot.entity?.position || !block.position || Math.abs(block.position.y - bot.entity.position.y) <= 10)
-    );
     if (typeof bot.findBlocks === 'function') {
       const poolBlocks = bot.findBlocks({
         matching: isReachableLavaSource,
@@ -733,6 +733,10 @@ function tryAssignPickaxeCraftSteps(bot, pickaxeName, reasonLabel) {
       return assignManagerSubGoal('mine', 'log', `${reasonLabel} : mine 2 bûches ('log') pour fabriquer les bâtons de '${pickaxeName}'.`, true, 2);
     }
     return assignManagerSubGoal('explore', 'log', `${reasonLabel} : remonte vers la surface et explore pour trouver du bois ('log') afin de fabriquer '${pickaxeName}'.`, true);
+  }
+
+  if (isActionBlocked(state, 'craft', pickaxeName, Date.now(), bot)) {
+    return false;
   }
 
   if (invUtils.findNearbyCraftingTable(bot, state)) {
@@ -864,7 +868,7 @@ function tryAssignWaterBucketRecovery(bot, lastFailedPortal) {
   }
 
   const ironCount = invUtils.countItem(bot, 'iron_ingot');
-  if (ironCount >= 3) {
+  if (ironCount >= 3 && !isActionBlocked(state, 'craft', 'bucket', Date.now(), bot)) {
     if (invUtils.findNearbyCraftingTable(bot, state)) {
       return assignManagerSubGoal('craft', 'bucket', "Fabrique un seau ('bucket') avec tes 3 lingots de fer.", true);
     }
@@ -938,6 +942,40 @@ function tryAssignPortalOrNetherGoal(bot) {
     }
   }
 
+  // Return to an already-built Nether portal waypoint instead of mining/exploring for a brand new one
+  const existingPortalWaypoint = getWaypoint(state, 'nether_portal');
+  if (existingPortalWaypoint && existingPortalWaypoint.dimension === 'overworld' && bot.entity?.position) {
+    const portalDist3D = Math.hypot(
+      existingPortalWaypoint.x - bot.entity.position.x,
+      existingPortalWaypoint.y - bot.entity.position.y,
+      existingPortalWaypoint.z - bot.entity.position.z
+    );
+    if (portalDist3D > 12 && !isActionBlocked(state, 'goto', 'nether_portal', Date.now(), bot)) {
+      return assignManagerSubGoal(
+        'goto',
+        'nether_portal',
+        `Portail du Nether déjà construit en (${existingPortalWaypoint.x}, ${existingPortalWaypoint.y}, ${existingPortalWaypoint.z}) : retourne au portail (${Math.round(portalDist3D)} blocs).`,
+        true
+      );
+    }
+  }
+
+  // Enter an already-lit Nether portal immediately before any pickaxe or diamond fallback
+  const activePortalId = bot.registry?.blocksByName?.nether_portal?.id;
+  if (
+    activePortalId &&
+    typeof bot.findBlock === 'function' &&
+    !isActionBlocked(state, 'portal', 'none', Date.now(), bot) &&
+    bot.findBlock({ matching: activePortalId, maxDistance: 48 })
+  ) {
+    return assignManagerSubGoal(
+      'portal',
+      'none',
+      "Portail du Nether déjà allumé à proximité : entre immédiatement dans le Nether.",
+      true
+    );
+  }
+
   if (tryAssignPickaxeRecovery(bot)) {
     return true;
   }
@@ -949,7 +987,13 @@ function tryAssignPortalOrNetherGoal(bot) {
   const hasDiamondTierPick = invUtils.countItem(bot, 'diamond_pickaxe') > 0 || invUtils.countItem(bot, 'netherite_pickaxe') > 0;
   const obsidianCount = invUtils.countItem(bot, 'obsidian');
   const obsidianId = bot.registry?.blocksByName?.obsidian?.id;
-  if (hasDiamondTierPick && obsidianCount < 10 && obsidianId && typeof bot.findBlock === 'function') {
+  if (
+    hasDiamondTierPick &&
+    obsidianCount < 10 &&
+    obsidianId &&
+    typeof bot.findBlock === 'function' &&
+    !isActionBlocked(state, 'mine', 'obsidian', Date.now(), bot)
+  ) {
     const nearbyObsidian = bot.findBlock({
       matching: (b) => b?.type === obsidianId && (!b.position || !isBadBlock(b.position)),
       maxDistance: 30
@@ -971,12 +1015,13 @@ function tryAssignPortalOrNetherGoal(bot) {
   const hasWaterOrObsidian = hasWaterBucket || invUtils.countItem(bot, 'obsidian') >= 10;
   const portalOpportunity = findPortalOpportunity(bot);
   const lastFailedPortal = state.lastActionResult?.success === false && state.lastActionResult?.action === 'portal';
+  const portalBlocked = isActionBlocked(state, 'portal', 'none', Date.now(), bot);
 
-  if ((portalOpportunity === 'partial_frame_lava' || portalOpportunity === 'lava_pool') && hasFlintAndSteel && hasWaterBucket && countScaffoldBlocks(bot) < 12) {
+  if ((portalOpportunity === 'partial_frame_lava' || portalOpportunity === 'lava_pool') && !portalBlocked && hasFlintAndSteel && hasWaterBucket && countScaffoldBlocks(bot) < 12) {
     return tryAssignMoldScaffoldGathering(bot);
   }
 
-  if (portalOpportunity && !lastFailedPortal) {
+  if (portalOpportunity && !lastFailedPortal && !portalBlocked) {
     if (portalOpportunity === 'active_portal' || portalOpportunity === 'partial_frame_obsidian') {
       return assignManagerSubGoal('portal', 'none', "Portail détecté à proximité : exécute immédiatement l'action 'portal' pour le compléter ou y entrer.", true);
     }
@@ -995,7 +1040,7 @@ function tryAssignPortalOrNetherGoal(bot) {
         `[PORTAL] Début de portail détecté (${partialFrame.presentCount}/10 obsidienne) en (${partialFrame.base.x},${partialFrame.base.y},${partialFrame.base.z}), manque ${partialFrame.missingCount} obsidienne ou de la lave proche.`
       );
     }
-    if (hasFlintAndSteel && hasWaterOrObsidian) {
+    if (hasFlintAndSteel && hasWaterOrObsidian && !isActionBlocked(state, 'explore', 'lava', Date.now(), bot)) {
       const isSafeToFastExplore = (
         (bot.health ?? 20) >= 14 &&
         (bot.food ?? 20) >= 12 &&
@@ -1006,12 +1051,15 @@ function tryAssignPortalOrNetherGoal(bot) {
     }
   }
 
-  if (tryAssignWaterBucketRecovery(bot, lastFailedPortal)) {
+  if (tryAssignWaterBucketRecovery(bot, lastFailedPortal || portalBlocked)) {
     return true;
   }
 
-  if (hasFlintAndSteel && hasWaterOrObsidian && lastFailedPortal) {
-    return assignManagerSubGoal('explore', 'lava', "Échec sur le site actuel : explore pour trouver un autre lac de lave.", true);
+  if (hasFlintAndSteel && hasWaterOrObsidian && (lastFailedPortal || portalBlocked)) {
+    if (!isActionBlocked(state, 'explore', 'lava', Date.now(), bot)) {
+      return assignManagerSubGoal('explore', 'lava', "Échec sur le site actuel : explore pour trouver un autre lac de lave.", true);
+    }
+    return false;
   }
 
   return false;

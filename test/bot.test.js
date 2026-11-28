@@ -1656,3 +1656,258 @@ test('buildObsidianFrame tolerates null block positions and builds on cobbled_de
   assert.equal(frameRes.success, true);
   assert.ok(frameRes.portalInnerPos);
 });
+
+test('portal loop breaker skips blacklisted partial frames and respects blocked portal/explore pairs', () => {
+  const { Vec3 } = require('vec3');
+  const state = require('../src/core/state');
+  const { markBadBlock } = require('../src/perception/environment');
+  const { blockAction } = require('../src/agent/recovery');
+  const { findPortalFrameCandidate } = require('../src/actions/behaviors/world/portal');
+  const { tryAssignPortalOrNetherGoal } = require('../src/agent/manager');
+
+  clearBadBlocks();
+  const prev = {
+    currentObjective: state.currentObjective,
+    lastActionResult: state.lastActionResult,
+    managerDirective: state.managerDirective,
+    managerSubGoal: state.managerSubGoal,
+    recovery: state.recovery,
+    useDiamondPortalFallback: state.useDiamondPortalFallback,
+    registeredPortalCoords: state.registeredPortalCoords
+  };
+
+  try {
+    const obsidianId = mcData.blocksByName.obsidian.id;
+    const lavaId = mcData.blocksByName.lava.id;
+    const basePos = new Vec3(2, 53, 113);
+    const frameObsidian = [new Vec3(2, 53, 113), new Vec3(3, 53, 113), new Vec3(1, 54, 113)];
+    const lavaPos = new Vec3(10, 32, 118);
+
+    const bot = {
+      registry: mcData,
+      health: 20,
+      food: 20,
+      game: { dimension: 'minecraft:overworld' },
+      entity: { position: new Vec3(10, 32, 116), isInWater: false },
+      entities: {},
+      inventory: {
+        items: () => [
+          { name: 'flint_and_steel', count: 1 },
+          { name: 'water_bucket', count: 1 },
+          { name: 'stone_pickaxe', count: 1 },
+          { name: 'cobblestone', count: 64 }
+        ]
+      },
+      blockAt: (pos) => {
+        if (frameObsidian.some(p => p.equals(pos))) return { name: 'obsidian', type: obsidianId, position: pos };
+        if (pos.equals(lavaPos)) return { name: 'lava', type: lavaId, metadata: 0, position: pos };
+        return { name: 'air', type: 0, position: pos };
+      },
+      findBlocks: ({ matching }) => {
+        if (matching === obsidianId) return frameObsidian;
+        const pool = [lavaPos, lavaPos.offset(1, 0, 0), lavaPos.offset(0, 0, 1), lavaPos.offset(1, 0, 1)];
+        return pool.filter(p => typeof matching === 'function' && matching({ type: lavaId, metadata: 0, position: p }));
+      },
+      findBlock: ({ matching }) => {
+        if (typeof matching === 'function' && matching({ type: lavaId, metadata: 0, position: lavaPos })) {
+          return { name: 'lava', type: lavaId, metadata: 0, position: lavaPos };
+        }
+        return null;
+      }
+    };
+
+    assert.ok(findPortalFrameCandidate(bot, 48));
+    for (const pos of frameObsidian) markBadBlock(pos);
+    assert.equal(findPortalFrameCandidate(bot, 48), null);
+
+    state.currentObjective = 'nether_portal';
+    state.useDiamondPortalFallback = false;
+    state.registeredPortalCoords = null;
+    state.recovery = null;
+    state.lastActionResult = { action: 'explore', target: 'lava', success: false, message: 'Exploration timeout' };
+    blockAction(state, 'portal', 'none', 'Lava pool unreachable', Date.now(), bot);
+
+    assert.equal(tryAssignPortalOrNetherGoal(bot), true);
+    assert.equal(state.managerSubGoal.action, 'explore');
+    assert.equal(state.managerSubGoal.target, 'lava');
+
+    blockAction(state, 'explore', 'lava', 'Exploration timeout', Date.now(), bot);
+    state.managerSubGoal = null;
+    assert.equal(tryAssignPortalOrNetherGoal(bot), false);
+    assert.equal(state.managerSubGoal, null);
+  } finally {
+    clearBadBlocks();
+    Object.assign(state, prev);
+  }
+});
+
+test('travelToKnownLava descends when horizontally above deep remembered lava instead of overshooting', async () => {
+  const { Vec3 } = require('vec3');
+  const { rememberLava, forgetLava } = require('../src/perception/environment');
+  const { travelToKnownLava } = require('../src/actions/behaviors/movement/navigate');
+
+  const lavaPos = new Vec3(730, -43, 5);
+  rememberLava(lavaPos, 'overworld');
+
+  let descendedGoal = false;
+  const bot = {
+    game: { dimension: 'overworld' },
+    entity: { position: new Vec3(715, 64, 2) },
+    pathfinder: {
+      goto: async (goal) => {
+        if (typeof goal?.isEnd === 'function' && goal.isEnd({ y: 40 })) {
+          descendedGoal = true;
+          bot.entity.position = new Vec3(715, 50, 2);
+        }
+      },
+      setGoal: () => {}
+    },
+    clearControlStates: () => {}
+  };
+
+  try {
+    const message = await travelToKnownLava(bot, 20000);
+    assert.equal(descendedGoal, true);
+    assert.match(message, /Descending towards remembered lava/);
+  } finally {
+    forgetLava(lavaPos, 5);
+  }
+});
+
+test('tryAssignPortalOrNetherGoal prioritizes existing nether_portal waypoint and skips blocked mine obsidian', () => {
+  const { Vec3 } = require('vec3');
+  const state = require('../src/core/state');
+  const { blockAction } = require('../src/agent/recovery');
+  const { tryAssignPortalOrNetherGoal } = require('../src/agent/manager');
+
+  const prev = {
+    currentObjective: state.currentObjective,
+    lastActionResult: state.lastActionResult,
+    managerDirective: state.managerDirective,
+    managerSubGoal: state.managerSubGoal,
+    recovery: state.recovery,
+    waypoints: state.waypoints,
+    useDiamondPortalFallback: state.useDiamondPortalFallback,
+    registeredPortalCoords: state.registeredPortalCoords
+  };
+
+  try {
+    const obsidianId = mcData.blocksByName.obsidian.id;
+    const bot = {
+      registry: mcData,
+      health: 20,
+      food: 20,
+      game: { dimension: 'minecraft:overworld' },
+      entity: { position: new Vec3(9, -50, 112), isInWater: false },
+      entities: {},
+      inventory: {
+        items: () => [
+          { name: 'diamond_pickaxe', count: 1 },
+          { name: 'flint_and_steel', count: 1 },
+          { name: 'water_bucket', count: 1 },
+          { name: 'cobblestone', count: 64 }
+        ]
+      },
+      findBlock: ({ matching }) => {
+        const obs = { name: 'obsidian', type: obsidianId, position: new Vec3(12, -50, 112) };
+        return typeof matching === 'function' && matching(obs) ? obs : null;
+      },
+      findBlocks: () => []
+    };
+
+    state.currentObjective = 'nether_portal';
+    state.useDiamondPortalFallback = false;
+    state.registeredPortalCoords = null;
+    state.recovery = null;
+    state.lastActionResult = null;
+    state.waypoints = {
+      nether_portal: { x: 6, y: 67, z: 115, dimension: 'overworld', note: 'Nether portal (Overworld side)' }
+    };
+
+    assert.equal(tryAssignPortalOrNetherGoal(bot), true);
+    assert.equal(state.managerSubGoal.action, 'goto');
+    assert.equal(state.managerSubGoal.target, 'nether_portal');
+
+    // When no portal waypoint exists and mine:obsidian is blocked, manager does not loop on mine obsidian
+    state.waypoints = {};
+    state.managerSubGoal = null;
+    blockAction(state, 'mine', 'obsidian', 'No obsidian found nearby', Date.now(), bot);
+    assert.equal(tryAssignPortalOrNetherGoal(bot), true);
+    assert.notEqual(state.managerSubGoal.action, 'mine');
+  } finally {
+    Object.assign(state, prev);
+  }
+});
+
+test('travelTowards climbs in stepped vertical legs when destination is far above the bot', async () => {
+  const { Vec3 } = require('vec3');
+  const { travelTowards } = require('../src/actions/behaviors/movement/waypoint');
+
+  let receivedGoal = null;
+  const bot = {
+    entity: { position: new Vec3(2, -44, 119) },
+    pathfinder: {
+      goto: async (goal) => {
+        receivedGoal = goal;
+        bot.entity.position = new Vec3(2, -32, 119);
+      },
+      setGoal: () => {}
+    },
+    clearControlStates: () => {}
+  };
+
+  const result = await travelTowards(bot, { x: 6, y: 67, z: 115 }, { radius: 4, timeoutMs: 5000 });
+  assert.equal(result.progressed, true);
+  assert.equal(result.arrived, false);
+  assert.equal(receivedGoal.y, -32);
+});
+
+test('tryAssignPortalOrNetherGoal enters an active portal before diamond pickaxe fallback', () => {
+  const { Vec3 } = require('vec3');
+  const state = require('../src/core/state');
+  const { tryAssignPortalOrNetherGoal } = require('../src/agent/manager');
+
+  const prev = {
+    currentObjective: state.currentObjective,
+    lastActionResult: state.lastActionResult,
+    managerDirective: state.managerDirective,
+    managerSubGoal: state.managerSubGoal,
+    recovery: state.recovery,
+    waypoints: state.waypoints,
+    useDiamondPortalFallback: state.useDiamondPortalFallback,
+    registeredPortalCoords: state.registeredPortalCoords
+  };
+
+  try {
+    const portalId = mcData.blocksByName.nether_portal.id;
+    const bot = {
+      registry: mcData,
+      health: 20,
+      food: 20,
+      game: { dimension: 'minecraft:overworld' },
+      entity: { position: new Vec3(7, 65, 116), isInWater: false },
+      entities: {},
+      inventory: {
+        items: () => [
+          { name: 'diamond', count: 4 },
+          { name: 'stick', count: 4 },
+          { name: 'crafting_table', count: 1 }
+        ]
+      },
+      findBlock: ({ matching }) => (matching === portalId ? { name: 'nether_portal', type: portalId, position: new Vec3(6, 67, 115) } : null),
+      findBlocks: () => []
+    };
+
+    state.currentObjective = 'nether_portal';
+    state.useDiamondPortalFallback = true;
+    state.registeredPortalCoords = null;
+    state.recovery = null;
+    state.waypoints = {};
+
+    assert.equal(tryAssignPortalOrNetherGoal(bot), true);
+    assert.equal(state.managerSubGoal.action, 'portal');
+    assert.equal(state.managerSubGoal.target, 'none');
+  } finally {
+    Object.assign(state, prev);
+  }
+});

@@ -11,6 +11,8 @@ const { clearBadBlocks } = require('./perception/environment');
 const { parseGoalCommand, describeGoalPlan, setManualGoal, clearManualGoal } = require('./agent/goals');
 const { forceRecovery, describeDebugState } = require('./agent/recovery');
 const { installSurvivalWatchdog } = require('./agent/watchdog');
+const { startStatusApi } = require('./api/server');
+const { installChatQueue } = require('./core/chat');
 const {
   loadProgress, getDimension, getWaypoint, saveWaypoint, removeWaypoint, listWaypoints,
   setMilestone, horizontalDistanceTo
@@ -18,6 +20,13 @@ const {
 const { saveRegisteredPortalCoords, loadRegisteredPortalCoords, executeFallbackPortalTeleport } = require('./actions/behaviors/world/portal');
 
 const bot = mineflayer.createBot(config.BOT_CONFIG);
+// Every bot.chat() goes through a rate limiter: the server kicks bots that talk too fast
+installChatQueue(bot, { minIntervalMs: config.CHAT_MIN_INTERVAL_MS });
+startStatusApi(bot, state, {
+  port: config.BOT_API_PORT,
+  host: config.BOT_API_HOST,
+  apiKey: config.BOT_API_KEY
+});
 bot.loadPlugin(pathfinder);
 // Skills can keep the bot under water longer than its air lasts: this aborts them in time
 installSurvivalWatchdog(bot, state);
@@ -115,18 +124,31 @@ function isSafeGroundForDback() {
  */
 async function executeDeathBack() {
   const target = state.lastSafePosition;
+  const targetDimension = state.lastSafeDimension;
   if (!target) {
     return false;
   }
   state.lastSafePosition = null;
+  state.lastSafeDimension = null;
   state.lastDeathPosition = null;
+
+  const currentDimension = getDimension(bot);
+  if (targetDimension && targetDimension !== currentDimension) {
+    console.log(`[DBACK] Skipping cross-dimension teleport (${targetDimension} -> ${currentDimension}).`);
+    return false;
+  }
+
   const x = Math.floor(target.x);
   const y = Math.floor(target.y);
   const z = Math.floor(target.z);
   console.log(`[DBACK] Teleporting back to safe position (${x}, ${y}, ${z})...`);
   bot.chat(`/tp ${bot.username} ${x} ${y} ${z}`);
   if (typeof bot.waitForTicks === 'function') {
-    await bot.waitForTicks(20);
+    try {
+      await bot.waitForTicks(20);
+    } catch (error) {
+      console.warn('[DBACK] waitForTicks timed out after teleport:', error.message);
+    }
   }
   return true;
 }
@@ -229,12 +251,14 @@ bot.once('spawn', () => {
 
     if (isSafeGroundForDback()) {
       state.lastSafePosition = bot.entity.position.clone();
+      state.lastSafeDimension = getDimension(bot);
     }
   });
 });
 
 // Handle bot spawn and respawn events on server
 bot.on('spawn', () => {
+  state.isConnected = true;
   console.log('✅ Bot spawned on server!');
   const dimension = getDimension(bot);
   console.log(`[DIMENSION] Spawned in dimension: ${dimension}`);
@@ -257,7 +281,7 @@ bot.on('spawn', () => {
   }
 
   // Authenticate bot via AuthMe with safety delay
-  const pwd = config.AUTH_PASSWORD;
+  const pwd = config.AUTH_ENABLED ? config.AUTH_PASSWORD : '';
   if (pwd && !state.hasStarted) {
     setTimeout(() => {
       bot.chat(`/login ${pwd}`);
@@ -271,7 +295,7 @@ bot.on('spawn', () => {
 // Handle server messages for authentication and advancements
 bot.on('messagestr', (message) => {
   const text = message.toLowerCase();
-  const pwd = config.AUTH_PASSWORD;
+  const pwd = config.AUTH_ENABLED ? config.AUTH_PASSWORD : '';
 
   if (text.includes('/register') && pwd) {
     bot.chat(`/register ${pwd} ${pwd}`);
@@ -530,6 +554,7 @@ bot.on('death', () => {
   state.lastDeathTime = now;
   if (rapidRepeatDeath) {
     state.lastSafePosition = null;
+    state.lastSafeDimension = null;
     state.lastDeathPosition = null;
   } else {
     state.lastDeathPosition = bot.entity?.position ? bot.entity.position.clone() : null;
@@ -563,6 +588,21 @@ bot.on('message', (jsonMsg) => {
   console.log(`[SERVER] ${jsonMsg.toAnsi()}`);
 });
 
+/**
+ * Stop the autonomous survival loop and clear connection flags when the server disconnects
+ * @param {string} [reason] Disconnect reason reported by Mineflayer
+ */
+function handleDisconnect(reason) {
+  console.log(`🔌 Disconnected from server (${reason || 'unknown reason'}). Stopping autonomous loop.`);
+  state.isConnected = false;
+  state.isSurviving = false;
+  state.survivalSessionId = (state.survivalSessionId || 0) + 1;
+  state.activeActionId = (state.activeActionId || 0) + 1;
+  bot.pathfinder?.setGoal(null);
+  bot.clearControlStates?.();
+}
+
 // Log disconnections and socket errors
 bot.on('kicked', console.log);
 bot.on('error', console.log);
+bot.on('end', handleDisconnect);

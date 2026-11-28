@@ -6,6 +6,7 @@ const { ObjectiveGenerationTracker } = require('../procedures/matcher');
  * Define shared global state for the autonomous agent
  */
 module.exports = {
+  isConnected: false,
   isSurviving: false,
   hasStarted: false,
   currentObjective: 'wooden_pickaxe',
@@ -16,6 +17,7 @@ module.exports = {
   completedQuests: new Set(),
   lastDeathPosition: null,
   lastSafePosition: null,
+  lastSafeDimension: null,
   base: {
     crafting_table: null,
     furnace: null,

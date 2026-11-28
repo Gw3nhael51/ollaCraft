@@ -27,11 +27,21 @@ module.exports = {
   // Keep the model loaded between cycles to avoid reload latency
   OLLAMA_KEEP_ALIVE: process.env.OLLAMA_KEEP_ALIVE || '30m',
   AUTH_PASSWORD: process.env.MC_PASSWORD || '',
+  // Whether the server runs an auth plugin (/register, /login). Defaults to true when a password is set.
+  AUTH_ENABLED: process.env.MC_AUTH_PLUGIN === undefined
+    ? Boolean(process.env.MC_PASSWORD)
+    : ['true', '1', 'yes', 'on'].includes(process.env.MC_AUTH_PLUGIN.trim().toLowerCase()),
+  // Minimum delay (ms) between two chat lines sent by the bot, to stay under the server's anti-spam
+  CHAT_MIN_INTERVAL_MS: parsePositiveInt(process.env.MC_CHAT_INTERVAL_MS, 1500),
+  // Read-only status API consumed by the stats dashboard (disabled when BOT_API_PORT is 0 or BOT_API_KEY is empty)
+  BOT_API_PORT: Number.parseInt(process.env.BOT_API_PORT, 10) || 0,
+  BOT_API_HOST: process.env.BOT_API_HOST || '0.0.0.0',
+  BOT_API_KEY: process.env.BOT_API_KEY || '',
   BOT_CONFIG: {
     host: process.env.MC_HOST || 'localhost',
     port: Number.parseInt(process.env.MC_PORT) || 25565,
     username: process.env.MC_USERNAME || 'Ollama',
-    version: '1.20.4'
+    version: process.env.MC_VERSION || '1.20.4'
   },
 
   SOFT_BLOCKS: new Set(['dirt', 'grass_block', 'sand', 'gravel', 'stone', 'cobblestone', 'clay']),
