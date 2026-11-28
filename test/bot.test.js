@@ -1861,3 +1861,53 @@ test('travelTowards climbs in stepped vertical legs when destination is far abov
   assert.equal(result.arrived, false);
   assert.equal(receivedGoal.y, -32);
 });
+
+test('tryAssignPortalOrNetherGoal enters an active portal before diamond pickaxe fallback', () => {
+  const { Vec3 } = require('vec3');
+  const state = require('../src/core/state');
+  const { tryAssignPortalOrNetherGoal } = require('../src/agent/manager');
+
+  const prev = {
+    currentObjective: state.currentObjective,
+    lastActionResult: state.lastActionResult,
+    managerDirective: state.managerDirective,
+    managerSubGoal: state.managerSubGoal,
+    recovery: state.recovery,
+    waypoints: state.waypoints,
+    useDiamondPortalFallback: state.useDiamondPortalFallback,
+    registeredPortalCoords: state.registeredPortalCoords
+  };
+
+  try {
+    const portalId = mcData.blocksByName.nether_portal.id;
+    const bot = {
+      registry: mcData,
+      health: 20,
+      food: 20,
+      game: { dimension: 'minecraft:overworld' },
+      entity: { position: new Vec3(7, 65, 116), isInWater: false },
+      entities: {},
+      inventory: {
+        items: () => [
+          { name: 'diamond', count: 4 },
+          { name: 'stick', count: 4 },
+          { name: 'crafting_table', count: 1 }
+        ]
+      },
+      findBlock: ({ matching }) => (matching === portalId ? { name: 'nether_portal', type: portalId, position: new Vec3(6, 67, 115) } : null),
+      findBlocks: () => []
+    };
+
+    state.currentObjective = 'nether_portal';
+    state.useDiamondPortalFallback = true;
+    state.registeredPortalCoords = null;
+    state.recovery = null;
+    state.waypoints = {};
+
+    assert.equal(tryAssignPortalOrNetherGoal(bot), true);
+    assert.equal(state.managerSubGoal.action, 'portal');
+    assert.equal(state.managerSubGoal.target, 'none');
+  } finally {
+    Object.assign(state, prev);
+  }
+});

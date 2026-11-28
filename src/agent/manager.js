@@ -735,6 +735,10 @@ function tryAssignPickaxeCraftSteps(bot, pickaxeName, reasonLabel) {
     return assignManagerSubGoal('explore', 'log', `${reasonLabel} : remonte vers la surface et explore pour trouver du bois ('log') afin de fabriquer '${pickaxeName}'.`, true);
   }
 
+  if (isActionBlocked(state, 'craft', pickaxeName, Date.now(), bot)) {
+    return false;
+  }
+
   if (invUtils.findNearbyCraftingTable(bot, state)) {
     return assignManagerSubGoal('craft', pickaxeName, `${reasonLabel} : fabrique '${pickaxeName}' sur l'établi à proximité.`, true);
   }
@@ -864,7 +868,7 @@ function tryAssignWaterBucketRecovery(bot, lastFailedPortal) {
   }
 
   const ironCount = invUtils.countItem(bot, 'iron_ingot');
-  if (ironCount >= 3) {
+  if (ironCount >= 3 && !isActionBlocked(state, 'craft', 'bucket', Date.now(), bot)) {
     if (invUtils.findNearbyCraftingTable(bot, state)) {
       return assignManagerSubGoal('craft', 'bucket', "Fabrique un seau ('bucket') avec tes 3 lingots de fer.", true);
     }
@@ -954,6 +958,22 @@ function tryAssignPortalOrNetherGoal(bot) {
         true
       );
     }
+  }
+
+  // Enter an already-lit Nether portal immediately before any pickaxe or diamond fallback
+  const activePortalId = bot.registry?.blocksByName?.nether_portal?.id;
+  if (
+    activePortalId &&
+    typeof bot.findBlock === 'function' &&
+    !isActionBlocked(state, 'portal', 'none', Date.now(), bot) &&
+    bot.findBlock({ matching: activePortalId, maxDistance: 48 })
+  ) {
+    return assignManagerSubGoal(
+      'portal',
+      'none',
+      "Portail du Nether déjà allumé à proximité : entre immédiatement dans le Nether.",
+      true
+    );
   }
 
   if (tryAssignPickaxeRecovery(bot)) {
