@@ -263,9 +263,11 @@ function getOverworldDecision(bot, state, objective) {
     // After a death the bot respawns away from its portal: walk back instead of building a new one
     const portalWaypoint = getWaypoint(state, 'nether_portal');
     if (portalWaypoint && portalWaypoint.dimension === 'overworld') {
-      const distance = horizontalDistanceTo(bot, portalWaypoint);
-      if (distance > 40) {
-        return makeDecision('goto', 'nether_portal', 1, `Portail du Nether mémorisé à ${Math.round(distance)} blocs : j'y retourne.`);
+      const horizDistance = horizontalDistanceTo(bot, portalWaypoint);
+      const dy = Math.abs(portalWaypoint.y - (bot.entity?.position?.y ?? portalWaypoint.y));
+      const distance3D = Math.hypot(horizDistance, dy);
+      if (horizDistance > 40 || dy > 16) {
+        return makeDecision('goto', 'nether_portal', 1, `Portail du Nether mémorisé à ${Math.round(distance3D)} blocs : j'y retourne.`);
       }
     }
     return DEFER;

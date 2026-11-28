@@ -1773,3 +1773,68 @@ test('travelToKnownLava descends when horizontally above deep remembered lava in
     forgetLava(lavaPos, 5);
   }
 });
+
+test('tryAssignPortalOrNetherGoal prioritizes existing nether_portal waypoint and skips blocked mine obsidian', () => {
+  const { Vec3 } = require('vec3');
+  const state = require('../src/core/state');
+  const { blockAction } = require('../src/agent/recovery');
+  const { tryAssignPortalOrNetherGoal } = require('../src/agent/manager');
+
+  const prev = {
+    currentObjective: state.currentObjective,
+    lastActionResult: state.lastActionResult,
+    managerDirective: state.managerDirective,
+    managerSubGoal: state.managerSubGoal,
+    recovery: state.recovery,
+    waypoints: state.waypoints,
+    useDiamondPortalFallback: state.useDiamondPortalFallback,
+    registeredPortalCoords: state.registeredPortalCoords
+  };
+
+  try {
+    const obsidianId = mcData.blocksByName.obsidian.id;
+    const bot = {
+      registry: mcData,
+      health: 20,
+      food: 20,
+      game: { dimension: 'minecraft:overworld' },
+      entity: { position: new Vec3(9, -50, 112), isInWater: false },
+      entities: {},
+      inventory: {
+        items: () => [
+          { name: 'diamond_pickaxe', count: 1 },
+          { name: 'flint_and_steel', count: 1 },
+          { name: 'water_bucket', count: 1 },
+          { name: 'cobblestone', count: 64 }
+        ]
+      },
+      findBlock: ({ matching }) => {
+        const obs = { name: 'obsidian', type: obsidianId, position: new Vec3(12, -50, 112) };
+        return typeof matching === 'function' && matching(obs) ? obs : null;
+      },
+      findBlocks: () => []
+    };
+
+    state.currentObjective = 'nether_portal';
+    state.useDiamondPortalFallback = false;
+    state.registeredPortalCoords = null;
+    state.recovery = null;
+    state.lastActionResult = null;
+    state.waypoints = {
+      nether_portal: { x: 6, y: 67, z: 115, dimension: 'overworld', note: 'Nether portal (Overworld side)' }
+    };
+
+    assert.equal(tryAssignPortalOrNetherGoal(bot), true);
+    assert.equal(state.managerSubGoal.action, 'goto');
+    assert.equal(state.managerSubGoal.target, 'nether_portal');
+
+    // When no portal waypoint exists and mine:obsidian is blocked, manager does not loop on mine obsidian
+    state.waypoints = {};
+    state.managerSubGoal = null;
+    blockAction(state, 'mine', 'obsidian', 'No obsidian found nearby', Date.now(), bot);
+    assert.equal(tryAssignPortalOrNetherGoal(bot), true);
+    assert.notEqual(state.managerSubGoal.action, 'mine');
+  } finally {
+    Object.assign(state, prev);
+  }
+});

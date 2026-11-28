@@ -938,6 +938,24 @@ function tryAssignPortalOrNetherGoal(bot) {
     }
   }
 
+  // Return to an already-built Nether portal waypoint instead of mining/exploring for a brand new one
+  const existingPortalWaypoint = getWaypoint(state, 'nether_portal');
+  if (existingPortalWaypoint && existingPortalWaypoint.dimension === 'overworld' && bot.entity?.position) {
+    const portalDist3D = Math.hypot(
+      existingPortalWaypoint.x - bot.entity.position.x,
+      existingPortalWaypoint.y - bot.entity.position.y,
+      existingPortalWaypoint.z - bot.entity.position.z
+    );
+    if (portalDist3D > 12 && !isActionBlocked(state, 'goto', 'nether_portal', Date.now(), bot)) {
+      return assignManagerSubGoal(
+        'goto',
+        'nether_portal',
+        `Portail du Nether déjà construit en (${existingPortalWaypoint.x}, ${existingPortalWaypoint.y}, ${existingPortalWaypoint.z}) : retourne au portail (${Math.round(portalDist3D)} blocs).`,
+        true
+      );
+    }
+  }
+
   if (tryAssignPickaxeRecovery(bot)) {
     return true;
   }
@@ -949,7 +967,13 @@ function tryAssignPortalOrNetherGoal(bot) {
   const hasDiamondTierPick = invUtils.countItem(bot, 'diamond_pickaxe') > 0 || invUtils.countItem(bot, 'netherite_pickaxe') > 0;
   const obsidianCount = invUtils.countItem(bot, 'obsidian');
   const obsidianId = bot.registry?.blocksByName?.obsidian?.id;
-  if (hasDiamondTierPick && obsidianCount < 10 && obsidianId && typeof bot.findBlock === 'function') {
+  if (
+    hasDiamondTierPick &&
+    obsidianCount < 10 &&
+    obsidianId &&
+    typeof bot.findBlock === 'function' &&
+    !isActionBlocked(state, 'mine', 'obsidian', Date.now(), bot)
+  ) {
     const nearbyObsidian = bot.findBlock({
       matching: (b) => b?.type === obsidianId && (!b.position || !isBadBlock(b.position)),
       maxDistance: 30
