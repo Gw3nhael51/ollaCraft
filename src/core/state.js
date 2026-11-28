@@ -17,6 +17,7 @@ module.exports = {
   completedQuests: new Set(),
   lastDeathPosition: null,
   lastSafePosition: null,
+  lastSafeDimension: null,
   base: {
     crafting_table: null,
     furnace: null,

@@ -124,18 +124,31 @@ function isSafeGroundForDback() {
  */
 async function executeDeathBack() {
   const target = state.lastSafePosition;
+  const targetDimension = state.lastSafeDimension;
   if (!target) {
     return false;
   }
   state.lastSafePosition = null;
+  state.lastSafeDimension = null;
   state.lastDeathPosition = null;
+
+  const currentDimension = getDimension(bot);
+  if (targetDimension && targetDimension !== currentDimension) {
+    console.log(`[DBACK] Skipping cross-dimension teleport (${targetDimension} -> ${currentDimension}).`);
+    return false;
+  }
+
   const x = Math.floor(target.x);
   const y = Math.floor(target.y);
   const z = Math.floor(target.z);
   console.log(`[DBACK] Teleporting back to safe position (${x}, ${y}, ${z})...`);
   bot.chat(`/tp ${bot.username} ${x} ${y} ${z}`);
   if (typeof bot.waitForTicks === 'function') {
-    await bot.waitForTicks(20);
+    try {
+      await bot.waitForTicks(20);
+    } catch (error) {
+      console.warn('[DBACK] waitForTicks timed out after teleport:', error.message);
+    }
   }
   return true;
 }
@@ -238,6 +251,7 @@ bot.once('spawn', () => {
 
     if (isSafeGroundForDback()) {
       state.lastSafePosition = bot.entity.position.clone();
+      state.lastSafeDimension = getDimension(bot);
     }
   });
 });
@@ -540,6 +554,7 @@ bot.on('death', () => {
   state.lastDeathTime = now;
   if (rapidRepeatDeath) {
     state.lastSafePosition = null;
+    state.lastSafeDimension = null;
     state.lastDeathPosition = null;
   } else {
     state.lastDeathPosition = bot.entity?.position ? bot.entity.position.clone() : null;
