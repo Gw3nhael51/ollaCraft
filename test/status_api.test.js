@@ -16,6 +16,8 @@ function createFakeBot() {
   const slots = new Array(46).fill(null);
   slots[9] = { name: 'wooden_pickaxe', count: 1, type: mcData.itemsByName.wooden_pickaxe.id };
   slots[10] = { name: 'oak_log', count: 4, type: mcData.itemsByName.oak_log.id };
+  slots[5] = { name: 'iron_helmet', count: 1, type: mcData.itemsByName.iron_helmet.id };
+  slots[45] = { name: 'shield', count: 1, type: mcData.itemsByName.shield.id };
   Object.assign(bot, {
     username: 'Ollama',
     registry: mcData,
@@ -69,6 +71,9 @@ test('snapshot reports position, inventory, objective and the ordered quest chai
   assert.deepEqual(snap.inventory_slots[0], { name: 'wooden_pickaxe', count: 1 });
   assert.deepEqual(snap.inventory_slots[1], { name: 'oak_log', count: 4 });
   assert.equal(snap.inventory_slots[35], null);
+  assert.deepEqual(snap.equipment.head, { name: 'iron_helmet', count: 1 });
+  assert.deepEqual(snap.equipment.offhand, { name: 'shield', count: 1 });
+  assert.equal(snap.equipment.chest, null);
   assert.equal(snap.objective.id, 'cobblestone');
   assert.equal(snap.objective.sub_goal, null);
   assert.equal(snap.uptime_seconds, 5);

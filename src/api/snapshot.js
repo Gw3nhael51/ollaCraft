@@ -75,6 +75,18 @@ function buildInventorySlots(bot) {
 }
 
 /**
+ * Report what the bot wears and holds in its off hand
+ * @param {object} bot Mineflayer bot instance
+ * @returns {Record<string, { name: string, count: number }|null>} Armor pieces and off-hand item (null when empty)
+ */
+function buildEquipment(bot) {
+  const slots = bot?.inventory?.slots || [];
+  const at = (index) => (slots[index] ? { name: slots[index].name, count: slots[index].count } : null);
+  // Slots of the player inventory window: 5 head, 6 chest, 7 legs, 8 feet, 45 off hand
+  return { head: at(5), chest: at(6), legs: at(7), feet: at(8), offhand: at(45) };
+}
+
+/**
  * Turn the manager's sub-goal (a string or an object such as { action, target }) into a short text
  * @param {string|object|null|undefined} subGoal Sub-goal held in the state
  * @returns {string|null} Text such as "procedure build_portal", or null
@@ -130,6 +142,7 @@ function buildSnapshot(bot, state, options = {}) {
     quests: spawned ? buildQuests(bot, state, now) : [],
     inventory: spawned ? buildInventory(bot) : {},
     inventory_slots: spawned ? buildInventorySlots(bot) : [],
+    equipment: spawned ? buildEquipment(bot) : null,
     last_action: state.lastActionResult || null,
     recent_actions: (state.actionHistory || []).slice(-RECENT_ACTIONS_LIMIT),
     decision_source: state.lastDecisionSource || 'none',
